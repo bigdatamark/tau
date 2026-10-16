@@ -1,3 +1,12 @@
+# [MODULE DOC]
+# Token-usage analytics for session HTML export. Walks session entries to build
+# per-request token usage (assistant responses plus compaction and branch
+# summary model calls), tool-call counts and notable events (compactions,
+# model/thinking changes, branch summaries), estimates USD cost from catalog
+# rates, and renders a self-contained dashboard (stat cards, inline SVG line
+# charts, request table, tool counts) plus the CSS and JavaScript strings the
+# export page embeds for hover tooltips, legend toggling and PNG download.
+# Pure string generation; no I/O.
 """Token-usage analytics for Tau sessions, rendered as an HTML dashboard."""
 
 from __future__ import annotations
@@ -34,6 +43,12 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class RequestUsage:
+    # [CLASS DOC]
+    # Immutable usage record for one model request: 1-based number, kind
+    # (assistant, compaction summary, branch summary), HH:MM:SS UTC time, provider,
+    # model, optional upstream response provider, fresh input, cache-read, cache
+    # write (including 1-hour writes), 1-hour cache write, output and reasoning
+    # token counts, stop reason and optional estimated cost.
     """Token usage for a single assistant response."""
 
     number: int
@@ -53,15 +68,23 @@ class RequestUsage:
 
     @property
     def prompt(self) -> int:
+        # [FUNCTION DOC]
+        # Property: total prompt tokens, the sum of fresh, cached and cache-write.
         return self.fresh + self.cached + self.cache_write
 
     @property
     def hit_rate(self) -> float:
+        # [FUNCTION DOC]
+        # Property: cached divided by prompt tokens, or 0.0 when prompt is zero.
         return self.cached / self.prompt if self.prompt else 0.0
 
 
 @dataclass(frozen=True, slots=True)
 class UsageEvent:
+    # [CLASS DOC]
+    # Immutable chart event: the request number it is anchored to, time string,
+    # kind (compaction, model, thinking, branch), display label and whether it
+    # happened before (default) or after that request.
     """A notable session event positioned against the next model request."""
 
     request_number: int
@@ -73,6 +96,10 @@ class UsageEvent:
 
 @dataclass(frozen=True, slots=True)
 class SessionUsage:
+    # [CLASS DOC]
+    # Immutable aggregate: tuple of requests, tool-call counts as (name, count)
+    # pairs sorted by descending count then name, compaction count and events.
+    # Exposes derived totals.
     """Aggregated usage for the entries shown in an export."""
 
     requests: tuple[RequestUsage, ...]
@@ -82,26 +109,39 @@ class SessionUsage:
 
     @property
     def total_fresh(self) -> int:
+        # [FUNCTION DOC]
+        # Property: sum of fresh input over all requests.
         return sum(item.fresh for item in self.requests)
 
     @property
     def total_cached(self) -> int:
+        # [FUNCTION DOC]
+        # Property: sum of cache-read tokens over all requests.
         return sum(item.cached for item in self.requests)
 
     @property
     def total_cache_write(self) -> int:
+        # [FUNCTION DOC]
+        # Property: sum of cache-write tokens over all requests.
         return sum(item.cache_write for item in self.requests)
 
     @property
     def total_prompt(self) -> int:
+        # [FUNCTION DOC]
+        # Property: total fresh plus cached plus cache-write tokens.
         return self.total_fresh + self.total_cached + self.total_cache_write
 
     @property
     def total_output(self) -> int:
+        # [FUNCTION DOC]
+        # Property: sum of output tokens over all requests.
         return sum(item.output for item in self.requests)
 
     @property
     def hit_rate(self) -> float | None:
+        # [FUNCTION DOC]
+        # Property: overall cached share of prompt tokens, or none when there are no
+        # prompt tokens or no caching activity at all (no reads and no writes).
         if self.total_prompt <= 0:
             return None
         if self.total_cached == 0 and self.total_cache_write == 0:
@@ -110,6 +150,8 @@ class SessionUsage:
 
     @property
     def total_cost(self) -> float | None:
+        # [FUNCTION DOC]
+        # Property: sum of known request cost estimates, or none if none are known.
         costs = [item.estimated_cost for item in self.requests if item.estimated_cost is not None]
         return sum(costs) if costs else None
 
@@ -124,6 +166,13 @@ def estimated_request_cost(
     cache_write_1h: int,
     output: int,
 ) -> float | None:
+    # [FUNCTION DOC]
+    # Estimates one request's USD cost from the built-in provider catalog only.
+    # Inputs: provider, model and keyword token counts (fresh, cached, cache
+    # write including 1-hour writes, 1-hour cache write, output).
+    # Output: cost, or none when the provider/model metadata or rates are
+    # unavailable. Rates may be tiered by total prompt size; 1-hour writes use the
+    # 1-hour rate when present. No side effects.
     """Estimate a request cost in USD from the built-in provider catalog rates."""
     entry = builtin_provider_entry(provider)
     metadata = entry.model_metadata.get(model) if entry is not None else None
@@ -146,6 +195,17 @@ def estimated_request_cost(
 
 
 def collect_session_usage(entries: Sequence[SessionEntry]) -> SessionUsage:
+    # [FUNCTION DOC]
+    # Builds a SessionUsage from entries in order. Tracks the current provider and
+    # model (updated by model-change entries and assistant messages, both starting
+    # as "unknown"). Compaction and branch-summary entries with usage add a
+    # request (using their own provider/model or the current ones); compactions
+    # are counted. Assistant messages add a request (with stop reason) and count
+    # their tool calls by name. Event entries are queued and attached as "before"
+    # events to the next request recorded; any left at the end are attached as
+    # "after" events of the last request (dropped if there were no requests).
+    # When no catalog cost is available but the message reports a positive cost
+    # total, that reported cost is used. Output: the aggregate. No side effects.
     """Collect per-request token usage, tool-call counts, and notable events."""
     requests: list[RequestUsage] = []
     tools: dict[str, int] = {}
@@ -165,6 +225,11 @@ def collect_session_usage(entries: Sequence[SessionEntry]) -> SessionUsage:
         response_provider: str | None = None,
         stop_reason: str = "-",
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: closure that creates and appends a RequestUsage numbered after the
+        # existing ones (estimating cost, defaulting missing 1-hour writes and
+        # reasoning to zero), then flushes queued events onto it. Mutates the
+        # enclosing request, event and pending lists.
         cache_write_1h = usage.cache_write_1h or 0
         estimated = estimated_request_cost(
             provider,
@@ -285,10 +350,16 @@ def collect_session_usage(entries: Sequence[SessionEntry]) -> SessionUsage:
 
 
 def _entry_time(timestamp: float) -> str:
+    # [FUNCTION DOC]
+    # HELPER: formats an epoch-seconds timestamp as HH:MM:SS in UTC.
     return datetime.fromtimestamp(timestamp, tz=UTC).strftime("%H:%M:%S")
 
 
 def _usage_event(entry: SessionEntry) -> tuple[str, str] | None:
+    # [FUNCTION DOC]
+    # Returns (kind, label) chart metadata for compaction, model change ("Model
+    # changed to X"), thinking level change ("Thinking changed to X", off when
+    # unset) and branch summary entries; none for other entries.
     """Return chart metadata for session events that can affect prompt usage."""
     if isinstance(entry, CompactionEntry):
         return "compaction", "Compaction"
@@ -318,6 +389,9 @@ _SERIES_COLORS = {
 
 
 def _series_color_pair(name: str) -> tuple[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: returns the (dark, light) theme colors for a chart series name,
+    # defaulting to the markdown link colors.
     return _SERIES_COLORS.get(
         name,
         (TAU_DARK_THEME.markdown_link, TAU_LIGHT_THEME.markdown_link),
@@ -325,6 +399,10 @@ def _series_color_pair(name: str) -> tuple[str, str]:
 
 
 def _compact_number(value: float) -> str:
+    # [FUNCTION DOC]
+    # HELPER: formats a number with "m" (one decimal) for millions, "k" (no
+    # decimals) for thousands, else as an integer string.
+    # KNOWN ISSUE: values just below one million round up to "1000k".
     if value >= 1_000_000:
         return f"{value / 1_000_000:.1f}m"
     if value >= 1_000:
@@ -333,6 +411,9 @@ def _compact_number(value: float) -> str:
 
 
 def _format_cost(value: float | None) -> str:
+    # [FUNCTION DOC]
+    # HELPER: formats a cost as dollars: "$N/A" for none, three decimals for
+    # positive values under one cent, otherwise two decimals.
     if value is None:
         return "$N/A"
     if 0 < value < 0.01:
@@ -349,6 +430,19 @@ def _line_chart(
     timestamps: Sequence[str] | None = None,
     events: Sequence[UsageEvent] = (),
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: renders one line chart as an inline SVG string (900x330 view box).
+    # Inputs: title, series as (name, values) pairs, keyword optional fixed y
+    # maximum, percent mode, per-request timestamps and events.
+    # The y maximum is the given value or the observed max (at least 1), rounded
+    # up to a multiple of its leading power of ten unless in percent mode. Draws
+    # six grid lines with tick labels, x tick labels (thinned beyond 20 points),
+    # a hidden hover line, an event line and marker per event (clamped to the
+    # request range, staggered vertically), one polyline and hidden hover point
+    # per series with exact value labels in data attributes, clickable legend
+    # toggles laid out right to left, and an x-axis label. Both dark and light
+    # colors are stored in data attributes for the page script. All text is HTML
+    # escaped. Output: SVG markup.
     """Render one interactive line chart as inline SVG."""
     width, height = 900, 330
     left, right, top, bottom = 68, 20, 42, 52
@@ -361,6 +455,9 @@ def _line_chart(
         maximum = ((maximum + magnitude - 1) // magnitude) * magnitude
 
     def point(index: int, value: float) -> tuple[float, float]:
+        # [FUNCTION DOC]
+        # HELPER: maps a request index and value to SVG x/y coordinates within the
+        # plot area.
         x = left + (index / max(count - 1, 1)) * plot_width
         y = top + plot_height - (value / maximum) * plot_height
         return x, y
@@ -448,6 +545,8 @@ def _line_chart(
 
 
 def _figure(chart: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: wraps chart markup in a figure with a PNG download button.
     return (
         f'<figure class="usage-figure">{chart}'
         '<button type="button" class="png-button" '
@@ -456,6 +555,15 @@ def _figure(chart: str) -> str:
 
 
 def render_usage_dashboard(usage: SessionUsage) -> str:
+    # [FUNCTION DOC]
+    # Renders the Usage tab markup. With no requests returns an "empty" message
+    # paragraph. Otherwise builds nine stat cards (requests, cache hit rate or
+    # N/A, cached, cache writes, fresh, total prompt, output, estimated cost,
+    # compactions), charts for prompt input (with event markers), cache hit rate
+    # per request and cumulative (only when caching occurred) and output vs
+    # reasoning, an explanatory note, a per-request table (hit rate shown as N/A
+    # when no caching occurred) and tool-call counts, plus a tooltip container.
+    # Output: HTML string. No side effects.
     """Render the usage dashboard markup for the export's Usage tab."""
     requests = usage.requests
     if not requests:

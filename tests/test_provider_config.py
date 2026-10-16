@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Tests for tau_coding.provider_config: loading/saving provider settings (built-in
+# catalog, user catalog.toml, providers.json preferences schema v2, legacy inline
+# providers), model metadata and cost tiers, scoped models, default provider/model
+# selection, thinking-level capabilities and defaults per provider/model, image support,
+# max tokens, credential usability checks, and conversion to runtime OpenAI-compatible /
+# Anthropic configs. Tests use temporary Tau home directories (see conftest isolation).
 import json
 from pathlib import Path
 
@@ -37,6 +44,10 @@ from tau_coding.thinking import ThinkingLevel
 
 
 def test_stale_preferences_cannot_restore_removed_codex_alias(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Preferences naming a removed Codex model ("gpt-5.6") as default and in thinking
+    # defaults are ignored: the Codex default falls back to "gpt-5.5" and the stale model
+    # appears neither in models nor thinking defaults.
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
     (tau_home / "providers.json").write_text(
@@ -66,6 +77,9 @@ def test_stale_preferences_cannot_restore_removed_codex_alias(tmp_path: Path) ->
 def test_load_provider_settings_accepts_huggingface_inference_provider_preferences(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Hugging Face preferences may carry per-model inference provider pins, which load onto
+    # the OpenAI-compatible provider config.
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
     (tau_home / "providers.json").write_text(
@@ -91,6 +105,9 @@ def test_load_provider_settings_accepts_huggingface_inference_provider_preferenc
 
 
 def test_load_provider_settings_missing_file_uses_openai_default(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Without a settings file, the default provider is "openai" and the built-in providers
+    # appear in a fixed order; spot-checks the default model and several API-key env vars.
     settings = load_provider_settings(TauPaths(home=tmp_path / ".tau"))
 
     assert settings.default_provider == "openai"
@@ -131,6 +148,8 @@ def test_load_provider_settings_missing_file_uses_openai_default(tmp_path: Path)
 
 
 def test_builtin_codex_preserves_model_input_capabilities() -> None:
+    # [FUNCTION DOC]
+    # Built-in Codex models support images except "gpt-5.3-codex-spark".
     codex = ProviderSettings().get_provider("openai-codex")
 
     for model in (
@@ -148,6 +167,10 @@ def test_builtin_codex_preserves_model_input_capabilities() -> None:
 
 
 def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
+    # [FUNCTION DOC]
+    # Checks built-in context windows and per-model thinking levels/defaults/unavailability
+    # reasons for OpenAI, OpenRouter, Hugging Face, Codex and Anthropic models (e.g.
+    # non-reasoning gpt-4.1 has no levels and an explanatory reason).
     settings = ProviderSettings()
     openai = settings.get_provider("openai")
     openrouter = settings.get_provider("openrouter")
@@ -234,6 +257,9 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
 def test_load_provider_settings_accepts_provider_preferences_with_user_catalog(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # A user catalog.toml provider plus providers.json preferences (headers, timeouts,
+    # retries, default model, scoped models) merge into the loaded settings.
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
     (tau_home / "catalog.toml").write_text(
@@ -284,6 +310,9 @@ docs_url = "http://localhost:11434/v1"
 
 
 def test_provider_settings_ignore_unknown_fields(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Unknown top-level and per-provider preference fields are ignored for forward
+    # compatibility.
     settings = provider_settings_from_json(
         {
             "default_provider": "openai",
@@ -305,6 +334,8 @@ def test_provider_settings_ignore_unknown_fields(tmp_path: Path) -> None:
 def test_load_provider_settings_ignores_preference_without_catalog_entry(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Preferences for a provider absent from every catalog do not create a provider.
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
     (tau_home / "providers.json").write_text(
@@ -327,6 +358,9 @@ def test_load_provider_settings_ignores_preference_without_catalog_entry(
 
 
 def test_llama_dot_cpp_and_llama_dash_cpp_are_distinct_provider_ids(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # "llama.cpp" and "llama-cpp" catalog entries are separate providers with their own base
+    # URLs, and scoped models serialise with the dotted name and colon model ids intact.
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
     (tau_home / "catalog.toml").write_text(
@@ -381,6 +415,9 @@ docs_url = "https://example.test/legacy-llama-cpp"
 
 
 def test_save_provider_settings_writes_backup_when_replacing(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Saving over an existing settings file keeps the previous content in a ".bak" sibling;
+    # the new file holds the update.
     paths = TauPaths(home=tmp_path / ".tau")
     initial = ProviderSettings(
         providers=(
@@ -419,6 +456,10 @@ def test_save_and_load_provider_settings_round_trip(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With the environment emptied (deterministic built-in filtering), saving then loading a
+    # custom-provider settings object round-trips exactly and writes schema version 2 to
+    # providers.json.
     # Isolate provider_config from the host environment so built-in provider
     # discovery (credential filtering) is deterministic and the loaded settings
     # contain only the user-saved providers.
@@ -453,6 +494,9 @@ def test_save_and_load_provider_settings_round_trip(
 
 
 def test_legacy_provider_model_cost_tiers_round_trip() -> None:
+    # [FUNCTION DOC]
+    # Legacy inline provider model metadata with cost and tiered costs parses and serialises
+    # back to the same cost tier list.
     raw = {
         "default_provider": "local",
         "providers": [
@@ -503,6 +547,9 @@ def test_legacy_provider_model_cost_tiers_round_trip() -> None:
 
 
 def test_legacy_provider_cost_tier_accepts_one_hour_cache_write_rate() -> None:
+    # [FUNCTION DOC]
+    # Cost tiers may include a 1-hour cache write rate; tiers without it omit the key so
+    # billing falls back to the normal cache write rate; round-trips unchanged.
     raw = {
         "default_provider": "local",
         "providers": [
@@ -620,6 +667,9 @@ def test_legacy_provider_rejects_invalid_cost_tiers(
     cost_tiers: list[dict[str, object]],
     match: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrised invalid tier lists (final tier with a limit, non-increasing limits,
+    # unknown fields, negative prices) raise ProviderConfigError with matching messages.
     raw = {
         "default_provider": "local",
         "providers": [
@@ -640,6 +690,9 @@ def test_legacy_provider_rejects_invalid_cost_tiers(
 
 
 def test_runtime_metadata_rejects_invalid_cost_tier_values() -> None:
+    # [FUNCTION DOC]
+    # Constructing a provider config with a negative runtime cost tier value raises
+    # ProviderConfigError.
     with pytest.raises(ProviderConfigError, match="cost tier values must be non-negative"):
         OpenAICompatibleProviderConfig(
             name="local",
@@ -663,6 +716,9 @@ def test_runtime_metadata_rejects_invalid_cost_tier_values() -> None:
 
 
 def test_provider_settings_parses_scoped_models() -> None:
+    # [FUNCTION DOC]
+    # Legacy provider context windows parse, and duplicate scoped model entries are
+    # de-duplicated preserving order.
     settings = provider_settings_from_json(
         {
             "default_provider": "local",
@@ -693,6 +749,10 @@ def test_provider_settings_parses_scoped_models() -> None:
 
 
 def test_upsert_openai_compatible_provider_replaces_and_sets_default() -> None:
+    # [FUNCTION DOC]
+    # Upserting a new provider adds it (providers sorted by name) and makes it default;
+    # upserting again with the same name replaces it (new default model) and leaves scoped
+    # models unchanged.
     settings = ProviderSettings(
         scoped_models=(ScopedModelConfig(provider="openai", model="gpt-5.5"),)
     )
@@ -726,6 +786,8 @@ def test_upsert_openai_compatible_provider_replaces_and_sets_default() -> None:
 
 
 def test_resolve_provider_selection_uses_configured_defaults() -> None:
+    # [FUNCTION DOC]
+    # With no explicit provider/model, selection uses the default provider and its default model.
     settings = ProviderSettings(
         default_provider="local",
         providers=(
@@ -746,11 +808,19 @@ def test_resolve_provider_selection_uses_configured_defaults() -> None:
 
 
 def test_resolve_provider_selection_rejects_unknown_provider() -> None:
+    # [FUNCTION DOC]
+    # Selecting an unknown provider raises ProviderConfigError "Unknown provider".
     with pytest.raises(ProviderConfigError, match="Unknown provider"):
         resolve_provider_selection(ProviderSettings(), provider_name="missing")
 
 
 def _kimi_code_like_provider() -> OpenAICompatibleProviderConfig:
+    # [FUNCTION DOC]
+    # HELPER: Build an OpenAI-compatible provider mirroring the catalog kimi-code entry:
+    # models k3 and kimi-for-coding, provider levels low/medium/high/xhigh with default
+    # xhigh via reasoning_effort; k3 maps low->low, high->high, xhigh->max (others
+    # unsupported) and kimi-for-coding maps every listed level to unsupported (leaving only
+    # the unlisted medium available).
     # Mirrors the catalog kimi-code entry: k3 supports low, high, and xhigh
     # mapped to "low", "high", "max" respectively.
     return OpenAICompatibleProviderConfig(
@@ -787,6 +857,9 @@ def _kimi_code_like_provider() -> OpenAICompatibleProviderConfig:
 
 
 def test_resolve_startup_thinking_level_uses_k3_max_default() -> None:
+    # [FUNCTION DOC]
+    # k3 does not support the global "medium" default, so startup uses the catalog default
+    # xhigh.
     provider = _kimi_code_like_provider()
 
     # K3 does not support the global "medium" default, so startup uses its
@@ -795,6 +868,8 @@ def test_resolve_startup_thinking_level_uses_k3_max_default() -> None:
 
 
 def test_resolve_startup_thinking_level_prefers_remembered_model_default() -> None:
+    # [FUNCTION DOC]
+    # A remembered per-model thinking default (xhigh for k3) is used at startup.
     provider = _kimi_code_like_provider()
     remembered = OpenAICompatibleProviderConfig(
         name=provider.name,
@@ -811,6 +886,8 @@ def test_resolve_startup_thinking_level_prefers_remembered_model_default() -> No
 
 
 def test_resolve_startup_thinking_level_keeps_supported_default() -> None:
+    # [FUNCTION DOC]
+    # kimi-for-coding exposes only "medium", which is chosen at startup.
     provider = _kimi_code_like_provider()
 
     # kimi-for-coding supports global medium but not K3's xhigh default.
@@ -819,6 +896,8 @@ def test_resolve_startup_thinking_level_keeps_supported_default() -> None:
 
 
 def test_resolve_startup_thinking_level_returns_none_without_levels() -> None:
+    # [FUNCTION DOC]
+    # A provider without thinking levels yields None.
     provider = OpenAICompatibleProviderConfig(
         name="local",
         models=("qwen",),
@@ -829,6 +908,8 @@ def test_resolve_startup_thinking_level_returns_none_without_levels() -> None:
 
 
 def test_resolve_startup_thinking_level_cli_override_wins_over_remembered() -> None:
+    # [FUNCTION DOC]
+    # A supported CLI override ("low") beats the remembered default.
     provider = _kimi_code_like_provider()
     remembered = OpenAICompatibleProviderConfig(
         name=provider.name,
@@ -845,6 +926,9 @@ def test_resolve_startup_thinking_level_cli_override_wins_over_remembered() -> N
 
 
 def test_resolve_startup_thinking_level_cli_override_errors_for_unsupported() -> None:
+    # [FUNCTION DOC]
+    # An unsupported CLI override raises ProviderConfigError naming the mode and
+    # provider:model.
     provider = _kimi_code_like_provider()
 
     # kimi-for-coding only supports "medium".
@@ -856,6 +940,9 @@ def test_resolve_startup_thinking_level_cli_override_errors_for_unsupported() ->
 
 
 def test_resolve_startup_thinking_level_cli_override_errors_without_levels() -> None:
+    # [FUNCTION DOC]
+    # Any CLI override for a model without thinking modes raises ProviderConfigError
+    # "Thinking modes are unavailable for <provider>:<model>".
     provider = OpenAICompatibleProviderConfig(
         name="local",
         models=("qwen",),
@@ -870,6 +957,8 @@ def test_resolve_startup_thinking_level_cli_override_errors_without_levels() -> 
 
 
 def test_resolve_startup_thinking_level_cli_override_none_preserves_behavior() -> None:
+    # [FUNCTION DOC]
+    # A None override behaves like no override (remembered default used).
     provider = _kimi_code_like_provider()
     remembered = OpenAICompatibleProviderConfig(
         name=provider.name,
@@ -886,6 +975,8 @@ def test_resolve_startup_thinking_level_cli_override_none_preserves_behavior() -
 
 
 def test_resolve_provider_selection_rejects_model_not_declared_for_provider() -> None:
+    # [FUNCTION DOC]
+    # Selecting an undeclared model raises ProviderConfigError "Model is not configured...".
     settings = ProviderSettings(
         default_provider="local",
         providers=(
@@ -907,6 +998,8 @@ def test_resolve_provider_selection_rejects_model_not_declared_for_provider() ->
 
 
 def test_set_default_provider_model_rejects_model_not_declared_for_provider() -> None:
+    # [FUNCTION DOC]
+    # Setting an undeclared default model raises the same ProviderConfigError.
     settings = ProviderSettings(
         default_provider="local",
         providers=(
@@ -930,6 +1023,8 @@ def test_set_default_provider_model_rejects_model_not_declared_for_provider() ->
 def test_runtime_config_uses_selected_model_image_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Runtime image support follows the selected model's metadata input modalities.
     monkeypatch.setenv("CUSTOM_API_KEY", "secret")
     provider = OpenAICompatibleProviderConfig(
         name="custom",
@@ -949,6 +1044,10 @@ def test_runtime_config_uses_selected_model_image_capability(
 def test_openai_compatible_config_from_provider_uses_configured_env_var(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Runtime config reads the API key from the configured env var, strips the trailing
+    # slash from the base URL, and uses default headers/timeout/retries with no response
+    # provider header.
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     provider = OpenAICompatibleProviderConfig(
         name="local",
@@ -973,6 +1072,8 @@ def test_openai_compatible_config_from_provider_uses_configured_env_var(
 def test_huggingface_runtime_config_captures_inference_provider_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # The huggingface provider config records the "x-inference-provider" response header.
     monkeypatch.setenv("HF_TEST_TOKEN", "test-key")
     provider = OpenAICompatibleProviderConfig(
         name="huggingface",
@@ -990,10 +1091,17 @@ def test_huggingface_runtime_config_captures_inference_provider_header(
 def test_openai_compatible_config_from_provider_preserves_openai_base_url_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # For the built-in "openai" provider the OPENAI_BASE_URL env var overrides the base URL
+    # (trailing slash stripped) and a stored credential supplies the key.
     monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.example/v1/")
 
     class FakeCredentials:
+        # [CLASS DOC]
+        # HELPER: Fake credential reader returning "stored-key" for "openai".
         def get(self, name: str) -> str | None:
+            # [FUNCTION DOC]
+            # HELPER: Return the stored key for "openai", else None.
             return "stored-key" if name == "openai" else None
 
     config = openai_compatible_config_from_provider(
@@ -1008,6 +1116,8 @@ def test_openai_compatible_config_from_provider_preserves_openai_base_url_env(
 def test_openai_compatible_config_from_provider_uses_configured_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Configured timeout, retries and retry delay pass through to the runtime config.
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     provider = OpenAICompatibleProviderConfig(
         name="local",
@@ -1030,6 +1140,8 @@ def test_openai_compatible_config_from_provider_uses_configured_timeout(
 def test_openai_compatible_config_from_provider_uses_configured_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Configured headers pass through to the runtime config.
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     provider = OpenAICompatibleProviderConfig(
         name="local",
@@ -1048,6 +1160,9 @@ def test_openai_compatible_config_from_provider_uses_configured_headers(
 def test_openai_compatible_config_from_provider_sets_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # For a thinking model, "off" maps to reasoning effort "none"; for a model not listed as
+    # a thinking model no reasoning effort is sent.
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     provider = OpenAICompatibleProviderConfig(
         name="local",
@@ -1079,6 +1194,9 @@ def test_openai_compatible_config_from_provider_sets_reasoning_effort(
 def test_zai_config_preserves_logical_effort_for_provider_serialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # The built-in zai provider keeps the logical effort ("high"), uses the "zai" thinking
+    # format, and marks reasoning_effort as unsupported in compat.
     monkeypatch.setenv("ZAI_API_KEY", "test-key")
     provider = load_provider_settings(TauPaths(home=Path("/missing"))).get_provider("zai")
 
@@ -1102,6 +1220,8 @@ def test_kimi_k3_maps_thinking_levels_to_reasoning_effort(
     level: ThinkingLevel,
     expected_effort: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrised: built-in kimi-code k3 exposes low/high/max and sends matching efforts.
     monkeypatch.setenv("KIMI_CODE_API_KEY", "test-key")
     settings = load_provider_settings(TauPaths(home=Path("/missing")))
     provider = settings.get_provider("kimi-code")
@@ -1125,6 +1245,8 @@ def test_huggingface_kimi_k3_maps_thinking_levels_to_reasoning_effort(
     level: ThinkingLevel,
     expected_effort: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrised: Hugging Face Kimi-K3 exposes low/high/max and sends matching efforts.
     monkeypatch.setenv("HF_TOKEN", "test-key")
     settings = load_provider_settings(TauPaths(home=Path("/missing")))
     provider = settings.get_provider("huggingface")
@@ -1146,6 +1268,8 @@ def test_huggingface_kimi_k3_maps_thinking_levels_to_reasoning_effort(
 def test_huggingface_glm_5_2_does_not_send_unverified_medium_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Hugging Face GLM-5.2 exposes off/high/max; startup defaults to "off", sending effort "none".
     monkeypatch.setenv("HF_TOKEN", "test-key")
     provider = load_provider_settings(TauPaths(home=Path("/missing"))).get_provider("huggingface")
 
@@ -1166,6 +1290,9 @@ def test_huggingface_glm_5_2_does_not_send_unverified_medium_effort(
 
 
 def test_stale_saved_glm_thinking_default_is_ignored(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A saved unsupported thinking default ("medium") for GLM-5.2 is dropped on load and
+    # startup falls back to "off".
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
     (tau_home / "providers.json").write_text(
@@ -1194,6 +1321,8 @@ def test_stale_saved_glm_thinking_default_is_ignored(tmp_path: Path) -> None:
 def test_openai_compatible_config_from_provider_rejects_unsupported_thinking_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Requesting an unsupported thinking level raises ProviderConfigError "not available".
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     provider = OpenAICompatibleProviderConfig(
         name="local",
@@ -1216,6 +1345,8 @@ def test_openai_compatible_config_from_provider_rejects_unsupported_thinking_lev
 def test_openai_compatible_config_from_provider_uses_stored_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # A stored credential takes precedence over the env var key.
     monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
     provider = OpenAICompatibleProviderConfig(
         name="openrouter",
@@ -1227,7 +1358,11 @@ def test_openai_compatible_config_from_provider_uses_stored_credential(
     )
 
     class FakeCredentials:
+        # [CLASS DOC]
+        # HELPER: Fake credential reader returning "stored-key" for "openrouter".
         def get(self, name: str) -> str | None:
+            # [FUNCTION DOC]
+            # HELPER: Return the stored key for "openrouter", else None.
             return "stored-key" if name == "openrouter" else None
 
     config = openai_compatible_config_from_provider(
@@ -1241,6 +1376,8 @@ def test_openai_compatible_config_from_provider_uses_stored_credential(
 def test_openai_compatible_config_from_provider_falls_back_to_env_when_stored_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # When no stored credential exists, the env var key is used.
     monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
     provider = OpenAICompatibleProviderConfig(
         name="openrouter",
@@ -1252,7 +1389,11 @@ def test_openai_compatible_config_from_provider_falls_back_to_env_when_stored_mi
     )
 
     class FakeCredentials:
+        # [CLASS DOC]
+        # HELPER: Fake credential reader with no stored credentials.
         def get(self, name: str) -> str | None:
+            # [FUNCTION DOC]
+            # HELPER: Always return None.
             return None
 
     config = openai_compatible_config_from_provider(provider, credential_reader=FakeCredentials())
@@ -1263,6 +1404,9 @@ def test_openai_compatible_config_from_provider_falls_back_to_env_when_stored_mi
 def test_provider_has_usable_credentials_checks_stored_key_and_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Usable credentials are reported when either a stored key or the env var exists, and
+    # not when neither does.
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     provider = OpenAICompatibleProviderConfig(
         name="openrouter",
@@ -1271,11 +1415,19 @@ def test_provider_has_usable_credentials_checks_stored_key_and_env(
     )
 
     class EmptyCredentials:
+        # [CLASS DOC]
+        # HELPER: Fake credential reader with no stored credentials.
         def get(self, name: str) -> str | None:
+            # [FUNCTION DOC]
+            # HELPER: Always return None.
             return None
 
     class StoredCredentials:
+        # [CLASS DOC]
+        # HELPER: Fake credential reader holding a key for "openrouter".
         def get(self, name: str) -> str | None:
+            # [FUNCTION DOC]
+            # HELPER: Return "stored-key" for "openrouter", else None.
             return "stored-key" if name == "openrouter" else None
 
     assert not provider_has_usable_credentials(provider, credential_reader=EmptyCredentials())
@@ -1289,11 +1441,17 @@ def test_provider_has_usable_credentials_checks_stored_key_and_env(
 def test_anthropic_config_from_provider_uses_stored_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # The Anthropic runtime config uses a stored credential and the default Anthropic base URL.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     provider = AnthropicProviderConfig(credential_name="anthropic")
 
     class FakeCredentials:
+        # [CLASS DOC]
+        # HELPER: Fake credential reader holding an Anthropic key.
         def get(self, name: str) -> str | None:
+            # [FUNCTION DOC]
+            # HELPER: Return the stored key for "anthropic", else None.
             return "stored-anthropic-key" if name == "anthropic" else None
 
     config = anthropic_config_from_provider(provider, credential_reader=FakeCredentials())
@@ -1305,6 +1463,8 @@ def test_anthropic_config_from_provider_uses_stored_credential(
 def test_anthropic_config_from_provider_sets_thinking_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Budget-style Anthropic thinking: "off" sets no budget; "high" sets 8192 tokens.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     provider = AnthropicProviderConfig(
         thinking_levels=("off", "low", "high"),
@@ -1322,6 +1482,9 @@ def test_anthropic_config_from_provider_sets_thinking_budget(
 def test_anthropic_config_from_provider_maps_opus_5_adaptive_thinking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # For claude-opus-5, "off" disables thinking with no effort; other levels use adaptive
+    # thinking with the matching effort (medium, xhigh).
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     provider = ProviderSettings().get_provider("anthropic")
     assert isinstance(provider, AnthropicProviderConfig)
@@ -1347,6 +1510,9 @@ def test_anthropic_config_from_provider_maps_opus_5_adaptive_thinking(
 def test_anthropic_config_from_provider_sets_model_max_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Built-in Anthropic models carry per-model max output tokens (opus-5 128000, haiku-4-5
+    # 64000) into the runtime config.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     provider = ProviderSettings().get_provider("anthropic")
     assert isinstance(provider, AnthropicProviderConfig)
@@ -1361,6 +1527,8 @@ def test_anthropic_config_from_provider_sets_model_max_tokens(
 def test_anthropic_config_from_provider_omits_unknown_model_max_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # A bare Anthropic config without model metadata sends no max tokens.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     provider = AnthropicProviderConfig()
 
@@ -1370,6 +1538,9 @@ def test_anthropic_config_from_provider_omits_unknown_model_max_tokens(
 
 
 def test_provider_model_max_tokens_reads_model_metadata() -> None:
+    # [FUNCTION DOC]
+    # Max tokens come from model metadata; missing metadata yields None; omitting the model
+    # uses the default model.
     provider = AnthropicProviderConfig(
         models=("capped", "uncapped"),
         default_model="capped",
@@ -1396,6 +1567,9 @@ def test_openai_compatible_config_from_provider_sets_reasoning_parameter(
     parameter: str,
     expected: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrised: the configured reasoning parameter style ("reasoning_effort" or
+    # "reasoning.effort") is passed through along with the effort.
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     provider = OpenAICompatibleProviderConfig(
         name="local",
@@ -1418,6 +1592,8 @@ def test_openai_compatible_config_from_provider_sets_reasoning_parameter(
 
 
 def test_provider_settings_from_json_loads_headers() -> None:
+    # [FUNCTION DOC]
+    # Legacy inline provider headers are loaded.
     settings = provider_settings_from_json(
         {
             "default_provider": "huggingface",
@@ -1443,6 +1619,9 @@ def test_provider_settings_from_json_loads_headers() -> None:
 
 
 def test_provider_settings_from_json_loads_custom_thinking_capabilities() -> None:
+    # [FUNCTION DOC]
+    # Legacy inline thinking settings load: levels only for thinking models, provider
+    # default level, remembered per-model defaults, and the thinking parameter serialises.
     settings = provider_settings_from_json(
         {
             "default_provider": "local",
@@ -1475,6 +1654,9 @@ def test_provider_settings_from_json_loads_custom_thinking_capabilities() -> Non
 
 
 def test_set_provider_thinking_level_updates_preference() -> None:
+    # [FUNCTION DOC]
+    # Setting a model's thinking level stores it in thinking defaults and in the serialised
+    # provider preferences.
     provider = OpenAICompatibleProviderConfig(
         name="local",
         models=("reasoner",),
@@ -1500,6 +1682,9 @@ def test_set_provider_thinking_level_updates_preference() -> None:
 
 
 def test_provider_settings_from_json_loads_openai_codex_provider() -> None:
+    # [FUNCTION DOC]
+    # A legacy inline "openai-codex" entry becomes an OpenAICodexProviderConfig with its
+    # default model and headers.
     settings = provider_settings_from_json(
         {
             "default_provider": "openai-codex",
@@ -1526,6 +1711,9 @@ def test_provider_settings_from_json_loads_openai_codex_provider() -> None:
 
 
 def test_provider_settings_from_json_loads_anthropic_thinking_provider() -> None:
+    # [FUNCTION DOC]
+    # A legacy inline Anthropic entry with thinking settings becomes an
+    # AnthropicProviderConfig exposing those levels and parameter.
     settings = provider_settings_from_json(
         {
             "default_provider": "anthropic",
@@ -1559,6 +1747,10 @@ def test_provider_settings_from_json_loads_anthropic_thinking_provider() -> None
 def test_load_provider_settings_does_not_restore_stale_codex_builtin_models(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Loading a legacy file with stale Codex models uses the current built-in Codex model
+    # list and default, migrates the file to schema v2 preferences (no inline providers),
+    # writes a backup and creates no user catalog for built-ins.
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
     (tau_home / "providers.json").write_text(
@@ -1615,6 +1807,9 @@ def test_load_provider_settings_does_not_restore_stale_codex_builtin_models(
 
 
 def test_load_provider_settings_merges_builtin_model_catalog(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A legacy built-in Hugging Face entry keeps user headers/default but takes models and
+    # context windows from the built-in catalog (custom unknown models dropped).
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
     (tau_home / "providers.json").write_text(
@@ -1653,6 +1848,9 @@ def test_load_provider_settings_migrates_custom_provider_to_catalog(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Legacy custom providers migrate: original saved as backup, providers.json rewritten as
+    # schema v2 preferences, and the provider definition moved into catalog.toml.
     monkeypatch.setattr(provider_config, "environ", {})
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
@@ -1692,6 +1890,9 @@ def test_legacy_migration_aborts_before_changes_when_backup_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # If creating the migration backup fails (copy patched to raise PermissionError), the
+    # error propagates and no files are changed or created.
     monkeypatch.setattr(provider_config, "environ", {})
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
@@ -1712,6 +1913,8 @@ def test_legacy_migration_aborts_before_changes_when_backup_fails(
     settings_path.write_text(json.dumps(original), encoding="utf-8")
 
     def fail_backup(*_args: object, **_kwargs: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Stand-in copy function that always raises PermissionError("backup denied").
         raise PermissionError("backup denied")
 
     monkeypatch.setattr(provider_config, "copy2", fail_backup)
@@ -1728,6 +1931,10 @@ def test_load_provider_settings_restores_builtin_providers_with_stored_credentia
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With an empty environment, only built-in providers with stored credentials (openrouter
+    # key, openai-codex OAuth) are restored alongside the custom provider, with credential
+    # names set; the custom default remains.
     # Isolate from the host environment so built-in provider discovery depends
     # only on the credential store, not on stray env vars (e.g. GEMINI_API_KEY).
     monkeypatch.setattr(provider_config, "environ", {})
@@ -1783,6 +1990,9 @@ def test_load_provider_settings_restores_builtin_credential_name(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # A legacy built-in openrouter entry with a null credential name gets its built-in
+    # credential name and catalog context windows restored, so stored keys are used.
     monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
     tau_home = tmp_path / ".tau"
     tau_home.mkdir()
@@ -1807,7 +2017,11 @@ def test_load_provider_settings_restores_builtin_credential_name(
     )
 
     class FakeCredentials:
+        # [CLASS DOC]
+        # HELPER: Fake credential reader holding a key for "openrouter".
         def get(self, name: str) -> str | None:
+            # [FUNCTION DOC]
+            # HELPER: Return "stored-key" for "openrouter", else None.
             return "stored-key" if name == "openrouter" else None
 
     settings = load_provider_settings(TauPaths(home=tau_home))
@@ -1824,6 +2038,8 @@ def test_load_provider_settings_restores_builtin_credential_name(
 
 
 def test_provider_settings_from_json_rejects_unknown_schema_version() -> None:
+    # [FUNCTION DOC]
+    # An unsupported schema_version raises ProviderConfigError mentioning schema_version.
     with pytest.raises(ProviderConfigError, match="schema_version"):
         provider_settings_from_json(
             {
@@ -1835,6 +2051,8 @@ def test_provider_settings_from_json_rejects_unknown_schema_version() -> None:
 
 
 def test_provider_settings_from_json_rejects_invalid_headers() -> None:
+    # [FUNCTION DOC]
+    # Non-string header values raise ProviderConfigError ("string object").
     with pytest.raises(ProviderConfigError, match="string object"):
         provider_settings_from_json(
             {
@@ -1855,6 +2073,8 @@ def test_provider_settings_from_json_rejects_invalid_headers() -> None:
 
 
 def test_provider_settings_from_json_rejects_invalid_timeout() -> None:
+    # [FUNCTION DOC]
+    # A zero timeout in JSON raises ProviderConfigError ("greater than 0").
     with pytest.raises(ProviderConfigError, match="greater than 0"):
         provider_settings_from_json(
             {
@@ -1875,11 +2095,15 @@ def test_provider_settings_from_json_rejects_invalid_timeout() -> None:
 
 
 def test_openai_compatible_provider_config_rejects_invalid_timeout() -> None:
+    # [FUNCTION DOC]
+    # Constructing a config with a zero timeout raises ProviderConfigError.
     with pytest.raises(ProviderConfigError, match="greater than 0"):
         OpenAICompatibleProviderConfig(name="local", timeout_seconds=0)
 
 
 def test_provider_settings_from_json_rejects_invalid_retries() -> None:
+    # [FUNCTION DOC]
+    # Negative max retries in JSON raise ProviderConfigError ("0 or greater").
     with pytest.raises(ProviderConfigError, match="0 or greater"):
         provider_settings_from_json(
             {
@@ -1900,6 +2124,8 @@ def test_provider_settings_from_json_rejects_invalid_retries() -> None:
 
 
 def test_openai_compatible_provider_config_rejects_invalid_retries() -> None:
+    # [FUNCTION DOC]
+    # Negative max retries or retry delay in a constructed config raise ProviderConfigError.
     with pytest.raises(ProviderConfigError, match="0 or greater"):
         OpenAICompatibleProviderConfig(name="local", max_retries=-1)
     with pytest.raises(ProviderConfigError, match="0 or greater"):
