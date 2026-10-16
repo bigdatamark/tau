@@ -1,3 +1,6 @@
+# [MODULE DOC]
+# Tests for the tau_ai HTTP helpers: SOCKS proxy URL normalization, temporary environment
+# rewriting, and async client creation with a generic SOCKS proxy configured.
 import os
 
 import httpx
@@ -7,6 +10,9 @@ from tau_ai.http import create_async_client, normalize_proxy_url, normalized_pro
 
 
 def test_normalize_proxy_url_converts_generic_socks_scheme() -> None:
+    # [FUNCTION DOC]
+    # Verify that "socks://" URLs (any case, with or without credentials) become "socks5://" with
+    # host, port and credentials preserved.
     assert normalize_proxy_url("socks://127.0.0.1:1080") == "socks5://127.0.0.1:1080"
     assert normalize_proxy_url("SOCKS://user:pass@proxy.local:1080") == (
         "socks5://user:pass@proxy.local:1080"
@@ -14,6 +20,8 @@ def test_normalize_proxy_url_converts_generic_socks_scheme() -> None:
 
 
 def test_normalize_proxy_url_leaves_explicit_schemes_unchanged() -> None:
+    # [FUNCTION DOC]
+    # Verify that socks5, socks5h and http proxy URLs are returned unchanged.
     assert normalize_proxy_url("socks5://127.0.0.1:1080") == "socks5://127.0.0.1:1080"
     assert normalize_proxy_url("socks5h://127.0.0.1:1080") == "socks5h://127.0.0.1:1080"
     assert normalize_proxy_url("http://127.0.0.1:8080") == "http://127.0.0.1:8080"
@@ -22,6 +30,9 @@ def test_normalize_proxy_url_leaves_explicit_schemes_unchanged() -> None:
 def test_normalized_proxy_environment_restores_original_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # With ALL_PROXY set to a generic socks URL, verify it reads as socks5 inside the context
+    # manager and reverts to the original value afterwards. Uses monkeypatch to set the variable.
     monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080")
 
     with normalized_proxy_environment():
@@ -34,6 +45,10 @@ def test_normalized_proxy_environment_restores_original_value(
 async def test_create_async_client_accepts_generic_socks_proxy_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: with ALL_PROXY set to a generic socks URL, verify creating an async client
+    # succeeds and returns an httpx async client, closes it, and verify the environment variable
+    # is restored to its original value.
     monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080")
 
     client = create_async_client(timeout=1)

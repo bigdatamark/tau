@@ -1,3 +1,15 @@
+# [MODULE DOC]
+# Session export helpers: write a session's entries as JSONL or as a single self-contained HTML
+# page for humans. The HTML has inline CSS (Tau light/dark theme variables, prefers-color-scheme
+# support), a header with title/source/generated time, an optional collapsible system prompt, tabs
+# for Transcript and Usage, a filter bar (show tools / show events chips with counts, expand-all
+# toggle, JSONL download button), a sidebar tree rail of the session tree (single-child chains
+# flattened, nested lists only at forks, active path/leaf highlighted, bookmark labels), an entry
+# stream of collapsible per-entry details, the usage dashboard from session_usage, the full JSONL
+# embedded as base64 for download, and inline JavaScript (theme toggle persisted in localStorage
+# and announced with a "tau-themechange" event, filters, accordion toggle, deep-link opening,
+# ARIA tabs with arrow keys and #usage/#cache hashes). No external resources are referenced.
+# Hidden custom messages are omitted from view but kept in the embedded JSONL.
 """Session export helpers for human-readable transcript views."""
 
 from __future__ import annotations
@@ -52,10 +64,14 @@ from tau_coding.tui.themes import TAU_DARK_THEME, TAU_LIGHT_THEME, TuiTheme
 
 
 class SessionExportError(ValueError):
+    # [CLASS DOC]
+    # Exception (a ValueError) raised when a session cannot be exported, e.g. unsupported format.
     """Raised when a session cannot be exported."""
 
 
 def default_session_export_path(session_path: Path) -> Path:
+    # [FUNCTION DOC]
+    # Return the session file path with its suffix replaced by ".html". Pure.
     """Return the default HTML export path for a JSONL session file."""
     return session_path.with_suffix(".html")
 
@@ -66,12 +82,18 @@ def default_session_export_artifact_path(
     destination_dir: Path,
     format: str = "html",
 ) -> Path:
+    # [FUNCTION DOC]
+    # Return destination_dir / (session file stem + ".jsonl" or ".html" for the format, default html).
+    # Raises SessionExportError for unsupported formats. Pure.
     """Return the default user-facing export artifact path."""
     suffix = _export_suffix(format)
     return destination_dir / f"{session_path.stem}{suffix}"
 
 
 def export_session_jsonl(entries: Sequence[SessionEntry], output_path: Path) -> Path:
+    # [FUNCTION DOC]
+    # Write entries as JSONL to the output path (creating parent dirs) and return the path.
+    # Side effects: filesystem writes; OS errors propagate.
     """Write session entries to a JSONL export and return its path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(_session_jsonl_text(entries), encoding="utf-8")
@@ -79,6 +101,8 @@ def export_session_jsonl(entries: Sequence[SessionEntry], output_path: Path) -> 
 
 
 def _session_jsonl_text(entries: Sequence[SessionEntry]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Serialize each entry to compact JSON, one per line, with a trailing newline when non-empty.
     """Serialize session entries to JSONL text (one JSON object per line)."""
     lines = [entry.model_dump_json() for entry in entries]
     return "\n".join(lines) + ("\n" if lines else "")
@@ -92,6 +116,10 @@ def export_session_html(
     source: str | None = None,
     system_prompt: str | None = None,
 ) -> Path:
+    # [FUNCTION DOC]
+    # Render the HTML export (title default "Tau Session Export", optional source label and system
+    # prompt), write it UTF-8 to the output path (creating parent dirs) and return the path.
+    # Side effects: filesystem writes.
     """Write a self-contained HTML session export and return its path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -115,6 +143,11 @@ def export_session_artifact(
     format: str | None = None,
     system_prompt: str | None = None,
 ) -> Path:
+    # [FUNCTION DOC]
+    # Export in the explicit format or, if None, the format inferred from the output suffix; JSONL
+    # writes JSONL, otherwise HTML (with title/source/system prompt). Returns the output path.
+    # Raises SessionExportError for unsupported formats (including an unrecognized or empty-but-
+    # not-defaulted suffix such as ".txt"). Side effects: filesystem writes.
     """Write a session export in the requested or inferred format."""
     export_format = normalize_export_format(format or output_path.suffix.removeprefix("."))
     if export_format == "jsonl":
@@ -129,6 +162,9 @@ def export_session_artifact(
 
 
 def normalize_export_format(value: str | None) -> str:
+    # [FUNCTION DOC]
+    # Normalize a format name: None/empty means "html"; trimmed, lowercased, leading dot removed;
+    # "htm"/"html" -> "html", "jsonl" -> "jsonl". Raises SessionExportError otherwise.
     """Normalize a session export format name."""
     normalized = (value or "html").strip().lower().removeprefix(".")
     if normalized in {"htm", "html"}:
@@ -139,10 +175,16 @@ def normalize_export_format(value: str | None) -> str:
 
 
 def _export_suffix(format: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return ".jsonl" for the jsonl format, otherwise ".html"; raises for unsupported formats.
     return ".jsonl" if normalize_export_format(format) == "jsonl" else ".html"
 
 
 def _jsonl_filename(title: str, source: str | None) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Filename for the in-page JSONL download: source path stem + ".jsonl" when a non-empty
+    # stem exists; else a lowercase hyphen slug of the title (non-alphanumerics collapsed, edges
+    # trimmed), or "tau-session" when empty, plus ".jsonl".
     """Return the filename used by the in-page JSONL download button."""
     if source:
         stem = Path(source).stem
@@ -153,6 +195,10 @@ def _jsonl_filename(title: str, source: str | None) -> str:
 
 
 def _export_theme_css(theme: TuiTheme) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Map a TUI theme's colors to the export's CSS custom property declarations (bg, canvas,
+    # surface, surface-2, text, bright, muted, line, line-strong, accent, accent-text, accent-soft,
+    # danger, code-bg), one indented line each, joined by newlines.
     """Map a built-in TUI theme to the export's semantic CSS variables."""
     return "\n".join(
         (
@@ -181,6 +227,20 @@ def render_session_html(
     source: str | None = None,
     system_prompt: str | None = None,
 ) -> str:
+    # [FUNCTION DOC]
+    # Render entries as a standalone HTML document string.
+    # Inputs: entries; keyword title, optional source path label, optional system prompt text.
+    # Behavior: active leaf = last non-leaf-pointer entry; active path = its ancestry (or just itself
+    # if the tree is broken). Visible entries drop hidden custom messages, re-parenting children to
+    # the nearest visible ancestor. The visible active leaf is the last visible entry on the active
+    # path. The tree rail uses visible non-leaf-pointer entries with resolved bookmark labels; the
+    # entry stream uses all visible entries (numbered from 01). Tool/event counts come from the
+    # filter-kind classification. Usage is collected from the active-path entries (or all entries if
+    # none). The generation timestamp is the current UTC time (seconds precision). The full original
+    # entry list is embedded as base64 JSONL. Output: the HTML text. No I/O beyond reading the clock.
+    # KNOWN ISSUE: the download filename is HTML-attribute-escaped but inserted into a JavaScript
+    # string literal, so names containing quotes/ampersands become entity text and backslashes are
+    # not escaped for JavaScript.
     """Render a session transcript/tree as standalone HTML."""
     entry_list = list(entries)
     active_leaf_id = _active_leaf_id(entry_list)
@@ -1072,6 +1132,9 @@ def render_session_html(
 
 
 def _render_system_prompt(system_prompt: str | None) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return "" for None; otherwise a closed details element titled "System Prompt" with a
+    # "May include project instructions" warning and the HTML-escaped prompt in a pre block.
     """Render live request configuration separately from transcript entries."""
     if system_prompt is None:
         return ""
@@ -1086,6 +1149,10 @@ def _render_system_prompt(system_prompt: str | None) -> str:
 
 
 def _visible_export_entries(entries: list[SessionEntry]) -> list[SessionEntry]:
+    # [FUNCTION DOC]
+    # HELPER: Remove custom-message entries whose display flag is false. For each remaining entry,
+    # walk up through hidden parents (guarding cycles) to the nearest non-hidden ancestor id (or None)
+    # and return a copy with that parent id when it changed; otherwise the original entry. Order kept.
     """Hide presentation-only entries while preserving visible tree ancestry."""
     entries_by_id = {entry.id: entry for entry in entries}
     hidden_ids = {
@@ -1110,6 +1177,9 @@ def _visible_export_entries(entries: list[SessionEntry]) -> list[SessionEntry]:
 
 
 def _active_leaf_id(entries: Sequence[SessionEntry]) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the id of the last entry that is not a leaf pointer, or None if there is none.
+    # Leaf-pointer entries are treated as legacy and ignored for choosing the active leaf.
     for entry in reversed(entries):
         if not isinstance(entry, LeafEntry):
             return entry.id
@@ -1117,6 +1187,9 @@ def _active_leaf_id(entries: Sequence[SessionEntry]) -> str | None:
 
 
 def _active_path_ids(entries: list[SessionEntry], active_leaf_id: str | None) -> set[str]:
+    # [FUNCTION DOC]
+    # HELPER: Return the set of entry ids on the root-to-leaf path for the active leaf; empty for None;
+    # just the leaf id when the path cannot be resolved (session tree error).
     if active_leaf_id is None:
         return set()
     try:
@@ -1131,6 +1204,11 @@ def _render_tree(
     active_leaf_id: str | None,
     labels_by_id: dict[str, str],
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render the sidebar tree as a nested ordered list. Returns an "No entries." paragraph when
+    # empty. Groups entries by parent; roots are entries with no parent or a parent absent from the
+    # list (all entries if none qualify). Renders each unrendered root as a flattened chain; any
+    # entries still unrendered (cycles) are grouped under an "Unreachable entries" item.
     if not entries:
         return '<p class="empty">No entries.</p>'
 
@@ -1194,6 +1272,12 @@ def _render_tree_chain(
     ancestors: set[str],
     rendered_ids: set[str],
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render a start entry and its single-child descendants as sibling list items (iterative,
+    # so long linear histories do not recurse deeply). Children already in the chain's ancestry are
+    # skipped to avoid cycles. Where a node has zero or several children the chain stops; multiple
+    # children are rendered recursively as a nested ordered list under the last chain item. Mutates
+    # the shared rendered-id set. Returns concatenated HTML.
     """Render `start` and its unbranched descendants as flat sibling `<li>`s.
 
     Session history is usually a straight line, so a naive tree renders one
@@ -1251,6 +1335,10 @@ def _render_tree_node(
     active_leaf_id: str | None,
     labels_by_id: dict[str, str],
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render one tree list item with tree-node/active-path/active-leaf classes and filter-kind
+    # data attribute, a link to the entry anchor with an aria-label (bookmark prefixed in brackets),
+    # the entry icon, an escaped bookmark span when labeled, the tree label, then nested HTML.
     classes = ["tree-node"]
     if entry.id in active_path_ids:
         classes.append("active-path")
@@ -1278,6 +1366,8 @@ def _render_entry_details(
     active_path_ids: set[str],
     active_leaf_id: str | None,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render all entries as detail blocks numbered from 1, or a "No session entries" paragraph.
     if not entries:
         return '<p class="empty">No session entries were found.</p>'
 
@@ -1298,6 +1388,11 @@ def _render_entry_detail(
     active_path_ids: set[str],
     active_leaf_id: str | None,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render one entry as a closed details element with id "entry-ID", classes entry plus
+    # active-entry (when on the active path or the active leaf) and is-error (error tool results), the
+    # filter-kind attribute; the summary row shows icon, "NN · title", preview, status text and short
+    # UTC time; the body shows id, parent link, full ISO timestamp and the entry-type-specific body.
     classes = ["entry"]
     status_bits = []
     if entry.id in active_path_ids:
@@ -1343,6 +1438,12 @@ def _render_entry_detail(
 
 
 def _render_entry_body(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render the body HTML for an entry by type: messages (delegated), custom messages (content
+    # plus optional details JSON block), model and thinking-level changes, compaction (first kept entry
+    # or legacy note, summary, optional usage with camelCase aliases), branch summary (branch root,
+    # summary, optional usage), label set/clear with target link, leaf pointer, session info (title,
+    # cwd, created time), custom data entries (JSON block with field count), else pretty JSON dump.
     if isinstance(entry, MessageEntry):
         return _render_message_entry(entry)
     if isinstance(entry, CustomMessageEntry):
@@ -1416,6 +1517,11 @@ def _render_entry_body(entry: SessionEntry) -> str:
 
 
 def _render_message_entry(entry: MessageEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render a message entry body: user text in pre; assistant content as optional
+    # "model -> response provider" line, thinking blocks, text, and tool-call blocks (call id plus
+    # highlighted arguments) or a "(no assistant text)" placeholder; tool results with call id,
+    # ok/error flag, text and optional details JSON; other messages as pretty JSON.
     message = entry.message
     if isinstance(message, UserMessage):
         return f"<pre>{_escape(message.text)}</pre>"
@@ -1473,6 +1579,10 @@ def _render_block(
     extra_classes: str = "",
     icon: str = "",
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render a collapsible details block with classes "block" plus extras, a summary with
+    # optional raw icon HTML, the title (inserted as raw HTML, callers must escape), optional escaped
+    # hint, and the raw body HTML.
     """Render a collapsible content block inside an entry body."""
     classes = f"block {extra_classes}".strip()
     hint_html = f'<span class="block-hint">{_escape(hint)}</span>' if hint else ""
@@ -1486,6 +1596,9 @@ def _render_block(
 
 
 def _render_list(title: str, values: Sequence[str]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render an escaped h4 title and an unordered list of escaped code items; "" when empty.
+    # KNOWN ISSUE: appears unused within the codebase (dead code).
     if not values:
         return ""
     return (
@@ -1586,6 +1699,10 @@ _ICON_DOWNLOAD = (
 
 
 def _entry_icon(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Choose the inline SVG icon for an entry: user icon for custom and user messages, tool icon
+    # for tool results and tool-only assistants, assistant icon otherwise for assistants, model icon for
+    # model/thinking changes, branch icon for compaction/branch summary, label, info, else generic.
     if isinstance(entry, CustomMessageEntry):
         return _ICON_USER
     if isinstance(entry, MessageEntry):
@@ -1609,12 +1726,18 @@ def _entry_icon(entry: SessionEntry) -> str:
 
 
 def _entry_parent_html(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return a "root" span when the entry has no parent, else a link to the parent's anchor.
     if entry.parent_id is None:
         return '<span class="empty">root</span>'
     return f'<a href="#entry-{_attr(entry.parent_id)}"><code>{_escape(entry.parent_id)}</code></a>'
 
 
 def _entry_title(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return the human title for an entry type (e.g. "User", "Assistant", "Tool: NAME",
+    # "Custom message: TYPE", "Model change", "Compaction", "Leaf pointer", "Custom: NAMESPACE"),
+    # falling back to the message role or entry type string.
     if isinstance(entry, CustomMessageEntry):
         return f"Custom message: {entry.custom_type}"
     if isinstance(entry, MessageEntry):
@@ -1646,6 +1769,11 @@ def _entry_title(entry: SessionEntry) -> str:
 
 
 def _entry_preview(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return a short one-line preview for the collapsed row: summarized text for messages,
+    # custom messages and summaries; comma-joined tool names for tool-only assistants; the model,
+    # thinking level (or "off"), label (or "cleared TARGET"), leaf target (or "none"), session title/cwd,
+    # field count for custom data; else the entry id.
     """Return a short one-line preview shown on the collapsed entry row."""
     if isinstance(entry, CustomMessageEntry):
         return _summarize_text(content_text(entry.content))
@@ -1674,6 +1802,9 @@ def _entry_preview(entry: SessionEntry) -> str:
 
 
 def _resolved_labels(entries: Sequence[SessionEntry]) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: Replay label entries in order to build a mapping from target id to current non-empty
+    # (stripped) label; an empty or missing label clears the target.
     labels: dict[str, str] = {}
     for entry in entries:
         if not isinstance(entry, LabelEntry):
@@ -1687,6 +1818,10 @@ def _resolved_labels(entries: Sequence[SessionEntry]) -> dict[str, str]:
 
 
 def _entry_tree_label(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Sidebar label: "custom message: preview" for custom messages; the tool name for tool
+    # results; comma-joined call names for tool-only assistants; otherwise "lowercased title: summary"
+    # (or just the title when the summary is empty).
     """Return the sidebar label: just the tool name for tool entries."""
     if isinstance(entry, CustomMessageEntry):
         summary = _entry_preview(entry)
@@ -1706,6 +1841,9 @@ def _entry_tree_label(entry: SessionEntry) -> str:
 
 
 def _is_tool_only_assistant(message: object) -> TypeGuard[AssistantMessage]:
+    # [FUNCTION DOC]
+    # HELPER: Type guard; True when the value is an assistant message with at least one tool call and
+    # no non-blank text or thinking blocks.
     """Whether an assistant message carries only tool calls (no text/thinking)."""
     return (
         isinstance(message, AssistantMessage)
@@ -1719,6 +1857,8 @@ def _is_tool_only_assistant(message: object) -> TypeGuard[AssistantMessage]:
 
 
 def _entry_is_error(entry: SessionEntry) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True when the entry is a message entry holding an error tool result.
     return (
         isinstance(entry, MessageEntry)
         and isinstance(entry.message, ToolResultMessage)
@@ -1727,6 +1867,9 @@ def _entry_is_error(entry: SessionEntry) -> bool:
 
 
 def _entry_filter_kind(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Classify for filters: "tool" for tool results and tool-only assistants, "message" for
+    # other messages and custom messages, "event" for everything else.
     if isinstance(entry, CustomMessageEntry):
         return "message"
     if isinstance(entry, MessageEntry):
@@ -1740,6 +1883,9 @@ def _entry_filter_kind(entry: SessionEntry) -> str:
 
 
 def _summarize_text(text: str, *, limit: int = 110) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Collapse all whitespace to single spaces; if longer than the limit (default 110),
+    # truncate to limit-3 characters (right-stripped) and append "...".
     summary = " ".join(text.split())
     if len(summary) <= limit:
         return summary
@@ -1747,6 +1893,8 @@ def _summarize_text(text: str, *, limit: int = 110) -> str:
 
 
 def _json_dump(value: JSONValue) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Pretty JSON dump with 2-space indent and sorted keys. Raises TypeError for non-JSON values.
     return json.dumps(value, indent=2, sort_keys=True)
 
 
@@ -1755,6 +1903,10 @@ _HIGHLIGHT_FORMATTER = HtmlFormatter(nowrap=True)
 
 
 def _render_json_block(value: JSONValue) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Pretty-print a JSON value and syntax-highlight it with Pygments (JSON lexer, nowrap HTML
+    # formatter) inside a pre with class "highlight"; on any highlighting error fall back to an escaped
+    # plain pre block.
     """Render a JSON payload as a syntax-highlighted, self-contained <pre> block."""
     source = _json_dump(value)
     try:
@@ -1765,16 +1917,24 @@ def _render_json_block(value: JSONValue) -> str:
 
 
 def _format_timestamp(timestamp: float) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Format a Unix timestamp as an ISO-8601 UTC string without microseconds.
     return datetime.fromtimestamp(timestamp, tz=UTC).replace(microsecond=0).isoformat()
 
 
 def _format_time_short(timestamp: float) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Format a Unix timestamp as UTC "HH:MM:SS".
     return datetime.fromtimestamp(timestamp, tz=UTC).strftime("%H:%M:%S")
 
 
 def _escape(value: object) -> str:
+    # [FUNCTION DOC]
+    # HELPER: HTML-escape the string form of a value for text content (quotes left as is).
     return html.escape(str(value), quote=False)
 
 
 def _attr(value: object) -> str:
+    # [FUNCTION DOC]
+    # HELPER: HTML-escape the string form of a value for attribute content (quotes escaped).
     return html.escape(str(value), quote=True)

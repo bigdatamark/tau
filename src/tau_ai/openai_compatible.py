@@ -1,3 +1,15 @@
+# [MODULE DOC]
+# OpenAI-compatible provider for the tau_ai layer. Serves most models over
+# "/chat/completions" and routes models that need it ("codex" models and the
+# gpt-5.4 / gpt-5.5 families, when the config infers the API from the model, or
+# always when the config's API is "openai-responses") to "/responses".
+# Both paths share one streaming POST envelope (auth, optional credential
+# resolver, session-affinity headers, retries on transient HTTP statuses and on
+# transport errors before content is emitted, cancellation) and differ in
+# payload builders and SSE stream parsers. Handles many vendor dialects via a
+# compat mapping and a thinking format (openai, zai, qwen, qwen-chat-template,
+# deepseek, openrouter, together). Output is canonicalized to Pi-compatible
+# assistant message events.
 """OpenAI-compatible chat completions provider.
 
 Most OpenAI-compatible models are served over `/chat/completions`. Newer
@@ -67,6 +79,9 @@ _RESPONSES_ONLY_PREFIXES: tuple[str, ...] = ("gpt-5.5", "gpt-5.4")
 
 
 def _use_responses_api(model: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: Return True when the trimmed, lowercased model ID contains "codex" or
+    # starts with "gpt-5.5" or "gpt-5.4". Pure.
     """Return whether ``model`` must be served over the Responses API."""
     normalized = model.strip().lower()
     if "codex" in normalized:
@@ -75,6 +90,9 @@ def _use_responses_api(model: str) -> bool:
 
 
 class OpenAICompatibleProvider:
+    # [CLASS DOC]
+    # Provider adapter for OpenAI-compatible APIs holding the config and an
+    # optional HTTP client (created lazily and owned when not supplied).
     """Provider adapter for OpenAI-compatible `/chat/completions` APIs.
 
     Models that require it are transparently served over `/v1/responses`.
@@ -86,11 +104,16 @@ class OpenAICompatibleProvider:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Inputs: an OpenAICompatibleConfig and an optional shared HTTP client. Records
+        # ownership of the client. No I/O.
         self._config = config
         self._client = client
         self._owns_client = client is None
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # Close the HTTP client only if this provider created it, then forget it.
         """Close the underlying HTTP client if this provider created it."""
         if self._client is not None and self._owns_client:
             await self._client.aclose()
@@ -106,6 +129,13 @@ class OpenAICompatibleProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # [FUNCTION DOC]
+        # Public streaming entry point. Inputs: model, system prompt, messages, tools,
+        # optional cancellation token and session ID (used for prompt-cache key and
+        # session affinity). Output: an async iterator of canonical events labelled with
+        # the config's API and provider name (default "openai-compatible"); text and
+        # thinking are treated as independent channels except on the Responses path.
+        # Lazy; no request until iterated.
         """Stream one response as Pi-compatible assistant message events."""
         raw = self._stream_provider_events(
             model=model,
@@ -136,6 +166,9 @@ class OpenAICompatibleProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Choose the Responses or chat-completions path (see module doc) and
+        # return its provider-event iterator.
         """Stream one model response as provider-neutral events."""
         if self._config.api == "openai-responses" or (
             self._config.infer_api_from_model and _use_responses_api(model)
@@ -167,6 +200,10 @@ class OpenAICompatibleProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Derive the session affinity ID and optional prompt cache key, build
+        # the chat payload (applying model aliases and config options) and return the
+        # shared stream for "<base>/chat/completions" with the chat parser.
         """Stream one chat completion response as provider-neutral events."""
         affinity_id = openai_prompt_cache_key(session_id)
         cache_key = self._prompt_cache_key(affinity_id)
@@ -205,6 +242,9 @@ class OpenAICompatibleProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Same as the chat variant but builds a Responses payload and streams
+        # "<base>/responses" with the Responses parser.
         """Stream one `/v1/responses` response as provider-neutral events."""
         affinity_id = openai_prompt_cache_key(session_id)
         cache_key = self._prompt_cache_key(affinity_id)
@@ -241,6 +281,9 @@ class OpenAICompatibleProvider:
         has_images: bool = False,
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Return the shared streaming envelope iterator for one endpoint; see
+        # the nested iterator.
         """Run the shared streaming POST + retry envelope for a given endpoint.
 
         The per-endpoint differences (SSE chunk handling and final-message
@@ -250,6 +293,28 @@ class OpenAICompatibleProvider:
         """
 
         async def iterator() -> AsyncIterator[ProviderEvent]:
+            # [FUNCTION DOC]
+            # HELPER: Execute the request with retries and yield provider events.
+            # Setup: copies configured headers; adds the Copilot vision header for
+            # github-copilot requests with images; applies a credential resolver (API key,
+            # extra headers, and an optional base URL that replaces the request URL while
+            # keeping the endpoint); adds a Bearer Authorization header unless omitted by
+            # config or already present (case-insensitive); adds session affinity headers.
+            # Loop: a fresh parser per attempt; reads an optional response-provider header.
+            # HTTP 400 or above: retry with a retry event and backoff for transient
+            # statuses (408, 409, 425, 429, 5xx) while attempts remain (stop silently if
+            # cancelled during the wait), else yield an error event (formatted message,
+            # status, body, attempts, response provider) and stop. Success: yield a start
+            # event, feed each SSE data payload to the parser yielding its events, stop
+            # early when the parser says so, stop silently on cancellation; if the parser
+            # emitted a fatal error, end; otherwise get the final events, call the optional
+            # response-headers observer (its exceptions become a diagnostic on the final
+            # assistant message, never failures) and yield them. Transport errors are
+            # retried when no content was emitted and attempts remain, else yield an error.
+            # Side effects: network I/O, sleeps.
+            # KNOWN ISSUE: a transport-error retry after the start event was yielded yields
+            # another start event on the next attempt; cancellation mid-stream ends
+            # without any end or error event.
             client = self._get_client()
             api_key = self._config.api_key
             request_url = url
@@ -385,6 +450,10 @@ class OpenAICompatibleProvider:
         return iterator()
 
     def _prompt_cache_key(self, affinity_id: str | None) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: Return the affinity ID as prompt cache key when the compat flag
+        # supportsPromptCacheKey is true, or is unset and the base URL is OpenAI's own
+        # API; otherwise None.
         supports = self._config.compat.get("supportsPromptCacheKey")
         if supports is not True and not (
             supports is None and is_direct_openai_url(self._config.base_url)
@@ -393,6 +462,10 @@ class OpenAICompatibleProvider:
         return affinity_id
 
     def _session_affinity_format(self, *, responses: bool) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: Return the session affinity header format (compat
+        # sessionAffinityFormat, default "openai") when sendSessionAffinityHeaders is
+        # true, or unset for a Responses request to OpenAI's own API; otherwise None.
         sends_headers = self._config.compat.get("sendSessionAffinityHeaders")
         if sends_headers is not True and not (
             sends_headers is None and responses and is_direct_openai_url(self._config.base_url)
@@ -402,17 +475,26 @@ class OpenAICompatibleProvider:
         return value if isinstance(value, str) else "openai"
 
     def _get_client(self) -> httpx.AsyncClient:
+        # [FUNCTION DOC]
+        # HELPER: Return the HTTP client, creating one with the configured timeout on
+        # first use.
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
 
     def _should_retry(self, attempt: int, *, status_code: int | None = None) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: True if attempts remain and either no status was given or the status
+        # is transient.
         if attempt >= self._config.max_retries:
             return False
         return status_code is None or _is_transient_status(status_code)
 
 
 def _response_header_value(response: httpx.Response, header_name: str | None) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the trimmed value of the configured response header, or None if
+    # no header is configured, it is absent, or it is blank. Pure.
     """Return one normalized response metadata header when configured."""
     if header_name is None:
         return None
@@ -428,6 +510,10 @@ def _apply_session_affinity_headers(
     session_id: str | None,
     affinity_format: str | None,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: When both a session ID and format are given, set "x-session-id"
+    # (format "openrouter") or "session_id" (format "openai"); other formats add
+    # nothing. Mutates the header mapping.
     if session_id is None or affinity_format is None:
         return
     if affinity_format == "openrouter":
@@ -441,6 +527,10 @@ def _append_response_observer_diagnostic(
     events: list[ProviderEvent],
     exc: Exception,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Add a "response_headers_observer_error" diagnostic (error text and
+    # type) to the message of the first response-end event in the list. Mutates
+    # that message.
     for event in events:
         if isinstance(event, ProviderResponseEndEvent):
             diagnostic = AssistantMessageDiagnostic(
@@ -458,6 +548,11 @@ def _append_response_observer_diagnostic(
 
 
 class _StreamParser(Protocol):
+    # [CLASS DOC]
+    # HELPER: Structural interface for per-endpoint SSE parsers: an emitted_content
+    # flag (any model output seen, making mid-stream drops non-retryable), a fatal
+    # flag (a terminal error was emitted; finalize must not be called), feed and
+    # finalize.
     """Per-endpoint SSE handler driven by the shared streaming envelope."""
 
     # True once any model output (text/thinking/tool args) has been emitted;
@@ -468,18 +563,29 @@ class _StreamParser(Protocol):
     fatal: bool
 
     def feed(self, event: str) -> tuple[list[ProviderEvent], bool]:
+        # [FUNCTION DOC]
+        # HELPER: Consume one SSE data payload and return (events to yield, whether to
+        # stop reading).
         """Consume one SSE ``data:`` payload, returning (events, should_stop)."""
         ...
 
     def finalize(self) -> list[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Return the trailing tool-call events and the response-end event.
         """Return the trailing tool-call and response-end events."""
         ...
 
 
 class _ChatStreamParser:
+    # [CLASS DOC]
+    # HELPER: Stateful parser for chat-completions chunks accumulating text,
+    # thinking (with the field name used as signature), tool-call builders by
+    # index, finish reason and usage.
     """Parser for OpenAI `/chat/completions` SSE chunks."""
 
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Initialize empty accumulators and false flags.
         self.emitted_content = False
         self.fatal = False
         self._content_parts: list[str] = []
@@ -490,6 +596,17 @@ class _ChatStreamParser:
         self._usage: Usage | None = None
 
     def feed(self, event: str) -> tuple[list[ProviderEvent], bool]:
+        # [FUNCTION DOC]
+        # HELPER: "[DONE]" stops. Invalid JSON sets fatal and returns an error event and
+        # stop. Top-level usage replaces usage; otherwise usage on the first choice is
+        # used. Records the latest non-empty finish reason. From the delta: non-empty
+        # content yields a text delta; the first non-empty of reasoning_content,
+        # reasoning or thinking yields a thinking delta (the first field name seen is
+        # kept as signature); tool-call deltas feed builders. Any of these set
+        # emitted_content. Returns events and whether to stop.
+        # KNOWN ISSUE: an empty "data:" payload (which _parse_sse_line returns as an
+        # empty string, not None) is treated as invalid JSON and aborts the stream,
+        # unlike the Anthropic parser which skips it.
         if event == "[DONE]":
             return [], True
 
@@ -544,6 +661,10 @@ class _ChatStreamParser:
         return events, False
 
     def finalize(self) -> list[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Build tool calls in index order, yield one event per call, then a
+        # response-end event with the assistant message (thinking first, then text and
+        # tool calls), usage (empty if none) and finish reason.
         tool_calls = [
             builder.build(index) for index, builder in sorted(self._tool_call_builders.items())
         ]
@@ -572,9 +693,15 @@ class _ChatStreamParser:
 
 
 class _ResponsesStreamParser:
+    # [CLASS DOC]
+    # HELPER: Stateful parser for Responses API events accumulating text, thinking,
+    # reasoning items by ID, function-call builders by item ID, terminal status and
+    # usage.
     """Parser for OpenAI `/v1/responses` SSE events."""
 
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Initialize empty accumulators and false flags.
         self.emitted_content = False
         self.fatal = False
         self._content_parts: list[str] = []
@@ -585,6 +712,15 @@ class _ResponsesStreamParser:
         self._usage: Usage | None = None
 
     def feed(self, event: str) -> tuple[list[ProviderEvent], bool]:
+        # [FUNCTION DOC]
+        # HELPER: Ignores "[DONE]", invalid JSON and untyped events. Output text and
+        # refusal deltas yield text deltas; reasoning summary/text deltas yield
+        # thinking deltas; a finished summary part adds a blank-line separator if
+        # thinking exists; output item added/done register reasoning items and
+        # function-call builders (ID, call ID, name, arguments, output index);
+        # function-call argument deltas accumulate (marking content emitted) and the
+        # done event sets final arguments; completed/incomplete records status and
+        # usage and stops; failed and error events set fatal, yield an error and stop.
         # The Responses API has no [DONE] sentinel; it ends with a terminal
         # event (completed/incomplete/failed) handled below.
         if event == "[DONE]":
@@ -670,6 +806,13 @@ class _ResponsesStreamParser:
         return [], False
 
     def finalize(self) -> list[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Build tool calls ordered by output index, yield their events, then a
+        # response-end event whose finish reason is "tool_calls" when tools were
+        # called, "length" for incomplete, else "stop". Thinking content uses the first
+        # registered reasoning item, serialized as JSON, as its signature (for replay).
+        # KNOWN ISSUE: only the first reasoning item is preserved, so responses with
+        # multiple reasoning items lose the others on replay.
         tool_calls = [
             builder.build(index)
             for index, builder in enumerate(_ordered_builders(self._tool_call_builders))
@@ -704,12 +847,20 @@ class _ResponsesStreamParser:
 
 
 class _ToolCallBuilder:
+    # [CLASS DOC]
+    # HELPER: Accumulator for a streamed chat-completions tool call (ID, name,
+    # argument fragments).
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Start with empty ID, name and fragments.
         self.id = ""
         self.name = ""
         self.arguments_parts: list[str] = []
 
     def add_delta(self, delta: Mapping[str, Any]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Update ID and function name when present as strings and append any
+        # string argument fragment. Mutates the builder.
         call_id = delta.get("id")
         if isinstance(call_id, str):
             self.id = call_id
@@ -727,6 +878,10 @@ class _ToolCallBuilder:
             self.arguments_parts.append(arguments)
 
     def build(self, index: int) -> ToolCall:
+        # [FUNCTION DOC]
+        # HELPER: Parse joined arguments as a JSON object (empty gives an empty
+        # mapping, invalid is kept under "_raw_arguments") and return a tool call with
+        # the ID or "tool-call-<index>".
         arguments_text = "".join(self.arguments_parts)
         arguments = _loads_object(arguments_text) if arguments_text else {}
         if arguments is None:
@@ -740,6 +895,9 @@ class _ToolCallBuilder:
 
 
 class _ResponsesToolCallBuilder:
+    # [CLASS DOC]
+    # HELPER: Accumulator for a streamed Responses function_call item: call ID,
+    # name, output index, argument fragments and final arguments text.
     """Accumulates a streamed Responses-API ``function_call`` output item."""
 
     def __init__(
@@ -749,6 +907,9 @@ class _ResponsesToolCallBuilder:
         name: str = "",
         output_index: int = 0,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Store optional initial call ID, name and output index; empty
+        # fragments and no final arguments.
         self.call_id = call_id
         self.name = name
         self.output_index = output_index
@@ -756,6 +917,8 @@ class _ResponsesToolCallBuilder:
         self.arguments_final: str | None = None
 
     def add_arguments_delta(self, delta: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Append the delta if it is a string.
         if isinstance(delta, str):
             self.arguments_parts.append(delta)
 
@@ -767,6 +930,9 @@ class _ResponsesToolCallBuilder:
         arguments: object = None,
         output_index: int | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Overwrite call ID and name when non-empty, final arguments when a
+        # string, and output index when given. Mutates the builder.
         if call_id:
             self.call_id = call_id
         if name:
@@ -777,6 +943,10 @@ class _ResponsesToolCallBuilder:
             self.output_index = output_index
 
     def build(self, index: int) -> ToolCall:
+        # [FUNCTION DOC]
+        # HELPER: Prefer the final arguments text over joined fragments, parse as for
+        # chat tool calls, and return a tool call with the call ID or
+        # "tool-call-<index>".
         arguments_text = (
             self.arguments_final
             if self.arguments_final is not None
@@ -808,6 +978,15 @@ def _build_chat_payload(
     supports_images: bool = False,
     prompt_cache_key: str | None = None,
 ) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Build the chat-completions request body: model, stream, system
+    # message followed by converted messages; optional prompt_cache_key;
+    # stream_options include_usage unless compat disables usage streaming; store
+    # false unless compat disables it; max tokens under "max_tokens" or (default)
+    # "max_completion_tokens" per compat; an OpenRouter provider routing object if
+    # given; reasoning fields per thinking format (effort suppressed when compat
+    # disables reasoning effort, except for zai); tools and, if compat zaiToolStream
+    # is true, tool_stream. Pure.
     resolved_compat = dict(compat or {})
     supports_store = bool(resolved_compat.get("supportsStore", True))
     supports_usage = bool(resolved_compat.get("supportsUsageInStreaming", True))
@@ -862,6 +1041,16 @@ def _apply_chat_reasoning(
     include_reasoning_effort_none: bool,
     supports_reasoning_effort: bool = True,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Write reasoning controls into the payload (in place); reasoning is
+    # enabled when an effort is given and is not "none". zai: thinking enabled or
+    # disabled plus reasoning_effort when supported and enabled. qwen:
+    # enable_thinking flag. qwen-chat-template: chat_template_kwargs with
+    # enable_thinking and preserve_thinking. deepseek: thinking type plus effort
+    # when enabled. openrouter or the "reasoning.effort" parameter style: a
+    # reasoning object with the effort, or effort "none" when requested. together:
+    # reasoning enabled flag plus effort when enabled. Default: reasoning_effort
+    # when enabled, or "none" when include-none is set.
     reasoning_enabled = reasoning_effort is not None and reasoning_effort != "none"
     if thinking_format == "zai":
         # Z.AI's OpenAI-compatible API uses the provider-specific ``thinking``
@@ -902,6 +1091,8 @@ def _apply_chat_reasoning(
 
 
 def _string_compat(value: object, *, default: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return the value if it is a non-empty string, else the default.
     return value if isinstance(value, str) and value else default
 
 
@@ -916,6 +1107,12 @@ def _build_responses_payload(
     supports_images: bool = False,
     prompt_cache_key: str | None = None,
 ) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Build the Responses request body: model, stream, store false,
+    # instructions (system prompt), converted input items, optional
+    # prompt_cache_key, max_output_tokens, a reasoning object with normalized
+    # effort and automatic summaries when an effort is set, and function tools.
+    # Pure.
     payload: dict[str, JSONValue] = {
         "model": model,
         "stream": True,
@@ -942,6 +1139,8 @@ def _build_responses_payload(
 
 
 def _normalize_responses_effort(reasoning_effort: str | None) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Trim and lowercase the effort; None, empty or "none" become None.
     """Map an internal reasoning level to a Responses-API effort, or drop it."""
     if reasoning_effort is None:
         return None
@@ -954,6 +1153,16 @@ def _normalize_responses_effort(reasoning_effort: str | None) -> str | None:
 def _messages_to_responses_input(
     messages: list[AgentMessage], *, supports_images: bool = False
 ) -> list[JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert messages to Responses input items: user messages as text or
+    # input_text/input_image parts; assistant messages as replayed reasoning items
+    # (thinking signatures that parse to JSON objects), then the assistant text,
+    # then function_call items with portable call IDs and JSON-encoded arguments;
+    # tool results as function_call_output items (text, image parts, or "(no tool
+    # output)"). Other message types are skipped. Pure.
+    # KNOWN ISSUE: unlike the chat path, messages that are not user, assistant or
+    # tool-result messages (e.g. custom messages) are silently dropped instead of
+    # being converted to user messages.
     items: list[JSONValue] = []
     for message in messages:
         if isinstance(message, UserMessage):
@@ -1016,6 +1225,9 @@ def _messages_to_responses_input(
 
 
 def _openai_input_image(image: ImageContent) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert an image into an input_image part with automatic detail and a
+    # base64 data URL. Pure.
     return {
         "type": "input_image",
         "detail": "auto",
@@ -1024,6 +1236,9 @@ def _openai_input_image(image: ImageContent) -> dict[str, JSONValue]:
 
 
 def _tool_to_responses(tool: AgentTool) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert a tool to a Responses function definition (name, description,
+    # copied parameters schema). Pure.
     return {
         "type": "function",
         "name": tool.name,
@@ -1036,6 +1251,9 @@ def _register_reasoning_item(
     items: dict[str, dict[str, JSONValue]],
     item: object,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: If the item is a reasoning item with a string ID, store a copy under
+    # that ID (mutates the mapping).
     if not isinstance(item, Mapping) or item.get("type") != "reasoning":
         return
     item_id = item.get("id")
@@ -1049,6 +1267,9 @@ def _register_responses_item(
     *,
     output_index: object,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: For a function_call item with a string ID, get or create its builder
+    # and set call ID, name, non-empty arguments and output index (mutates).
     if not isinstance(item, Mapping) or item.get("type") != "function_call":
         return
     item_id = item.get("id")
@@ -1070,6 +1291,9 @@ def _finalize_responses_item(
     *,
     output_index: object,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Like _register_responses_item for a completed item, setting any
+    # string arguments (including empty) as final (mutates).
     if not isinstance(item, Mapping) or item.get("type") != "function_call":
         return
     item_id = item.get("id")
@@ -1087,12 +1311,16 @@ def _finalize_responses_item(
 def _ordered_builders(
     builders: dict[str, _ResponsesToolCallBuilder],
 ) -> list[_ResponsesToolCallBuilder]:
+    # [FUNCTION DOC]
+    # HELPER: Return builders sorted by output index. Pure.
     return [
         builder for _, builder in sorted(builders.items(), key=lambda pair: pair[1].output_index)
     ]
 
 
 def _responses_finish_reason(chunk: Mapping[str, Any]) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the string status of the event's response object, or None.
     response = chunk.get("response")
     if isinstance(response, Mapping):
         status = response.get("status")
@@ -1102,6 +1330,9 @@ def _responses_finish_reason(chunk: Mapping[str, Any]) -> str | None:
 
 
 def _normalize_finish_reason(status: str | None, *, has_tool_calls: bool) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Map to "tool_calls" when tool calls exist, "length" for status
+    # incomplete, otherwise "stop". Pure.
     """Map a Responses-API status to chat-completions-style finish reasons."""
     if has_tool_calls:
         return "tool_calls"
@@ -1111,6 +1342,9 @@ def _normalize_finish_reason(status: str | None, *, has_tool_calls: bool) -> str
 
 
 def _responses_failure_event(chunk: Mapping[str, Any]) -> ProviderErrorEvent:
+    # [FUNCTION DOC]
+    # HELPER: Build an error event from a response.failed event using the nested
+    # error message (default "Provider response failed") with the event as data.
     message = "Provider response failed"
     response = chunk.get("response")
     if isinstance(response, Mapping):
@@ -1123,6 +1357,9 @@ def _responses_failure_event(chunk: Mapping[str, Any]) -> ProviderErrorEvent:
 
 
 def _responses_error_message(chunk: Mapping[str, Any]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return the event's message, else a nested error message, else
+    # "Provider stream error". Pure.
     message = chunk.get("message")
     if isinstance(message, str) and message:
         return message
@@ -1135,16 +1372,27 @@ def _responses_error_message(chunk: Mapping[str, Any]) -> str:
 
 
 def _str_or_none(value: object) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the value if it is a non-empty string, else None.
     return value if isinstance(value, str) and value else None
 
 
 def _system_message(system: str) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Return a system-role chat message with the given content.
     return {"role": "system", "content": system}
 
 
 def _messages_to_openai_chat(
     messages: list[AgentMessage], *, supports_images: bool
 ) -> list[dict[str, JSONValue]]:
+    # [FUNCTION DOC]
+    # HELPER: Convert messages to chat messages. User messages become text or
+    # text/image_url parts. Tool results become "tool" messages (text, or "(see
+    # attached image)" / "(no tool output)"); their images are buffered and emitted
+    # as one following user message ("Attached image(s) from tool result:") once a
+    # non-tool-result message (or the end) is reached, since tool messages cannot
+    # carry images. Other messages use _message_to_openai. Pure.
     converted: list[dict[str, JSONValue]] = []
     pending_tool_images: list[ImageContent] = []
     for message in messages:
@@ -1195,6 +1443,9 @@ def _messages_to_openai_chat(
 
 
 def _openai_tool_image_message(images: list[ImageContent]) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Build a user message with an introductory text part and one
+    # image_url data-URL part per image. Pure.
     content: list[JSONValue] = [{"type": "text", "text": "Attached image(s) from tool result:"}]
     content.extend(
         {
@@ -1207,6 +1458,12 @@ def _openai_tool_image_message(images: list[ImageContent]) -> dict[str, JSONValu
 
 
 def _message_to_openai(message: AgentMessage) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert one message to chat format: user text; assistant text plus
+    # joined thinking under its signature field name (reasoning_content by default,
+    # only if the signature is reasoning_content, reasoning or thinking) and tool
+    # calls; tool results as tool messages; other types via conversion to a user
+    # message. Pure.
     if isinstance(message, UserMessage):
         return {"role": "user", "content": message.text}
 
@@ -1234,6 +1491,8 @@ def _message_to_openai(message: AgentMessage) -> dict[str, JSONValue]:
 
 
 def _tool_to_openai(tool: AgentTool) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert a tool to a chat "function" tool definition. Pure.
     return {
         "type": "function",
         "function": {
@@ -1245,6 +1504,9 @@ def _tool_to_openai(tool: AgentTool) -> dict[str, JSONValue]:
 
 
 def _tool_call_to_openai(tool_call: ToolCall) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert a tool call to chat format with a portable ID and
+    # JSON-encoded arguments. Pure.
     return {
         "id": portable_tool_call_id(tool_call.id),
         "type": "function",
@@ -1256,6 +1518,9 @@ def _tool_call_to_openai(tool_call: ToolCall) -> dict[str, JSONValue]:
 
 
 def _parse_sse_line(line: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the stripped payload of an SSE "data:" line (possibly an empty
+    # string), or None for blank or non-data lines. Pure.
     line = line.strip()
     if not line or not line.startswith("data:"):
         return None
@@ -1263,6 +1528,8 @@ def _parse_sse_line(line: str) -> str | None:
 
 
 def _loads_object(value: str) -> dict[str, JSONValue] | None:
+    # [FUNCTION DOC]
+    # HELPER: Parse JSON and return it only if it is an object; None otherwise.
     try:
         loaded = loads(value)
     except JSONDecodeError:
@@ -1273,6 +1540,9 @@ def _loads_object(value: str) -> dict[str, JSONValue] | None:
 
 
 def _first_choice(chunk: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the first element of the chunk's choices list if it is a
+    # mapping, else None.
     choices = chunk.get("choices")
     if not isinstance(choices, list) or not choices:
         return None
@@ -1283,14 +1553,24 @@ def _first_choice(chunk: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 
 def _int_or_zero(value: object) -> int:
+    # [FUNCTION DOC]
+    # HELPER: Return the value if it is a non-boolean integer, else 0.
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _int_or_none(value: object) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the value if it is a non-boolean integer, else None.
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _parse_chunk_usage(raw: Mapping[str, Any]) -> Usage:
+    # [FUNCTION DOC]
+    # HELPER: Convert chat usage into Usage: cache reads from cached_tokens (falling
+    # back to prompt_cache_hit_tokens only when absent), cache writes from
+    # cache_write_tokens, fresh input as prompt tokens minus reads and writes
+    # (minimum 0), output from completion tokens, reasoning tokens when details
+    # exist, and the total as the sum. Pure.
     """Parse an OpenAI-compatible ``usage`` payload into a Usage.
 
     Ports Pi's openai-completions.ts parseChunkUsage: ``cached_tokens`` are
@@ -1328,6 +1608,11 @@ def _parse_chunk_usage(raw: Mapping[str, Any]) -> Usage:
 
 
 def _usage_from_responses_event(chunk: Mapping[str, Any]) -> Usage | None:
+    # [FUNCTION DOC]
+    # HELPER: Convert the usage of a Responses terminal event into Usage (None if
+    # absent): cache read/write from input details, fresh input as input tokens
+    # minus those (minimum 0), output tokens, reasoning only when output details
+    # exist, and the provider-reported total. Pure.
     """Parse billed usage from a `/v1/responses` terminal event.
 
     Mirrors the Codex adapter's ``_usage_from_response``: cache reads and
@@ -1370,6 +1655,9 @@ def _usage_from_responses_event(chunk: Mapping[str, Any]) -> Usage | None:
 
 
 def _tool_call_deltas(delta: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    # [FUNCTION DOC]
+    # HELPER: Return the mapping entries of the delta's tool_calls list (empty if
+    # not a list).
     tool_calls = delta.get("tool_calls")
     if not isinstance(tool_calls, list):
         return []
@@ -1377,6 +1665,9 @@ def _tool_call_deltas(delta: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def _thinking_delta(delta: Mapping[str, Any]) -> tuple[str, str] | None:
+    # [FUNCTION DOC]
+    # HELPER: Return (field name, text) for the first non-empty string among
+    # reasoning_content, reasoning and thinking in the delta, else None.
     for field_name in ("reasoning_content", "reasoning", "thinking"):
         value = delta.get(field_name)
         if isinstance(value, str) and value:
@@ -1385,4 +1676,6 @@ def _thinking_delta(delta: Mapping[str, Any]) -> tuple[str, str] | None:
 
 
 def _is_transient_status(status_code: int) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True for HTTP 408, 409, 425, 429 and any 5xx status.
     return status_code in {408, 409, 425, 429} or status_code >= 500

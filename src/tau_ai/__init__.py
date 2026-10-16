@@ -1,3 +1,13 @@
+# [PACKAGE DOC]
+# Public facade of the tau_ai package: the provider/model streaming layer. It re-exports provider
+# implementations (Anthropic, OpenAI-compatible, OpenAI Codex, Google Generative AI, Mistral,
+# Fake), provider configuration/env helpers and defaults, assistant streaming event types, model
+# catalog/limits providers, and the provider protocol plus cancellation token.
+# Inputs/outputs: none at runtime beyond imports; the public export list is computed as every
+# module-level global name not starting with an underscore (including imported submodule-level
+# names).
+# Side effects: importing this package imports all provider submodules. No exceptions raised
+# beyond import errors.
 """Provider and Pi-compatible model streaming layer for Tau."""
 
 # ruff: noqa: F401 - this module intentionally defines the public facade

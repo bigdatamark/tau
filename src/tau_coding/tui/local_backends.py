@@ -1,3 +1,13 @@
+# [MODULE DOC]
+# Generic Textual modal screens that host local inference backends (such as a
+# llama.cpp integration) without knowing their protocols: a backend picker, the
+# main backend screen (status, model list, action menu, progress bar, async
+# operations via the local backend registry), a schema-driven configuration
+# form, yes/no and multi-choice confirmations, a search-result variant chooser,
+# and a single-input model reference prompt. Also defines a block-style progress
+# bar renderable and label/size formatting helpers. Type aliases describe the
+# host callbacks: use a model (provider id, model id; may be async), notify
+# (message, level) and an idle check.
 """Generic Textual host screens for local backends.
 
 This module intentionally knows only the local-backend contracts. Protocol
@@ -45,6 +55,9 @@ LocalIdleCallback = Callable[[], bool]
 
 
 class _BlockProgressRenderable(BarRenderable):
+    # [CLASS DOC]
+    # HELPER: Rich renderable replacing Textual's bar: draws solid blocks for the
+    # highlighted range and a thin line elsewhere.
     """Render determinate progress as solid blocks over a thin track."""
 
     def __init__(
@@ -54,11 +67,18 @@ class _BlockProgressRenderable(BarRenderable):
         background_style: StyleType = "default",
         **_: object,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: store the highlighted range and the highlight/background styles;
+        # extra keyword arguments from Textual are ignored.
         self.highlight_range = highlight_range
         self.highlight_style = highlight_style
         self.background_style = background_style
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        # [FUNCTION DOC]
+        # HELPER: yield one text line of the available width where each cell whose
+        # center lies within the highlight range is a full block in the highlight style
+        # and other cells are a line in the background style.
         del console
         width = options.max_width
         start, end = self.highlight_range
@@ -73,10 +93,16 @@ class _BlockProgressRenderable(BarRenderable):
 
 
 class _LocalDownloadProgressBar(ProgressBar):
+    # [CLASS DOC]
+    # HELPER: progress bar widget using the block renderable for download progress.
     BAR_RENDERABLE = _BlockProgressRenderable
 
 
 class LocalBackendPickerScreen(ModalScreen[str | None]):
+    # [CLASS DOC]
+    # Modal that lists effective local backends (marking recommended and
+    # unavailable ones) and dismisses with the chosen backend id, or nothing on
+    # cancel. Preselects the recommended backend, else the first.
     """Explicitly confirm a backend choice, including when there is one."""
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
@@ -87,6 +113,9 @@ class LocalBackendPickerScreen(ModalScreen[str | None]):
     ]
 
     def __init__(self, registry: LocalBackendRegistry, *, theme: TuiTheme) -> None:
+        # [FUNCTION DOC]
+        # Store registry and theme, snapshot the effective backend views, and choose the
+        # initial selection (recommended, first, or nothing when empty).
         super().__init__()
         self.registry = registry
         self.theme = theme
@@ -101,6 +130,9 @@ class LocalBackendPickerScreen(ModalScreen[str | None]):
         )
 
     def compose(self) -> ComposeResult:
+        # [FUNCTION DOC]
+        # Yield the title and either an empty-state message or help text, the backend
+        # list and a footer.
         with Vertical(id="local-backend-picker"):
             yield Static("Local backends", id="local-backend-picker-title")
             if not self.views:
@@ -120,12 +152,17 @@ class LocalBackendPickerScreen(ModalScreen[str | None]):
                 )
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # When backends exist, place the list cursor at the selected backend and focus it.
         if self.views:
             backend_list = self.query_one("#local-backend-list", ListView)
             backend_list.index = self._selected_index()
             backend_list.focus()
 
     def on_key(self, event: Key) -> None:
+        # [FUNCTION DOC]
+        # Intercept up, down and enter keys (stopping propagation) and route them to the
+        # cursor-up, cursor-down and select-cursor actions so the focused list handles them.
         if event.key == "up":
             event.stop()
             self.action_cursor_up()
@@ -137,28 +174,43 @@ class LocalBackendPickerScreen(ModalScreen[str | None]):
             self.action_select_cursor()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # [FUNCTION DOC]
+        # Record the selected backend id and dismiss the modal with it.
         event.stop()
         self.selected = self.views[event.index].backend.id
         self.dismiss(self.selected)
 
     def action_cursor_up(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list cursor up and sync the selection. Raises a Textual query error
+        # if no list exists (empty backend state).
         self.query_one("#local-backend-list", ListView).action_cursor_up()
         self._sync_selected()
 
     def action_cursor_down(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list cursor down and sync the selection (same empty-state caveat).
         self.query_one("#local-backend-list", ListView).action_cursor_down()
         self._sync_selected()
 
     def action_select_cursor(self) -> None:
+        # [FUNCTION DOC]
+        # Ask the list to select the highlighted item, triggering the selected handler.
         self.query_one("#local-backend-list", ListView).action_select_cursor()
 
     def action_confirm(self) -> None:
+        # [FUNCTION DOC]
+        # Enter binding: same as selecting the cursor item.
         self.action_select_cursor()
 
     def action_cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with nothing.
         self.dismiss(None)
 
     def _sync_selected(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: update the selected backend id from the list index (nothing when no backends).
         if not self.views:
             self.selected = None
             return
@@ -167,6 +219,8 @@ class LocalBackendPickerScreen(ModalScreen[str | None]):
             self.selected = self.views[index].backend.id
 
     def _selected_index(self) -> int:
+        # [FUNCTION DOC]
+        # HELPER: index of the selected backend in the views, defaulting to 0.
         if self.selected is None:
             return 0
         return next(
@@ -176,12 +230,21 @@ class LocalBackendPickerScreen(ModalScreen[str | None]):
 
     @staticmethod
     def _label(view) -> str:  # type: ignore[no-untyped-def]
+        # [FUNCTION DOC]
+        # HELPER: display name plus "Recommended" and "unavailable" markers.
         marker = " — Recommended" if view.recommended else ""
         effective = "" if view.use_available else " — unavailable"
         return f"{view.backend.display_name}{marker}{effective}"
 
 
 class LocalBackendScreen(ModalScreen[None]):
+    # [CLASS DOC]
+    # Main modal for one backend. Shows status text, a model list and an action
+    # menu (Tab switches section), a progress line and bar, and runs one registry
+    # operation at a time (refresh, configure, doctor, reset, load/unload/download
+    # model, search) as an asyncio task, rendering results, confirmations,
+    # diagnostics and notifications. Reattaches to server-owned downloads and
+    # watches them to completion. Operations require the host to be idle.
     """Generic local-backend action screen."""
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
@@ -203,6 +266,10 @@ class LocalBackendScreen(ModalScreen[None]):
         notify_callback: LocalNotifyCallback | None = None,
         is_idle: LocalIdleCallback | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store registry, backend id, theme, optional use/notify/idle callbacks (with
+        # no-op/always-idle defaults) and initialize status, selection, list items,
+        # task handles, progress subscription and fraction, and the closing flag.
         super().__init__()
         self.registry = registry
         self.backend_id = backend_id
@@ -223,6 +290,9 @@ class LocalBackendScreen(ModalScreen[None]):
         self._closing = False
 
     def compose(self) -> ComposeResult:
+        # [FUNCTION DOC]
+        # Yield title, help, status placeholder, model and action section titles and
+        # lists, a hidden progress message, a full-width block progress bar and a footer.
         with Vertical(id="local-backend-screen"):
             yield Static("Local backend", id="local-backend-title")
             yield Static(
@@ -249,6 +319,10 @@ class LocalBackendScreen(ModalScreen[None]):
             )
 
     async def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # Render default sections (configure, refresh), focus actions, hide progress
+        # widgets, attach to an in-flight download (starting a completion watcher if
+        # attached), then start an immediate refresh probe. Side effects: tasks.
         await self._render_sections(None)
         self.query_one("#local-action-menu", ListView).focus()
         self.query_one("#local-backend-progress", Static).styles.display = "none"
@@ -266,6 +340,10 @@ class LocalBackendScreen(ModalScreen[None]):
         self._start_operation("refresh")
 
     def on_unmount(self) -> None:
+        # [FUNCTION DOC]
+        # Mark closing; cancel any running non-download operation in the registry and
+        # its worker task (downloads are server-owned and only detached); unsubscribe
+        # from progress; cancel the download watcher and any pending model-use task.
         """Stop host-owned tasks before Textual detaches this modal."""
         self._closing = True
         # A server-side download belongs to llama.cpp, not this modal. Closing
@@ -284,7 +362,13 @@ class LocalBackendScreen(ModalScreen[None]):
             self._use_task.cancel()
 
     def _attach_download_progress(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: subscribe to registry progress for the download action, scheduling
+        # rendering after refresh. Returns whether a subscription was established
+        # (i.e. a download is running).
         def progress(item: LocalProgress) -> None:
+            # [FUNCTION DOC]
+            # HELPER: progress callback deferring rendering to after the next UI refresh.
             self.call_after_refresh(self._render_observed_download_progress, item)
 
         self._progress_unsubscribe = self.registry.observe_progress(
@@ -295,6 +379,9 @@ class LocalBackendScreen(ModalScreen[None]):
         return self._progress_unsubscribe is not None
 
     def _render_observed_download_progress(self, item: LocalProgress) -> None:
+        # [FUNCTION DOC]
+        # HELPER: show download progress with the bar, only while still subscribed and
+        # the download is still running (ignores stale replays).
         # A replay queued during mount can run after the operation finishes.
         # Never let that stale callback restore downloading text over refreshed
         # available-model state.
@@ -304,6 +391,10 @@ class LocalBackendScreen(ModalScreen[None]):
             self._set_progress(item.message, fraction=item.fraction, show_bar=True)
 
     async def _watch_download_completion(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: poll every 0.25 seconds until the download stops (returning quietly
+        # when cancelled), unsubscribe from progress, wait for any running worker, then
+        # clear the fraction and start a refresh if the UI is still usable.
         try:
             while self.registry.operation_running(self.backend_id, "download_model"):
                 await asyncio.sleep(0.25)
@@ -322,10 +413,15 @@ class LocalBackendScreen(ModalScreen[None]):
                 self._start_operation("refresh")
 
     def on_descendant_focus(self, event: DescendantFocus) -> None:
+        # [FUNCTION DOC]
+        # Update section focus styling when the model list or action menu gains focus.
         if event.widget.id in {"local-model-list", "local-action-menu"}:
             self._update_section_focus()
 
     def on_key(self, event: Key) -> None:
+        # [FUNCTION DOC]
+        # Intercept up, down and enter keys (stopping propagation) and route them to the
+        # cursor-up, cursor-down and select-cursor actions so the focused list handles them.
         if event.key == "up":
             event.stop()
             self.action_cursor_up()
@@ -337,10 +433,15 @@ class LocalBackendScreen(ModalScreen[None]):
             self.action_select_cursor()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        # [FUNCTION DOC]
+        # Sync the selected model when the model list highlight moves.
         if event.list_view.id == "local-model-list":
             self._sync_selected_model()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # [FUNCTION DOC]
+        # Stop the event; a model selection records the model and activates it, an
+        # action selection activates that action.
         event.stop()
         if event.list_view.id == "local-model-list":
             if 0 <= event.index < len(self._model_items):
@@ -350,6 +451,9 @@ class LocalBackendScreen(ModalScreen[None]):
             self._activate_action(event.index)
 
     def action_cursor_up(self) -> None:
+        # [FUNCTION DOC]
+        # Move up within the focused list; from the top of the actions (or no index)
+        # jump to the last model and focus the model list. Syncs the selected model.
         models = self.query_one("#local-model-list", ListView)
         actions = self.query_one("#local-action-menu", ListView)
         if actions.has_focus and self._model_items and actions.index in {None, 0}:
@@ -361,6 +465,9 @@ class LocalBackendScreen(ModalScreen[None]):
         self._sync_selected_model()
 
     def action_cursor_down(self) -> None:
+        # [FUNCTION DOC]
+        # Move down within the focused list; from the last model jump to the first
+        # action and focus the action menu. Syncs the selected model.
         models = self.query_one("#local-model-list", ListView)
         actions = self.query_one("#local-action-menu", ListView)
         if models.has_focus and self._action_items and models.index == len(self._model_items) - 1:
@@ -371,9 +478,14 @@ class LocalBackendScreen(ModalScreen[None]):
         self._sync_selected_model()
 
     def action_select_cursor(self) -> None:
+        # [FUNCTION DOC]
+        # Select the highlighted item in the focused list.
         self._focused_list().action_select_cursor()
 
     def action_toggle_section(self) -> None:
+        # [FUNCTION DOC]
+        # Switch focus between models and actions (when the target has items) and
+        # update section styling.
         models = self.query_one("#local-model-list", ListView)
         actions = self.query_one("#local-action-menu", ListView)
         if models.has_focus and self._action_items:
@@ -383,6 +495,9 @@ class LocalBackendScreen(ModalScreen[None]):
         self._update_section_focus()
 
     def _update_section_focus(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: dim the unfocused list via a CSS class and mark the focused section
+        # title with "focused".
         models = self.query_one("#local-model-list", ListView)
         actions = self.query_one("#local-action-menu", ListView)
         models_focused = models.has_focus
@@ -396,12 +511,18 @@ class LocalBackendScreen(ModalScreen[None]):
         )
 
     def _focused_list(self) -> ListView:
+        # [FUNCTION DOC]
+        # HELPER: return the model list if focused, else the action menu.
         models = self.query_one("#local-model-list", ListView)
         if models.has_focus:
             return models
         return self.query_one("#local-action-menu", ListView)
 
     def _activate_action(self, index: int) -> None:
+        # [FUNCTION DOC]
+        # HELPER: dispatch the action menu item at the index: configure form, refresh,
+        # doctor, reset confirmation, download/search input prompt, or cancel-download
+        # confirmation. Out-of-range indexes are ignored.
         if not 0 <= index < len(self._action_items):
             return
         token = self._action_items[index][0]
@@ -419,10 +540,18 @@ class LocalBackendScreen(ModalScreen[None]):
             self._confirm_cancel_download()
 
     def action_cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss the modal; cleanup happens in on_unmount.
         # on_unmount owns cancellation; let Textual begin the screen pop first.
         self.dismiss(None)
 
     def _open_configure(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: cancel a running worker (and the registry refresh) so the user need
+        # not wait, read the backend's configure spec (errors become messages) and push
+        # the configuration form with a callback.
+        # KNOWN ISSUE: it cancels the worker whatever action it runs, while only asking
+        # the registry to cancel "refresh".
         # Do not make users wait for an unavailable default probe before they
         # can enter a custom endpoint.
         if self._worker is not None and not self._worker.done():
@@ -443,11 +572,15 @@ class LocalBackendScreen(ModalScreen[None]):
         )
 
     def _handle_configuration(self, values: LocalConfigValues | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: form callback; start a configure operation with the values unless cancelled.
         if values is None:
             return
         self._start_operation("configure", values=values)
 
     def _confirm_reset(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: require idle, then push a yes/no confirmation for resetting settings.
         if not self._is_idle():
             self._show_message(
                 "Tau must be idle before resetting local backend settings.",
@@ -465,10 +598,16 @@ class LocalBackendScreen(ModalScreen[None]):
         )
 
     def _handle_reset_confirmation(self, confirmed: bool | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: start the reset operation when confirmed.
         if confirmed:
             self._start_operation("reset")
 
     def _open_model_action(self, action: LocalAction) -> None:
+        # [FUNCTION DOC]
+        # HELPER: require idle, then push an input prompt titled for download or search
+        # with a matching placeholder; its result starts the operation. Other actions
+        # show a warning (unreachable from current callers).
         if not self._is_idle():
             self._show_message(
                 "Tau must be idle before changing local backend models.",
@@ -496,10 +635,16 @@ class LocalBackendScreen(ModalScreen[None]):
         )
 
     def _handle_model_action(self, action: LocalAction, model_id: str | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: start the action with the entered model id unless cancelled.
         if model_id is not None:
             self._start_operation(action, model_id=model_id)
 
     def _activate_selected_model(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: for the selected model: loaded/sleeping/available/unknown-state models
+        # open the use/unload chooser; loading, downloading or "unknown" states warn;
+        # otherwise load it if the backend supports loading, else warn.
         model = self._selected_model()
         if model is None or self.status is None:
             return
@@ -515,6 +660,8 @@ class LocalBackendScreen(ModalScreen[None]):
             self._show_message(f"{model.id} is not currently available to use.", "warning")
 
     def _selected_model(self) -> LocalModel | None:
+        # [FUNCTION DOC]
+        # HELPER: return the status model matching the selected id, or nothing.
         if self.status is None or self._selected_model_id is None:
             return None
         return next(
@@ -523,6 +670,8 @@ class LocalBackendScreen(ModalScreen[None]):
         )
 
     def _choose_loaded_model_action(self, model_id: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: push a choice confirmation (use recommended, unload, cancel) for a model.
         request = LocalConfirmationRequest(
             f"Choose an action for {model_id!r}.",
             (
@@ -537,12 +686,16 @@ class LocalBackendScreen(ModalScreen[None]):
         )
 
     def _handle_loaded_model_action(self, model_id: str, choice: str | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: "use" switches to the model; "unload" starts an unload operation.
         if choice == "use":
             self._use_model(model_id)
         elif choice == "unload":
             self._start_operation("unload_model", model_id=model_id)
 
     def _sync_selected_model(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: set the selected model id from the model list index when valid.
         models = self.query_one("#local-model-list", ListView)
         index = models.index
         if index is not None and 0 <= index < len(self._model_items):
@@ -556,6 +709,9 @@ class LocalBackendScreen(ModalScreen[None]):
         model_id: str | None = None,
         confirmation: str | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: refuse (with a warning) when not idle or a worker is running;
+        # otherwise mark the active action and start the operation task.
         if not self._is_idle():
             self._show_message(
                 "Tau must be idle before changing local backend settings.",
@@ -571,6 +727,8 @@ class LocalBackendScreen(ModalScreen[None]):
         )
 
     def _confirm_cancel_download(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: push a keep/cancel confirmation for the server-side download.
         request = LocalConfirmationRequest(
             "Cancel the active server-side download? Already transferred data may be discarded.",
             (
@@ -584,6 +742,9 @@ class LocalBackendScreen(ModalScreen[None]):
         )
 
     def _cancel_download(self, choice: str | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: on "cancel_download", ask the registry to cancel the download and
+        # report whether one was found.
         if choice != "cancel_download":
             return
         if self.registry.cancel(self.backend_id, "download_model"):
@@ -598,6 +759,16 @@ class LocalBackendScreen(ModalScreen[None]):
         model_id: str | None,
         confirmation: str | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: run one registry operation. Shows "Working" progress unless a refresh
+        # must preserve observed download progress; re-renders sections before a
+        # confirmed download. Calls the matching registry method with a progress
+        # callback (assertions require values/model id where needed). Cancellation
+        # returns silently; other exceptions show only the exception type name. Then,
+        # if the UI is usable: stale or cancelled results warn; a new status is stored
+        # and rendered; a confirmation request opens a choice screen that re-runs the
+        # action with the choice; field errors, messages, search results (opening the
+        # results screen), diagnostics and orphaned credentials are reported.
         self._active_action = action
         preserve_download_progress = action == "refresh" and self._progress_unsubscribe is not None
         if not preserve_download_progress:
@@ -607,6 +778,8 @@ class LocalBackendScreen(ModalScreen[None]):
             await self._render_sections(self.status)
 
         def progress(item: LocalProgress) -> None:
+            # [FUNCTION DOC]
+            # HELPER: update the progress line and fraction unless preserving download progress.
             if not preserve_download_progress:
                 self._set_progress(
                     item.message,
@@ -708,6 +881,8 @@ class LocalBackendScreen(ModalScreen[None]):
             self._set_progress("Credential cleanup needs attention.")
 
     def _download_search_result(self, model_id: str | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: start a download for the chosen search variant id.
         if model_id is not None:
             self._start_operation("download_model", model_id=model_id)
 
@@ -718,6 +893,9 @@ class LocalBackendScreen(ModalScreen[None]):
         values: Mapping[str, str] | LocalConfigValues | None,
         model_id: str | None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: push a choice confirmation for a backend request; the choice resumes
+        # the operation.
         self.app.push_screen(
             LocalChoiceConfirmScreen(request, theme=self.theme),
             callback=lambda choice: self._resume_confirmed_operation(
@@ -732,10 +910,16 @@ class LocalBackendScreen(ModalScreen[None]):
         values: Mapping[str, str] | LocalConfigValues | None,
         model_id: str | None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: restart the same operation with the chosen confirmation value unless cancelled.
         if choice is not None:
             self._start_operation(action, values=values, model_id=model_id, confirmation=choice)
 
     def _use_selected(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: use the selected model (or the status's selected model), warning when
+        # none or when not loaded.
+        # KNOWN ISSUE: never called anywhere in this module (dead code).
         model = self._selected_model()
         model_id = (
             model.id if model is not None else self.status.selected_model if self.status else None
@@ -752,6 +936,10 @@ class LocalBackendScreen(ModalScreen[None]):
         self._use_model(model_id)
 
     def _use_model(self, model_id: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: guard idle state, running worker, running use task, missing host
+        # callback, and backend availability; then call the host use callback with the
+        # backend's provider id and model id, awaiting an async result in a task.
         if not self._is_idle():
             self._show_message("Tau must be idle before switching models.", "warning")
             return
@@ -776,6 +964,9 @@ class LocalBackendScreen(ModalScreen[None]):
             self._use_task = asyncio.create_task(self._await_use(result))
 
     async def _await_use(self, result: Awaitable[None]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: await the host's model switch; cancellation is ignored and other
+        # errors produce a generic error message.
         try:
             await result
         except asyncio.CancelledError:
@@ -785,6 +976,9 @@ class LocalBackendScreen(ModalScreen[None]):
                 self._show_message("Could not switch to the selected model.", "error")
 
     async def _render_status(self, status: LocalBackendStatus) -> None:
+        # [FUNCTION DOC]
+        # HELPER: write status text (state, endpoint, authentication, no-models note,
+        # selected model, cached/stale notes, diagnostics) and re-render the sections.
         lines = [f"State: {status.state}"]
         if status.endpoint_display:
             lines.append(f"Endpoint: {status.endpoint_display}")
@@ -807,6 +1001,11 @@ class LocalBackendScreen(ModalScreen[None]):
         await self._render_sections(status)
 
     async def _render_sections(self, status: LocalBackendStatus | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: rebuild the model list (labels, visibility, preferred selection) and
+        # the action menu (known actions supported by the status, or configure and
+        # refresh without status, with "Cancel active download" first while a download
+        # runs), restoring the prior action cursor and choosing focus sensibly.
         model_list = self.query_one("#local-model-list", ListView)
         action_menu = self.query_one("#local-action-menu", ListView)
         action_focused = action_menu.has_focus
@@ -879,6 +1078,9 @@ class LocalBackendScreen(ModalScreen[None]):
 
     @property
     def _can_update_ui(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER property: true when not closing and the screen is mounted, attached
+        # and current.
         return not self._closing and self.is_mounted and self.is_attached and self.is_current
 
     def _set_progress(
@@ -888,6 +1090,11 @@ class LocalBackendScreen(ModalScreen[None]):
         fraction: float | None = None,
         show_bar: bool = False,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: update the progress line and bar if the UI is usable. Ignores
+        # indeterminate bar updates when byte progress is known; stores or clears the
+        # fraction; shows/hides the message and bar; sets an indeterminate or fractional
+        # bar. Missing widgets are tolerated.
         if not self._can_update_ui:
             return
         if show_bar and fraction is None and self._progress_fraction is not None:
@@ -910,6 +1117,9 @@ class LocalBackendScreen(ModalScreen[None]):
                 progress_bar.update(total=1, progress=fraction)
 
     def _show_message(self, message: str, level: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: when the UI is usable, forward the message to the host notify callback
+        # and show it on the progress line.
         if not self._can_update_ui:
             return
         self._notify_callback(message, level)
@@ -917,6 +1127,10 @@ class LocalBackendScreen(ModalScreen[None]):
 
 
 class LocalConfigureScreen(ModalScreen[LocalConfigValues | None]):
+    # [CLASS DOC]
+    # Modal form generated from a backend configure spec: choice fields as selects,
+    # text and secret fields as inputs (secrets masked). Dismisses with the values
+    # and the set of secret keys, or nothing on cancel.
     """Render arbitrary text, secret, and choice fields without backend UI code."""
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
@@ -925,6 +1139,8 @@ class LocalConfigureScreen(ModalScreen[LocalConfigValues | None]):
     ]
 
     def __init__(self, spec: LocalConfigureSpec, *, theme: TuiTheme) -> None:
+        # [FUNCTION DOC]
+        # Store the spec and theme and assign a widget id to each field key.
         super().__init__()
         self.spec = spec
         self.theme = theme
@@ -933,6 +1149,8 @@ class LocalConfigureScreen(ModalScreen[LocalConfigValues | None]):
         }
 
     def compose(self) -> ComposeResult:
+        # [FUNCTION DOC]
+        # Yield the title, a label and widget per field, and the footer.
         with Vertical(id="local-configure-screen"):
             yield Static("Configure local backend", id="local-configure-title")
             for field in self.spec.fields:
@@ -956,10 +1174,14 @@ class LocalConfigureScreen(ModalScreen[LocalConfigValues | None]):
             )
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # Focus the first field when any exist.
         if self.spec.fields:
             self.query_one(f"#{self._field_ids[self.spec.fields[0].key]}").focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # [FUNCTION DOC]
+        # For form inputs, Enter advances focus to the next field or saves on the last.
         field_ids = tuple(self._field_ids[field.key] for field in self.spec.fields)
         if event.input.id not in field_ids:
             return
@@ -971,9 +1193,14 @@ class LocalConfigureScreen(ModalScreen[LocalConfigValues | None]):
             self.query_one(f"#{field_ids[index + 1]}").focus()
 
     def action_cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with nothing.
         self.dismiss(None)
 
     def action_save(self) -> None:
+        # [FUNCTION DOC]
+        # Collect each field's value (non-string select values become empty strings),
+        # note secret keys, and dismiss with the configuration values.
         values: dict[str, str] = {}
         secret_keys: set[str] = set()
         for field in self.spec.fields:
@@ -990,6 +1217,9 @@ class LocalConfigureScreen(ModalScreen[LocalConfigValues | None]):
 
 
 class LocalConfirmScreen(ModalScreen[bool | None]):
+    # [CLASS DOC]
+    # Yes/No modal for destructive actions, defaulting to No; dismisses with true,
+    # false, or nothing on cancel.
     """Small generic confirmation used for destructive backend actions."""
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
@@ -1000,12 +1230,16 @@ class LocalConfirmScreen(ModalScreen[bool | None]):
     ]
 
     def __init__(self, title: str, message: str, *, theme: TuiTheme) -> None:
+        # [FUNCTION DOC]
+        # Store the title, message and theme.
         super().__init__()
         self.title_text = title
         self.message = message
         self.theme = theme
 
     def compose(self) -> ComposeResult:
+        # [FUNCTION DOC]
+        # Yield title, message, the Yes/No list and footer (markup disabled).
         with Vertical(id="local-confirm-screen"):
             yield Static(self.title_text, id="local-confirm-title", markup=False)
             yield Static(self.message, id="local-confirm-message", markup=False)
@@ -1020,11 +1254,16 @@ class LocalConfirmScreen(ModalScreen[bool | None]):
             )
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # Put the cursor on "No" and focus the list.
         choices = self.query_one("#local-confirm-list", ListView)
         choices.index = 1
         choices.focus()
 
     def on_key(self, event: Key) -> None:
+        # [FUNCTION DOC]
+        # Intercept up, down and enter keys (stopping propagation) and route them to the
+        # cursor-up, cursor-down and select-cursor actions so the focused list handles them.
         if event.key == "up":
             event.stop()
             self.action_cursor_up()
@@ -1036,26 +1275,41 @@ class LocalConfirmScreen(ModalScreen[bool | None]):
             self.action_select_cursor()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with whether "Yes" (index 0) was selected.
         event.stop()
         self.dismiss(event.index == 0)
 
     def action_cursor_up(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list cursor up.
         self.query_one("#local-confirm-list", ListView).action_cursor_up()
 
     def action_cursor_down(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list cursor down.
         self.query_one("#local-confirm-list", ListView).action_cursor_down()
 
     def action_select_cursor(self) -> None:
+        # [FUNCTION DOC]
+        # Select the highlighted item.
         self.query_one("#local-confirm-list", ListView).action_select_cursor()
 
     def action_confirm(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with true. KNOWN ISSUE: no binding references this action (unused).
         self.dismiss(True)
 
     def action_cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with nothing.
         self.dismiss(None)
 
 
 class LocalChoiceConfirmScreen(ModalScreen[str | None]):
+    # [CLASS DOC]
+    # Modal rendering a backend confirmation request's message and choices
+    # (recommended marked); dismisses with the chosen value or nothing.
     """Render an arbitrary backend confirmation without protocol knowledge."""
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
@@ -1066,11 +1320,15 @@ class LocalChoiceConfirmScreen(ModalScreen[str | None]):
     ]
 
     def __init__(self, request: LocalConfirmationRequest, *, theme: TuiTheme) -> None:
+        # [FUNCTION DOC]
+        # Store the request and theme.
         super().__init__()
         self.request = request
         self.theme = theme
 
     def compose(self) -> ComposeResult:
+        # [FUNCTION DOC]
+        # Yield title, message, choice list and footer.
         with Vertical(id="local-confirm-screen"):
             yield Static("Confirm backend action", id="local-confirm-title", markup=False)
             yield Static(self.request.message, id="local-confirm-message", markup=False)
@@ -1092,6 +1350,9 @@ class LocalChoiceConfirmScreen(ModalScreen[str | None]):
             )
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # Place the cursor on the recommended choice, else a "cancel" choice, else the
+        # first, and focus the list.
         choices = self.query_one("#local-choice-list", ListView)
         choices.index = next(
             (index for index, choice in enumerate(self.request.choices) if choice.recommended),
@@ -1107,6 +1368,9 @@ class LocalChoiceConfirmScreen(ModalScreen[str | None]):
         choices.focus()
 
     def on_key(self, event: Key) -> None:
+        # [FUNCTION DOC]
+        # Intercept up, down and enter keys (stopping propagation) and route them to the
+        # cursor-up, cursor-down and select-cursor actions so the focused list handles them.
         if event.key == "up":
             event.stop()
             self.action_cursor_up()
@@ -1118,23 +1382,36 @@ class LocalChoiceConfirmScreen(ModalScreen[str | None]):
             self.action_select_cursor()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with the selected choice's value.
         event.stop()
         self.dismiss(self.request.choices[event.index].value)
 
     def action_cursor_up(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list cursor up.
         self.query_one("#local-choice-list", ListView).action_cursor_up()
 
     def action_cursor_down(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list cursor down.
         self.query_one("#local-choice-list", ListView).action_cursor_down()
 
     def action_select_cursor(self) -> None:
+        # [FUNCTION DOC]
+        # Select the highlighted choice.
         self.query_one("#local-choice-list", ListView).action_select_cursor()
 
     def action_cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with nothing.
         self.dismiss(None)
 
 
 class LocalSearchResultsScreen(ModalScreen[str | None]):
+    # [CLASS DOC]
+    # Modal listing downloadable variants flattened from search results; dismisses
+    # with the chosen variant id or nothing.
     """Choose one backend-provided artifact variant for download."""
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
@@ -1148,6 +1425,8 @@ class LocalSearchResultsScreen(ModalScreen[str | None]):
         *,
         theme: TuiTheme,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store results and theme and flatten them into (id, label, recommended) options.
         super().__init__()
         self.results = results
         self.theme = theme
@@ -1156,6 +1435,8 @@ class LocalSearchResultsScreen(ModalScreen[str | None]):
         )
 
     def compose(self) -> ComposeResult:
+        # [FUNCTION DOC]
+        # Yield title, help, the options list and footer.
         with Vertical(id="local-search-results-screen"):
             yield Static("Download model", id="local-search-results-title", markup=False)
             yield Static(
@@ -1173,6 +1454,8 @@ class LocalSearchResultsScreen(ModalScreen[str | None]):
             )
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # If options exist, put the cursor on the first recommended one (else first) and focus.
         if not self.options:
             return
         index = next(
@@ -1184,6 +1467,9 @@ class LocalSearchResultsScreen(ModalScreen[str | None]):
         model_list.focus()
 
     def on_key(self, event: Key) -> None:
+        # [FUNCTION DOC]
+        # Intercept up, down and enter keys (stopping propagation) and route them to the
+        # cursor-up, cursor-down and select-cursor actions so the focused list handles them.
         if event.key == "up":
             event.stop()
             self.action_cursor_up()
@@ -1195,19 +1481,29 @@ class LocalSearchResultsScreen(ModalScreen[str | None]):
             self.action_select_cursor()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # [FUNCTION DOC]
+        # Confirm the highlighted option.
         event.stop()
         self.action_confirm()
 
     def action_cursor_up(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list cursor up.
         self.query_one("#local-search-results-list", ListView).action_cursor_up()
 
     def action_cursor_down(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list cursor down.
         self.query_one("#local-search-results-list", ListView).action_cursor_down()
 
     def action_select_cursor(self) -> None:
+        # [FUNCTION DOC]
+        # Select the highlighted option.
         self.query_one("#local-search-results-list", ListView).action_select_cursor()
 
     def action_confirm(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with the highlighted option's id when valid; no-op without options.
         if not self.options:
             return
         index = self.query_one("#local-search-results-list", ListView).index
@@ -1215,10 +1511,15 @@ class LocalSearchResultsScreen(ModalScreen[str | None]):
             self.dismiss(self.options[index][0])
 
     def action_cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with nothing.
         self.dismiss(None)
 
 
 class LocalModelActionScreen(ModalScreen[str | None]):
+    # [CLASS DOC]
+    # Modal with one text input collecting an opaque model reference; dismisses with
+    # the stripped non-empty value or nothing on cancel.
     """Collect one opaque model reference for a backend-provided action."""
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
@@ -1232,12 +1533,16 @@ class LocalModelActionScreen(ModalScreen[str | None]):
         placeholder: str = "Model identifier",
         theme: TuiTheme,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store title, placeholder and theme.
         super().__init__()
         self.title_text = title
         self.placeholder = placeholder
         self.theme = theme
 
     def compose(self) -> ComposeResult:
+        # [FUNCTION DOC]
+        # Yield the title, input and footer.
         with Vertical(id="local-model-action-screen"):
             yield Static(self.title_text, id="local-model-action-title", markup=False)
             yield Input(placeholder=self.placeholder, id="local-model-action-input")
@@ -1247,22 +1552,34 @@ class LocalModelActionScreen(ModalScreen[str | None]):
             )
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # Focus the input.
         self.query_one("#local-model-action-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # [FUNCTION DOC]
+        # Stop the event and submit.
         event.stop()
         self._submit()
 
     def _submit(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: dismiss with the stripped value if non-empty; otherwise stay open.
         value = self.query_one("#local-model-action-input", Input).value.strip()
         if value:
             self.dismiss(value)
 
     def action_cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss with nothing.
         self.dismiss(None)
 
 
 def _model_label(model: LocalModel, selected_model: str | None) -> str:
+    # [FUNCTION DOC]
+    # HELPER: model display name (with id in parentheses when different) followed by
+    # details: its state ("unloaded" shown as "available to load") and "active" if
+    # it is the selected model.
     label = model.display_name or model.id
     if label != model.id:
         label = f"{label} ({model.id})"
@@ -1277,6 +1594,10 @@ def _model_label(model: LocalModel, selected_model: str | None) -> str:
 def _search_result_options(
     result: LocalSearchResult,
 ) -> tuple[tuple[str, str, bool], ...]:
+    # [FUNCTION DOC]
+    # HELPER: flatten one search result into (id, label, recommended) options: a
+    # single non-recommended entry when it has no variants, else one per variant
+    # labeled with variant label, size, recommended and restricted markers.
     if not result.options:
         restricted = " — restricted" if result.restricted else ""
         return ((result.id, result.label + restricted, False),)
@@ -1294,6 +1615,9 @@ def _search_result_options(
 
 
 def _format_bytes(value: int) -> str:
+    # [FUNCTION DOC]
+    # HELPER: human-readable binary size: whole bytes below 1 KiB, else one decimal
+    # in KiB, MiB, GiB or TiB.
     size = float(value)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if size < 1024 or unit == "TiB":

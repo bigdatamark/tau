@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Tests for an experimental Ollama adapter spike (fixture in tests/fixtures) that
+# plugs into the dynamic provider registry and local backend registry using only
+# Ollama's official HTTP APIs: OpenAI-compatible model listing plus native tags/ps
+# endpoints for backend state. Verifies shapes fit without llama.cpp-specific concepts.
 """Bounded official-API Ollama adapter spike; not a shipped backend."""
 
 from __future__ import annotations
@@ -15,13 +20,26 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 def anyio_backend() -> str:
+    # [FUNCTION DOC]
+    # HELPER: Pytest fixture forcing anyio tests in this module to run on asyncio only.
+    # Returns the string "asyncio".
     return "asyncio"
 
 
 def _client() -> tuple[httpx.AsyncClient, list[httpx.Request]]:
+    # [FUNCTION DOC]
+    # HELPER: Build an httpx async client backed by a mock transport that serves fake
+    # Ollama responses: /v1/models (two models), /api/tags (same two names), /api/ps
+    # (first model running). Any other path raises an assertion error.
+    # Output: a pair of the client and a list that records every request (mutated as
+    # requests arrive).
     requests: list[httpx.Request] = []
 
     def dispatch(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock transport handler. Appends the request to the shared request list,
+        # then returns the canned JSON response for the known paths.
+        # Raises AssertionError for unknown paths.
         requests.append(request)
         if request.url.path == "/v1/models":
             return httpx.Response(
@@ -47,6 +65,11 @@ def _client() -> tuple[httpx.AsyncClient, list[httpx.Request]]:
 
 
 async def test_official_ollama_shapes_fit_without_llama_concepts() -> None:
+    # [FUNCTION DOC]
+    # Registers the spike's provider and backend under one id, refreshes both, and
+    # asserts the provider is published with both model ids in order, the backend
+    # reports the first model as running and selected, and exactly the three endpoints
+    # were requested in order. Closes registries and client afterwards.
     client, requests = _client()
     adapter = OllamaAdapterSpike(client)
     providers = DynamicProviderRegistry(generation_id="generation")
@@ -77,6 +100,9 @@ async def test_official_ollama_shapes_fit_without_llama_concepts() -> None:
 
 
 async def test_ollama_openai_compatibility_uses_no_auth_and_offline_cache() -> None:
+    # [FUNCTION DOC]
+    # Refreshing the provider with network disallowed must still publish it, with an
+    # empty model list, and must make no HTTP requests.
     client, requests = _client()
     adapter = OllamaAdapterSpike(client)
     providers = DynamicProviderRegistry(generation_id="generation")
@@ -92,7 +118,13 @@ async def test_ollama_openai_compatibility_uses_no_auth_and_offline_cache() -> N
 
 
 async def test_ollama_spike_rejects_malformed_native_state() -> None:
+    # [FUNCTION DOC]
+    # When the native endpoint returns "models" as an object instead of a list, the
+    # adapter's status call must raise ValueError mentioning "models list".
     async def dispatch(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock handler returning HTTP 200 with a JSON body whose "models" is an empty
+        # object, for any request.
         del request
         return httpx.Response(200, content=json.dumps({"models": {}}).encode())
 

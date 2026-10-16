@@ -1,3 +1,12 @@
+# [MODULE DOC]
+# OAuth support for the OpenAI Codex (ChatGPT subscription) provider: PKCE
+# authorization-code flow with a local loopback callback server on port 1455
+# (host overridable via the TAU_OAUTH_CALLBACK_HOST environment variable),
+# optional manual paste of the code/redirect URL, token exchange and refresh
+# against the OpenAI token endpoint, and extraction of the ChatGPT account id
+# and expiry from the access token JWT. Also defines the provider object that
+# plugs into the OAuth provider registry. Expiry times are epoch milliseconds;
+# credentials are treated as expired 60 seconds early.
 """OAuth helpers for subscription-backed coding providers."""
 
 from __future__ import annotations
@@ -47,6 +56,9 @@ type ProgressCallback = Callable[[str], None]
 
 @dataclass(frozen=True, slots=True)
 class AuthorizationCode:
+    # [CLASS DOC]
+    # Immutable parsed authorization callback data: optional code and optional
+    # state.
     """Parsed OAuth authorization callback data."""
 
     code: str | None = None
@@ -55,6 +67,9 @@ class AuthorizationCode:
 
 @dataclass(frozen=True, slots=True)
 class AuthorizationFlow:
+    # [CLASS DOC]
+    # Immutable state of one authorization attempt: PKCE verifier, random state
+    # token and the full authorization URL.
     """OpenAI Codex OAuth authorization flow state."""
 
     verifier: str
@@ -64,6 +79,9 @@ class AuthorizationFlow:
 
 @dataclass(frozen=True, slots=True)
 class TokenResponse:
+    # [CLASS DOC]
+    # Immutable successful token-exchange result: access token, refresh token and
+    # absolute expiry in epoch milliseconds.
     """Successful OAuth token response."""
 
     access: str
@@ -72,10 +90,17 @@ class TokenResponse:
 
 
 class OAuthError(RuntimeError):
+    # [CLASS DOC]
+    # Exception (RuntimeError subclass) raised when an OAuth flow, token exchange
+    # or refresh cannot complete.
     """Raised when an OAuth flow cannot complete."""
 
 
 class OpenAICodexOAuthProvider:
+    # [CLASS DOC]
+    # OAuth provider implementation registered for "openai-codex" with display
+    # name "OpenAI Codex (ChatGPT subscription)" and only the browser flow kind.
+    # Stateless; delegates to the module functions.
     """Registered OpenAI Codex subscription OAuth behavior."""
 
     id = OPENAI_CODEX_OAUTH_PROVIDER
@@ -83,6 +108,12 @@ class OpenAICodexOAuthProvider:
     flow_kinds: tuple[OAuthFlowKind, ...] = ("browser",)
 
     async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredential:
+        # [FUNCTION DOC]
+        # Runs the browser login using the callbacks' on_auth, on_prompt, manual-code
+        # and progress callbacks. Output: the new credential.
+        # Raises OAuthError when the device_code method is requested (unsupported) and
+        # propagates any login error. Side effects: opens a browser, binds a local
+        # port, performs network requests.
         if callbacks.method == "device_code":
             raise OAuthError("OpenAI Codex device-code login is not implemented in Tau yet")
         return await login_openai_codex(
@@ -93,35 +124,54 @@ class OpenAICodexOAuthProvider:
         )
 
     async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
+        # [FUNCTION DOC]
+        # Returns the credential unchanged when not yet expired (with skew), otherwise
+        # refreshes it via the token endpoint and returns the new credential.
+        # Raises OAuthError on refresh failure. Side effect: network request.
         if not oauth_credential_is_expired(credential):
             return credential
         return await refresh_openai_codex_token(credential.refresh)
 
     def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
+        # [FUNCTION DOC]
+        # Returns runtime auth whose API key is the credential's access token.
         return OAuthRuntimeAuth(api_key=credential.access)
 
 
 class _LocalOAuthServer:
+    # [CLASS DOC]
+    # HELPER: handle wrapping a running threaded HTTP callback server, its serving
+    # thread and an asyncio future resolved with the received code (or none).
     def __init__(
         self,
         server: ThreadingHTTPServer,
         thread: threading.Thread,
         future: asyncio.Future[str | None],
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: stores the server, thread and future. No side effects.
         self._server = server
         self._thread = thread
         self._future = future
 
     async def wait_for_code(self) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: awaits the future; returns the code, or none if the wait was
+        # cancelled via cancel_wait.
         """Wait for the local callback server to receive a code."""
         return await self._future
 
     def cancel_wait(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: resolves the future with none if it is still pending.
         """Resolve the pending wait without an authorization code."""
         if not self._future.done():
             self._future.set_result(None)
 
     def close(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: shuts down the server loop, closes the socket and joins the thread
+        # for up to one second. Blocking call.
         """Stop the local callback server."""
         self._server.shutdown()
         self._server.server_close()
@@ -129,6 +179,10 @@ class _LocalOAuthServer:
 
 
 def create_pkce_pair() -> tuple[str, str]:
+    # [FUNCTION DOC]
+    # Generates a random URL-safe verifier (64 random bytes encoded) and its S256
+    # challenge (SHA-256 digest, unpadded base64url). Output: verifier and
+    # challenge pair.
     """Return a PKCE verifier and S256 challenge."""
     verifier = secrets.token_urlsafe(64)
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -140,6 +194,11 @@ def create_openai_codex_authorization_flow(
     *,
     originator: str = "tau",
 ) -> AuthorizationFlow:
+    # [FUNCTION DOC]
+    # Creates a PKCE pair and a 32-hex-character random state and builds the
+    # authorize URL with response type code, client id, redirect URI, scopes,
+    # S256 challenge, state, organization/simplified-flow flags and the given
+    # originator (default "tau"). Output: the authorization flow.
     """Create an OpenAI Codex OAuth authorization URL."""
     verifier, challenge = create_pkce_pair()
     state = secrets.token_hex(16)
@@ -163,6 +222,12 @@ def create_openai_codex_authorization_flow(
 
 
 def parse_authorization_input(value: str) -> AuthorizationCode:
+    # [FUNCTION DOC]
+    # Parses user input into a code/state pair. Blank input gives both none. A
+    # full URL with scheme and host yields its code/state query values. Text with
+    # "#" is split into code and state at the first "#". Text containing "code="
+    # is parsed as a query string. Anything else is treated as a raw code.
+    # Empty parts become none. No side effects.
     """Parse a pasted redirect URL, query string, code#state pair, or raw code."""
     stripped = value.strip()
     if not stripped:
@@ -191,6 +256,9 @@ def parse_authorization_input(value: str) -> AuthorizationCode:
 
 
 def oauth_credential_is_expired(credential: OAuthCredential) -> bool:
+    # [FUNCTION DOC]
+    # Returns true when current time in ms is at or past the credential expiry
+    # minus the 60-second skew.
     """Return whether an OAuth credential should be refreshed before use."""
     return int(time.time() * 1000) >= credential.expires - TOKEN_REFRESH_SKEW_MS
 
@@ -205,6 +273,22 @@ async def login_openai_codex(
     originator: str = "tau",
     client: httpx.AsyncClient | None = None,
 ) -> OAuthCredential:
+    # [FUNCTION DOC]
+    # Runs the full Codex login.
+    # Inputs (keyword): on_auth (receives URL and instructions), on_prompt (asks
+    # for pasted input), optional manual-code callback and progress callback,
+    # open_browser flag (default true), originator and optional HTTP client.
+    # Behavior: creates a flow, starts the local callback server (may be absent if
+    # the port is busy), reports the URL, optionally opens the browser, then waits
+    # for either the server callback or the manual-code callback. If neither
+    # yields a code, prompts the user to paste the code or redirect URL, validating
+    # state. Reports progress, exchanges the code, and extracts the account id.
+    # Output: credential with access, refresh, expiry and account id.
+    # Raises OAuthError for missing code, state mismatch, failed exchange or
+    # missing account id. Side effects: binds a port, starts a thread, opens a
+    # browser, network requests; always closes the server.
+    # KNOWN ISSUE: state validation accepts input with no state at all, so a
+    # pasted bare code bypasses the CSRF state check.
     """Run OpenAI Codex OAuth and return refreshable credentials."""
     flow = create_openai_codex_authorization_flow(originator=originator)
     server = await _start_local_oauth_server(flow.state)
@@ -259,6 +343,11 @@ async def exchange_openai_codex_authorization_code(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> TokenResponse:
+    # [FUNCTION DOC]
+    # Posts an authorization_code grant (client id, code, PKCE verifier, redirect
+    # URI) to the token endpoint. Output: token response with access, refresh and
+    # expiry. Raises OAuthError on HTTP error, non-object JSON, missing tokens or
+    # missing/invalid expiry. Side effect: network request.
     """Exchange an OpenAI Codex authorization code for OAuth tokens."""
     raw = await _post_openai_codex_token(
         {
@@ -285,6 +374,11 @@ async def refresh_openai_codex_token(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> OAuthCredential:
+    # [FUNCTION DOC]
+    # Posts a refresh_token grant. Output: a new credential whose refresh token is
+    # the returned one or, if absent, the old one; expiry from expires_in or the
+    # JWT; account id from the new access token. Raises OAuthError on failure or
+    # if no account id can be extracted. Side effect: network request.
     """Refresh OpenAI Codex OAuth credentials."""
     raw = await _post_openai_codex_token(
         {
@@ -309,6 +403,10 @@ async def refresh_openai_codex_token(
 
 
 def account_id_from_access_token(access_token: str) -> str | None:
+    # [FUNCTION DOC]
+    # Decodes the JWT payload (without signature verification) and returns the
+    # stripped chatgpt_account_id inside the OpenAI auth claim, or none if the
+    # token, claim or id is missing or invalid.
     """Extract the ChatGPT account id from an OpenAI Codex access JWT."""
     payload = _access_token_payload(access_token)
     if payload is None:
@@ -323,6 +421,9 @@ def account_id_from_access_token(access_token: str) -> str | None:
 
 
 def _access_token_expiry(access_token: str) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: returns the JWT "exp" claim (positive number, not boolean) converted
+    # to epoch milliseconds, or none.
     payload = _access_token_payload(access_token)
     if payload is None:
         return None
@@ -333,6 +434,10 @@ def _access_token_expiry(access_token: str) -> int | None:
 
 
 def _access_token_payload(access_token: str) -> dict[str, Any] | None:
+    # [FUNCTION DOC]
+    # HELPER: splits a three-part JWT, base64url-decodes and JSON-parses the
+    # middle part, returning it if it is a mapping; any failure returns none.
+    # No signature verification.
     try:
         parts = access_token.split(".")
         if len(parts) != 3:
@@ -351,6 +456,13 @@ async def _post_openai_codex_token(
     client: httpx.AsyncClient | None,
     action: str,
 ) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: posts form-encoded data to the token endpoint using the given client
+    # or a temporary one (60 s timeout, closed afterwards).
+    # Output: the decoded JSON object. Raises OAuthError for status 400 or above
+    # (including the response body) or when the JSON is not an object.
+    # KNOWN ISSUE: a non-JSON body raises a raw decode error rather than
+    # OAuthError, and network errors propagate as httpx exceptions.
     owns_client = client is None
     active_client = client or create_async_client(timeout=60)
     try:
@@ -375,6 +487,10 @@ async def _post_openai_codex_token(
 
 
 def _required_token_field(raw: dict[str, Any], field: str, *, action: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: returns a non-empty string field from the token response or raises
+    # OAuthError naming the action and field and dumping the whole response
+    # (which may include secrets in error messages).
     value = raw.get(field)
     if not isinstance(value, str) or not value:
         raise OAuthError(
@@ -384,6 +500,8 @@ def _required_token_field(raw: dict[str, Any], field: str, *, action: str) -> st
 
 
 def _optional_token_field(raw: dict[str, Any], field: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: returns a non-empty string field or none.
     value = raw.get(field)
     if isinstance(value, str) and value:
         return value
@@ -391,6 +509,10 @@ def _optional_token_field(raw: dict[str, Any], field: str) -> str | None:
 
 
 def _token_expiry(raw: dict[str, Any], access_token: str, *, action: str) -> int:
+    # [FUNCTION DOC]
+    # HELPER: computes absolute expiry in ms: now plus numeric expires_in seconds;
+    # raises OAuthError when expires_in is present but not numeric; otherwise uses
+    # the JWT exp claim; raises OAuthError if neither is available.
     expires_in = raw.get("expires_in")
     if isinstance(expires_in, int | float) and not isinstance(expires_in, bool):
         return int(time.time() * 1000) + int(expires_in * 1000)
@@ -413,6 +535,13 @@ async def _wait_for_authorization_code(
     server: _LocalOAuthServer | None,
     on_manual_code_input: ManualCodeCallback | None,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: races the local server's code wait and the manual-code callback
+    # (whichever exist) and takes the first finished result, cancelling the other
+    # and always resolving the server wait. Returns none when no source exists or
+    # the winner produced none; otherwise parses the input, validates state
+    # (raising OAuthError on mismatch) and returns the code (may be none).
+    # Exceptions from the winning task propagate. Cancelled tasks are not awaited.
     tasks: list[asyncio.Task[str | None]] = []
     if server is not None:
         tasks.append(asyncio.create_task(server.wait_for_code()))
@@ -438,10 +567,15 @@ async def _wait_for_authorization_code(
 
 
 async def _await_manual_code(callback: ManualCodeCallback) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: awaits the manual-code callback and returns its string.
     return await callback()
 
 
 def _validate_state(state: str | None, expected_state: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: raises OAuthError("OAuth state mismatch") when a state is present
+    # and differs from the expected one; a missing state passes.
     if state is not None and state != expected_state:
         raise OAuthError("OAuth state mismatch")
 
@@ -453,12 +587,27 @@ async def _start_local_oauth_server(
     callback_path: str = "/auth/callback",
     success_message: str = "OpenAI authentication completed. You can close this window.",
 ) -> _LocalOAuthServer | None:
+    # [FUNCTION DOC]
+    # HELPER: starts a threaded HTTP server on the configured host and callback
+    # port that handles the OAuth redirect.
+    # Inputs: expected state and keyword port, callback path and success message.
+    # Output: a server handle, or none if binding fails with OSError.
+    # Side effects: binds a socket and starts a daemon serving thread; the
+    # request handler resolves the future on the event loop thread-safely.
     host = environ.get("TAU_OAUTH_CALLBACK_HOST", "127.0.0.1")
     loop = asyncio.get_running_loop()
     future: asyncio.Future[str | None] = loop.create_future()
 
     class CallbackHandler(BaseHTTPRequestHandler):
+        # [CLASS DOC]
+        # HELPER: request handler class closed over the expected state, path, loop and
+        # future.
         def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            # [FUNCTION DOC]
+            # HELPER: handles a GET: wrong path gives 404, state mismatch 400, missing
+            # code 400; otherwise responds 200 with the success page and resolves the
+            # future with the code (first one wins). Unexpected errors produce 500. All
+            # responses are small HTML pages.
             try:
                 parsed = urlparse(self.path)
                 if parsed.path != callback_path:
@@ -482,9 +631,14 @@ async def _start_local_oauth_server(
                 self._finish(500, _oauth_html("Internal error while processing OAuth callback."))
 
         def log_message(self, _format: str, *_args: Any) -> None:
+            # [FUNCTION DOC]
+            # HELPER: suppresses the default request logging to stderr.
             return
 
         def _finish(self, status: int, body: str) -> None:
+            # [FUNCTION DOC]
+            # HELPER: writes a status line, HTML content-type and length headers and the
+            # UTF-8 body.
             encoded = body.encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -502,6 +656,9 @@ async def _start_local_oauth_server(
 
 
 def _first_query_value(params: dict[str, list[str]], key: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: returns the first value for a key in parsed query parameters, or
+    # none when absent or empty.
     values = params.get(key)
     if not values:
         return None
@@ -509,15 +666,23 @@ def _first_query_value(params: dict[str, list[str]], key: str) -> str | None:
 
 
 def _base64url(value: bytes) -> str:
+    # [FUNCTION DOC]
+    # HELPER: unpadded URL-safe base64 encoding of bytes to an ASCII string.
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
 def _base64url_decode(value: str) -> bytes:
+    # [FUNCTION DOC]
+    # HELPER: URL-safe base64 decoding that re-adds missing padding. Raises on
+    # invalid input.
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(value + padding)
 
 
 def _oauth_html(message: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: returns a minimal HTML page titled "Tau OAuth" containing the
+    # HTML-escaped message in a paragraph.
     escaped = (
         message.replace("&", "&amp;")
         .replace("<", "&lt;")

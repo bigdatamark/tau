@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Tests for TUI prompt autocompletion (tau_coding.tui.autocomplete) and its Rich rendering:
+# slash-command completion (all commands, grouping with custom prompts, search-term aliases,
+# direct-match priority, "/skill:" entry), skill-name completion, hiding after a completed command
+# plus space, argument completion for /model, /login, /logout, /theme, /resume (none for /provider
+# or /thinking), selection wrapping, "@" file references (workspace, dotfiles, parent paths,
+# skipped generated dirs, cursor-aware token replacement) and "!"/"!!" shell path completion.
+# Filesystem cases create files under tmp_path.
 from pathlib import Path
 
 from rich.console import Console
@@ -10,6 +18,8 @@ from tau_coding.tui.widgets import render_completion_suggestions
 
 
 def test_command_completion_for_slash_lists_every_registered_command() -> None:
+    # [FUNCTION DOC]
+    # Test: "/" lists every registered command in registry order, with the skill command shown as "/skill:".
     registry = create_default_command_registry()
     state = build_completion_state(
         "/",
@@ -25,6 +35,9 @@ def test_command_completion_for_slash_lists_every_registered_command() -> None:
 
 
 def test_slash_completion_groups_commands_and_custom_prompts() -> None:
+    # [FUNCTION DOC]
+    # Test: commands come first under "Commands" and custom prompts last under "Custom prompts"; the
+    # rendered suggestions show each heading before its items.
     state = build_completion_state(
         "/",
         command_registry=create_default_command_registry(),
@@ -52,6 +65,8 @@ def test_slash_completion_groups_commands_and_custom_prompts() -> None:
 
 
 def test_completion_rendering_aligns_wrapped_descriptions() -> None:
+    # [FUNCTION DOC]
+    # Test: at 48 columns, wrapped skill descriptions are indented to align with the description column.
     state = build_completion_state(
         "/skill:r",
         command_registry=create_default_command_registry(),
@@ -76,6 +91,8 @@ def test_completion_rendering_aligns_wrapped_descriptions() -> None:
 
 
 def test_command_completion_suggests_registered_commands() -> None:
+    # [FUNCTION DOC]
+    # Test: "/se" suggests /session and /skills; applying the selection yields "/session".
     state = build_completion_state(
         "/se",
         command_registry=create_default_command_registry(),
@@ -89,6 +106,8 @@ def test_command_completion_suggests_registered_commands() -> None:
 
 
 def test_command_completion_matches_search_terms_with_canonical_replacement() -> None:
+    # [FUNCTION DOC]
+    # Test: search terms map "/cl" to /new and "/sess" to /session, replacing with the canonical name.
     clear_state = build_completion_state(
         "/cl",
         command_registry=create_default_command_registry(),
@@ -111,6 +130,8 @@ def test_command_completion_matches_search_terms_with_canonical_replacement() ->
 
 
 def test_command_completion_prioritizes_direct_matches_over_search_terms() -> None:
+    # [FUNCTION DOC]
+    # Test: "/res" ranks direct-prefix /resume ahead of search-term match /new.
     state = build_completion_state(
         "/res",
         command_registry=create_default_command_registry(),
@@ -124,6 +145,8 @@ def test_command_completion_prioritizes_direct_matches_over_search_terms() -> No
 
 
 def test_skill_command_is_available_for_command_completion() -> None:
+    # [FUNCTION DOC]
+    # Test: "/ski" suggests "/skill:" and "/skills", selecting "/skill:".
     state = build_completion_state(
         "/ski",
         command_registry=create_default_command_registry(),
@@ -137,6 +160,8 @@ def test_skill_command_is_available_for_command_completion() -> None:
 
 
 def test_skill_name_completion_preserves_request_text_for_incomplete_name() -> None:
+    # [FUNCTION DOC]
+    # Test: completing a partial skill name keeps the following request text.
     state = build_completion_state(
         "/skill:r fix tests",
         command_registry=create_default_command_registry(),
@@ -157,6 +182,8 @@ def test_skill_name_completion_preserves_request_text_for_incomplete_name() -> N
 
 
 def test_skill_name_completion_hides_after_completed_skill_command_space() -> None:
+    # [FUNCTION DOC]
+    # Test: after a complete skill name plus space (with or without request text), no suggestions appear.
     trailing_space_state = build_completion_state(
         "/skill:review ",
         command_registry=create_default_command_registry(),
@@ -189,6 +216,8 @@ def test_skill_name_completion_hides_after_completed_skill_command_space() -> No
 
 
 def test_file_reference_completion_works_in_skill_command_arguments(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test (regression #316): "@" file references complete inside /skill: argument text.
     # Regression test for issue #316: @ file references stopped working in the
     # argument text of a /skill invocation.
     (tmp_path / "src").mkdir()
@@ -215,6 +244,8 @@ def test_file_reference_completion_works_in_skill_command_arguments(tmp_path: Pa
 
 
 def test_custom_prompt_completion_hides_after_completed_prompt_command_space() -> None:
+    # [FUNCTION DOC]
+    # Test: after a complete custom prompt name plus space, no suggestions appear.
     trailing_space_state = build_completion_state(
         "/example ",
         command_registry=create_default_command_registry(),
@@ -247,6 +278,8 @@ def test_custom_prompt_completion_hides_after_completed_prompt_command_space() -
 
 
 def test_builtin_command_completion_hides_after_completed_command_space() -> None:
+    # [FUNCTION DOC]
+    # Test: after a complete built-in command plus space, no suggestions appear.
     trailing_space_state = build_completion_state(
         "/compact ",
         command_registry=create_default_command_registry(),
@@ -265,6 +298,8 @@ def test_builtin_command_completion_hides_after_completed_command_space() -> Non
 
 
 def test_builtin_command_argument_completion_wins_over_completed_command_hide() -> None:
+    # [FUNCTION DOC]
+    # Test: /model argument completion still offers model names after the command token.
     state = build_completion_state(
         "/model fak",
         command_registry=create_default_command_registry(),
@@ -277,6 +312,8 @@ def test_builtin_command_argument_completion_wins_over_completed_command_hide() 
 
 
 def test_builtin_command_argument_completion_wins_over_custom_prompt_name() -> None:
+    # [FUNCTION DOC]
+    # Test: built-in /model argument completion wins over a custom prompt named "model".
     state = build_completion_state(
         "/model fak",
         command_registry=create_default_command_registry(),
@@ -295,6 +332,8 @@ def test_builtin_command_argument_completion_wins_over_custom_prompt_name() -> N
 
 
 def test_custom_prompt_completion_reappears_when_deleting_back_to_command_token() -> None:
+    # [FUNCTION DOC]
+    # Test: a partial custom prompt name is suggested again.
     state = build_completion_state(
         "/exa",
         command_registry=create_default_command_registry(),
@@ -313,6 +352,8 @@ def test_custom_prompt_completion_reappears_when_deleting_back_to_command_token(
 
 
 def test_completion_selection_wraps() -> None:
+    # [FUNCTION DOC]
+    # Test: selecting previous from the first item wraps to the last; next moves to index 1.
     state = build_completion_state(
         "/s",
         command_registry=create_default_command_registry(),
@@ -326,6 +367,8 @@ def test_completion_selection_wraps() -> None:
 
 
 def test_model_argument_completion_preserves_existing_text() -> None:
+    # [FUNCTION DOC]
+    # Test: model argument completion replaces only the argument token, keeping trailing text.
     state = build_completion_state(
         "/model fak continue",
         command_registry=create_default_command_registry(),
@@ -340,6 +383,8 @@ def test_model_argument_completion_preserves_existing_text() -> None:
 
 
 def test_provider_argument_completion_is_not_available() -> None:
+    # [FUNCTION DOC]
+    # Test: /provider has no argument completion (not a built-in).
     state = build_completion_state(
         "/provider lo",
         command_registry=create_default_command_registry(),
@@ -352,6 +397,8 @@ def test_provider_argument_completion_is_not_available() -> None:
 
 
 def test_login_argument_completion_uses_available_providers() -> None:
+    # [FUNCTION DOC]
+    # Test: /login argument completion filters provider names by prefix.
     state = build_completion_state(
         "/login op",
         command_registry=create_default_command_registry(),
@@ -364,6 +411,8 @@ def test_login_argument_completion_uses_available_providers() -> None:
 
 
 def test_login_argument_completion_includes_anthropic_auth_aliases() -> None:
+    # [FUNCTION DOC]
+    # Test: /login completion includes Anthropic auth alias names.
     state = build_completion_state(
         "/login anthropic-",
         command_registry=create_default_command_registry(),
@@ -379,6 +428,8 @@ def test_login_argument_completion_includes_anthropic_auth_aliases() -> None:
 
 
 def test_logout_argument_completion_uses_available_providers() -> None:
+    # [FUNCTION DOC]
+    # Test: /logout argument completion filters provider names by prefix.
     state = build_completion_state(
         "/logout op",
         command_registry=create_default_command_registry(),
@@ -391,6 +442,9 @@ def test_logout_argument_completion_uses_available_providers() -> None:
 
 
 def test_thinking_argument_completion_uses_available_modes() -> None:
+    # [FUNCTION DOC]
+    # Test: "/thinking h" yields no suggestions because there is no /thinking command.
+    # KNOWN ISSUE: the test name says completion "uses available modes" but it asserts no items.
     state = build_completion_state(
         "/thinking h",
         command_registry=create_default_command_registry(),
@@ -403,6 +457,8 @@ def test_thinking_argument_completion_uses_available_modes() -> None:
 
 
 def test_theme_argument_completion_uses_theme_names() -> None:
+    # [FUNCTION DOC]
+    # Test: /theme completion filters theme names by prefix and applies the first.
     state = build_completion_state(
         "/theme tau-",
         command_registry=create_default_command_registry(),
@@ -417,6 +473,8 @@ def test_theme_argument_completion_uses_theme_names() -> None:
 
 
 def test_resume_argument_completion_uses_session_ids() -> None:
+    # [FUNCTION DOC]
+    # Test: /resume completion filters plain session ids by prefix.
     state = build_completion_state(
         "/resume sess",
         command_registry=create_default_command_registry(),
@@ -431,6 +489,8 @@ def test_resume_argument_completion_uses_session_ids() -> None:
 
 
 def test_resume_argument_completion_uses_session_options_with_descriptions() -> None:
+    # [FUNCTION DOC]
+    # Test: /resume completion uses session options in given order and carries their descriptions.
     state = build_completion_state(
         "/resume sess",
         command_registry=create_default_command_registry(),
@@ -450,6 +510,8 @@ def test_resume_argument_completion_uses_session_options_with_descriptions() -> 
 
 
 def test_file_reference_completion_matches_workspace_files(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: "@app" fuzzy-matches src/app.py, ignoring node_modules (and the hidden file does not match).
     (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
@@ -473,6 +535,8 @@ def test_file_reference_completion_matches_workspace_files(tmp_path: Path) -> No
 def test_file_reference_completion_includes_dotfiles_and_dot_directories(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test: "@." includes dotfiles and dot directories but excludes .git.
     (tmp_path / ".env").write_text("TOKEN=value\n", encoding="utf-8")
     (tmp_path / ".agents").mkdir()
     (tmp_path / ".agents" / "rules.md").write_text("# Rules\n", encoding="utf-8")
@@ -496,6 +560,8 @@ def test_file_reference_completion_includes_dotfiles_and_dot_directories(
 def test_file_reference_completion_reaches_outside_workspace_with_parent_path(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test: "@.." and "@../..." complete outside the workspace: parent dir, sibling dir, and file.
     project = tmp_path / "project"
     project.mkdir()
     sibling = tmp_path / "shared"
@@ -534,6 +600,8 @@ def test_file_reference_completion_reaches_outside_workspace_with_parent_path(
 def test_external_file_reference_completion_skips_generated_directories(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test: external completion skips generated directories like node_modules.
     project = tmp_path / "project"
     project.mkdir()
     (tmp_path / "node_modules").mkdir()
@@ -551,6 +619,8 @@ def test_external_file_reference_completion_skips_generated_directories(
 
 
 def test_file_reference_completion_works_in_custom_prompt_arguments(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: "@" references complete inside custom prompt arguments.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
     text = "/review inspect @app"
@@ -577,6 +647,8 @@ def test_file_reference_completion_works_in_custom_prompt_arguments(tmp_path: Pa
 def test_file_reference_completion_works_in_multiline_custom_prompt_arguments(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test: "@" references complete on a new line of multi-line custom prompt arguments.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
     text = "/review inspect\n@app"
@@ -601,6 +673,9 @@ def test_file_reference_completion_works_in_multiline_custom_prompt_arguments(
 
 
 def test_file_reference_completion_uses_cursor_position_mid_text(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: with a mid-text cursor, the token before the cursor is completed and the cursor-after-apply
+    # position is the end of the inserted reference.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
     text = "look at @app and fix it"
@@ -624,6 +699,9 @@ def test_file_reference_completion_uses_cursor_position_mid_text(tmp_path: Path)
 def test_file_reference_completion_replaces_full_token_for_mid_token_cursor(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test: with the cursor inside a token, matching uses text up to the cursor but applying replaces
+    # the whole token.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
     text = "@srcapp.py fix"
@@ -643,6 +721,8 @@ def test_file_reference_completion_replaces_full_token_for_mid_token_cursor(
 
 
 def test_file_reference_completion_skips_identical_replacement(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: no suggestions when the only match equals the existing reference.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
     text = "read @src/app.py now"
@@ -662,6 +742,8 @@ def test_file_reference_completion_skips_identical_replacement(tmp_path: Path) -
 def test_file_reference_completion_uses_cursor_position_in_skill_arguments(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test: cursor-aware "@" completion inside /skill: arguments keeps trailing text.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
     text = "/skill:review fix @ap please"
@@ -684,6 +766,8 @@ def test_file_reference_completion_uses_cursor_position_in_skill_arguments(
 def test_shell_path_completion_replaces_full_token_for_mid_token_cursor(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test: shell path completion with a mid-token cursor replaces the full token.
     (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
     text = "!cat READx file"
 
@@ -701,6 +785,8 @@ def test_shell_path_completion_replaces_full_token_for_mid_token_cursor(
 
 
 def test_shell_path_completion_stays_off_before_command_prefix(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: with the cursor at 0 (before "!"), shell path completion is off.
     (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
 
     state = build_completion_state(
@@ -716,6 +802,8 @@ def test_shell_path_completion_stays_off_before_command_prefix(tmp_path: Path) -
 
 
 def test_file_reference_completion_stays_off_for_slash_commands(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: "@" file completion is disabled within unknown slash command input.
     (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
 
     state = build_completion_state(
@@ -730,6 +818,8 @@ def test_file_reference_completion_stays_off_for_slash_commands(tmp_path: Path) 
 
 
 def test_shell_path_completion_includes_dotfiles_and_dot_directories(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: shell path completion includes dotfiles/dot dirs (not .git) and completes inside them with "!!".
     (tmp_path / ".env").write_text("TOKEN=value\n", encoding="utf-8")
     (tmp_path / ".agents").mkdir()
     (tmp_path / ".agents" / "rules.md").write_text("# Rules\n", encoding="utf-8")
@@ -757,6 +847,8 @@ def test_shell_path_completion_includes_dotfiles_and_dot_directories(tmp_path: P
 
 
 def test_shell_path_completion_preserves_bang_prefix(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: shell path completion keeps the single "!" prefix.
     (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
 
     state = build_completion_state(
@@ -773,6 +865,8 @@ def test_shell_path_completion_preserves_bang_prefix(tmp_path: Path) -> None:
 
 
 def test_shell_path_completion_preserves_double_bang_prefix(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: shell path completion keeps the "!!" prefix.
     (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
 
     state = build_completion_state(
@@ -789,6 +883,8 @@ def test_shell_path_completion_preserves_double_bang_prefix(tmp_path: Path) -> N
 
 
 def test_shell_path_completion_matches_relative_paths(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: shell path completion matches relative paths in subdirectories.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("print('hi')\n", encoding="utf-8")
 
@@ -806,6 +902,8 @@ def test_shell_path_completion_matches_relative_paths(tmp_path: Path) -> None:
 
 
 def test_shell_path_completion_adds_trailing_slash_for_directories(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: directories complete with a trailing slash; a trailing-slash token lists children.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("print('hi')\n", encoding="utf-8")
 

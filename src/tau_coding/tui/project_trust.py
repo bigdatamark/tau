@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Textual frontend adapter (tau_coding TUI layer) for project-trust decisions.
+# The trust policy lives in tau_coding.project_trust; this module only renders a
+# request as an accessible modal list of five choices (trust folder, trust parent,
+# trust this run, decline folder, decline this run) and returns the chosen value.
+# Usable either as a screen inside the main TUI or as a standalone mini app before
+# the TUI starts.
 """Accessible Textual adapter for Tau-owned project-trust requests."""
 
 from __future__ import annotations
@@ -24,6 +31,10 @@ _LABELS: tuple[tuple[TrustChoice, str], ...] = (
 
 
 class ProjectTrustScreen(ModalScreen[TrustChoice | None]):
+    # [CLASS DOC]
+    # Modal screen that displays one project-trust request and dismisses with the
+    # selected trust choice string, or None when cancelled with Escape. Key bindings:
+    # escape cancels, up/down move the cursor, enter selects. Styled via inline CSS.
     """Tau-style modal picker rendering one policy-owned request."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -91,11 +102,22 @@ class ProjectTrustScreen(ModalScreen[TrustChoice | None]):
         *,
         cancel_action: str = "cancels",
     ) -> None:
+        # [FUNCTION DOC]
+        # Store the request and the verb shown in the help line for Escape (default
+        # "cancels"; the standalone app passes "exits Tau").
+        # Inputs: trust request; keyword cancel_action text. Outputs: none.
         super().__init__()
         self.request = request
         self.cancel_action = cancel_action
 
     def compose(self) -> ComposeResult:
+        # [FUNCTION DOC]
+        # Build the dialog: title, folder label and the request's working directory path,
+        # a "Protected inputs" summary listing each resource category with its count,
+        # a reminder that trust is not a sandbox, a list view of the five choices (the
+        # trust-parent label also shows the parent directory path; item names carry the
+        # choice value), and a help line. All dynamic text is rendered with markup disabled.
+        # Yields widgets; no other side effects.
         categories = ", ".join(
             f"{category} ({self.request.resources.counts[category]})"
             for category in self.request.resources.categories
@@ -129,12 +151,19 @@ class ProjectTrustScreen(ModalScreen[TrustChoice | None]):
             )
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # Select the first list item ("Trust this folder") and focus the list so keyboard
+        # users can act immediately. Side effects: mutates widget focus/index.
         """Focus the first safe, explicit action for keyboard users."""
         choices = self.query_one("#project-trust-list", ListView)
         choices.index = 0
         choices.focus()
 
     def on_key(self, event: Key) -> None:
+        # [FUNCTION DOC]
+        # Intercept up, down and enter key events, stop their propagation (so the host
+        # app's global bindings do not consume them) and invoke the matching cursor action.
+        # Other keys pass through unchanged.
         """Keep navigation local when hosted by Tau's globally bound app."""
         if event.key == "up":
             event.stop()
@@ -147,25 +176,41 @@ class ProjectTrustScreen(ModalScreen[TrustChoice | None]):
             self.action_select_cursor()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # [FUNCTION DOC]
+        # When a list item is selected, dismiss the screen with that item's name (the trust
+        # choice). Items without a name are ignored.
         choice = event.item.name
         if choice is not None:
             self.dismiss(choice)  # type: ignore[arg-type]
 
     def action_cursor_up(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list highlight up one item.
         self.query_one("#project-trust-list", ListView).action_cursor_up()
 
     def action_cursor_down(self) -> None:
+        # [FUNCTION DOC]
+        # Move the list highlight down one item.
         self.query_one("#project-trust-list", ListView).action_cursor_down()
 
     def action_select_cursor(self) -> None:
+        # [FUNCTION DOC]
+        # Select the currently highlighted list item (triggers on_list_view_selected).
         self.query_one("#project-trust-list", ListView).action_select_cursor()
 
     def action_cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Dismiss the screen with None (no decision).
         self.dismiss(None)
 
 
 class _ProjectTrustApp(App[TrustChoice | None]):
+    # [CLASS DOC]
+    # HELPER: Minimal standalone Textual app that only shows the trust screen and exits
+    # with its result.
     def __init__(self, request: ProjectTrustRequest) -> None:
+        # [FUNCTION DOC]
+        # Register and activate Tau's dark Textual theme and remember the request.
         super().__init__()
         tau_dark = textual_theme_for_tui_theme(TAU_DARK_THEME.name)
         self.register_theme(tau_dark)
@@ -173,6 +218,9 @@ class _ProjectTrustApp(App[TrustChoice | None]):
         self.request = request
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # Push the trust screen (Escape described as "exits Tau") with the app's exit
+        # method as the dismiss callback, so the app's return value is the choice or None.
         self.push_screen(
             ProjectTrustScreen(self.request, cancel_action="exits Tau"),
             self.exit,
@@ -180,5 +228,8 @@ class _ProjectTrustApp(App[TrustChoice | None]):
 
 
 async def prompt_project_trust(request: ProjectTrustRequest) -> TrustChoice | None:
+    # [FUNCTION DOC]
+    # Run the standalone trust app asynchronously and return the user's trust choice, or
+    # None if cancelled. Side effects: takes over the terminal while running.
     """Run the frontend adapter and return the Tau policy choice."""
     return await _ProjectTrustApp(request).run_async()

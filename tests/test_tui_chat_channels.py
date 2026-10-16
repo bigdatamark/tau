@@ -1,3 +1,7 @@
+# [MODULE DOC]
+# TUI regression test: interleaved thinking and assistant text deltas must keep feeding a single
+# live thinking widget and a single assistant streaming widget rather than splitting them.
+# Uses the Textual test harness with the FakeSession from the TUI app tests.
 """Interleaved reasoning stays in one live thinking widget."""
 
 import pytest
@@ -9,6 +13,11 @@ from test_tui_app import FakeSession
 
 @pytest.mark.anyio
 async def test_text_delta_does_not_close_open_thinking_channel() -> None:
+    # [FUNCTION DOC]
+    # Async test: mounts the TUI app (100x30), alternately appends thinking and assistant deltas to
+    # the transcript view, then asserts exactly two streaming widgets exist whose texts are the joined
+    # thinking text and joined assistant text. Finally finishes the thinking message and asserts the
+    # transcript's active thinking widget is cleared. Raises AssertionError on failure.
     app = TauTuiApp(FakeSession())
     async with app.run_test(size=(100, 30)):
         transcript = app.query_one("#transcript", TranscriptView)

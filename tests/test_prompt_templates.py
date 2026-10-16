@@ -1,3 +1,9 @@
+# [MODULE DOC]
+# Tests for prompt templates (tau_coding.prompt_templates): discovery from
+# Tau and .agents prompt directories with project-over-user precedence,
+# override and reserved-name diagnostics, "{{ name }}" variable rendering, and
+# slash-command expansion with Pi-style positional arguments ($1, $@,
+# $ARGUMENTS, defaults and slices). Uses temporary directories; no network.
 from pathlib import Path
 
 import pytest
@@ -14,10 +20,15 @@ from tau_coding.resources import ResourceError
 
 
 def test_load_prompt_templates_missing_directory_returns_empty(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verifies a resource root with no prompts directory yields an empty list.
     assert load_prompt_templates(TauResourcePaths(root=tmp_path, agents_root=None)) == []
 
 
 def test_load_prompt_templates_from_markdown_files(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verifies a markdown file with frontmatter becomes a template named after the
+    # file stem with the frontmatter description.
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     (prompts_dir / "review.md").write_text(
@@ -33,6 +44,9 @@ def test_load_prompt_templates_from_markdown_files(tmp_path: Path) -> None:
 
 
 def test_load_prompt_templates_includes_agents_directories(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verifies user-level ~/.agents/prompts and project .agents/prompts are both
+    # loaded, project templates listed first.
     tau_home = tmp_path / "home" / ".tau"
     agents_home = tmp_path / "home" / ".agents"
     cwd = tmp_path / "project"
@@ -49,6 +63,9 @@ def test_load_prompt_templates_includes_agents_directories(tmp_path: Path) -> No
 
 
 def test_project_prompt_template_overrides_user_template(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verifies a same-named project template replaces the user template (path and
+    # content come from the project file).
     tau_home = tmp_path / "home" / ".tau"
     agents_home = tmp_path / "home" / ".agents"
     cwd = tmp_path / "project"
@@ -67,6 +84,9 @@ def test_project_prompt_template_overrides_user_template(tmp_path: Path) -> None
 
 
 def test_load_prompt_templates_with_diagnostics_reports_overrides(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verifies the diagnostics loader keeps the project .tau template and emits one
+    # "prompt" diagnostic saying it overrides a lower-precedence resource.
     tau_home = tmp_path / "home" / ".tau"
     agents_home = tmp_path / "home" / ".agents"
     cwd = tmp_path / "project"
@@ -94,6 +114,10 @@ def test_load_prompt_templates_with_diagnostics_reports_overrides(tmp_path: Path
 def test_reserved_picker_template_is_ignored_with_diagnostic(
     tmp_path: Path, reserved_name: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over prompts/skills/tools: an upper-case file named after a
+    # built-in picker command is skipped (case-insensitive) with a diagnostic
+    # naming the reserved command and the file path.
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     reserved_path = prompts_dir / f"{reserved_name.upper()}.md"
@@ -110,6 +134,8 @@ def test_reserved_picker_template_is_ignored_with_diagnostic(
 
 
 def test_render_prompt_template_replaces_variables() -> None:
+    # [FUNCTION DOC]
+    # Verifies "{{ var }}" placeholders are substituted from a mapping.
     template = PromptTemplate(
         name="review",
         path=Path("review.md"),
@@ -122,6 +148,9 @@ def test_render_prompt_template_replaces_variables() -> None:
 
 
 def test_render_prompt_template_rejects_missing_variables() -> None:
+    # [FUNCTION DOC]
+    # Verifies rendering raises ResourceError ("Missing prompt template variable")
+    # when a variable is not supplied.
     template = PromptTemplate(name="review", path=Path("review.md"), content="Review {{ topic }}.")
 
     with pytest.raises(ResourceError, match="Missing prompt template variable"):
@@ -129,6 +158,9 @@ def test_render_prompt_template_rejects_missing_variables() -> None:
 
 
 def test_expand_prompt_template_command_replaces_slash_command() -> None:
+    # [FUNCTION DOC]
+    # Verifies "/name args" expands the template with {{ arguments }} set to the
+    # argument text.
     template = PromptTemplate(
         name="example",
         path=Path("example.md"),
@@ -141,6 +173,8 @@ def test_expand_prompt_template_command_replaces_slash_command() -> None:
 
 
 def test_expand_prompt_template_command_supports_pi_argument_variables() -> None:
+    # [FUNCTION DOC]
+    # Verifies shell-like quoting and $1, $2, $@ and $ARGUMENTS substitution.
     template = PromptTemplate(
         name="example",
         path=Path("example.md"),
@@ -153,6 +187,9 @@ def test_expand_prompt_template_command_supports_pi_argument_variables() -> None
 
 
 def test_expand_prompt_template_command_supports_pi_argument_defaults_and_slices() -> None:
+    # [FUNCTION DOC]
+    # Verifies ${1:-default}, ${@:start}, ${@:start:len} and ${@:-default} with
+    # and without arguments.
     template = PromptTemplate(
         name="example",
         path=Path("example.md"),
@@ -168,6 +205,9 @@ def test_expand_prompt_template_command_supports_pi_argument_defaults_and_slices
 
 
 def test_expand_prompt_template_command_blanks_missing_custom_variables() -> None:
+    # [FUNCTION DOC]
+    # Verifies unknown {{ }} variables become empty during command expansion
+    # (instead of raising) while {{ arguments }} is filled.
     template = PromptTemplate(
         name="review",
         path=Path("review.md"),
@@ -180,6 +220,9 @@ def test_expand_prompt_template_command_blanks_missing_custom_variables() -> Non
 
 
 def test_expand_prompt_template_command_appends_arguments_without_argument_placeholder() -> None:
+    # [FUNCTION DOC]
+    # Verifies that when the template has no argument placeholder, arguments are
+    # appended after a blank line (custom variables still blanked).
     template = PromptTemplate(
         name="review",
         path=Path("review.md"),
@@ -192,6 +235,8 @@ def test_expand_prompt_template_command_appends_arguments_without_argument_place
 
 
 def test_expand_prompt_template_command_appends_arguments_without_placeholder() -> None:
+    # [FUNCTION DOC]
+    # Verifies plain templates get the arguments appended after a blank line.
     template = PromptTemplate(name="review", path=Path("review.md"), content="Review this code.")
 
     assert expand_prompt_template_command("/review src/app.py", [template]) == (
@@ -200,6 +245,8 @@ def test_expand_prompt_template_command_appends_arguments_without_placeholder() 
 
 
 def test_expand_prompt_template_command_ignores_unknown_commands() -> None:
+    # [FUNCTION DOC]
+    # Verifies an unknown slash command returns none.
     template = PromptTemplate(name="review", path=Path("review.md"), content="Review this code.")
 
     assert expand_prompt_template_command("/missing src/app.py", [template]) is None

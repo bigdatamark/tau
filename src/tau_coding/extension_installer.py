@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Implements "tau install": installs an extension into the user extensions directory
+# (by default <Tau home>/extensions) from a local .py file, a local package directory,
+# or a Git repository. Installs are staged in a hidden temporary directory inside the
+# destination root, validated with the same discovery used at startup, then moved
+# into place atomically (with backup/rollback when replacing). Subprocesses (git) go
+# through an injectable command runner for testing.
 """Install Tau extensions from local paths or Git repositories."""
 
 from __future__ import annotations
@@ -19,11 +26,17 @@ CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 class ExtensionInstallError(RuntimeError):
+    # [CLASS DOC]
+    # Error raised for any unsafe or failed installation (bad source, bad name, git
+    # failure, invalid package, already installed, or wrapped filesystem errors).
     """Raised when an extension source cannot be installed safely."""
 
 
 @dataclass(frozen=True, slots=True)
 class GitExtensionSource:
+    # [CLASS DOC]
+    # Immutable value describing a parsed Git source: clone URL, optional ref to check
+    # out (branch, tag or commit), and the derived install directory name.
     """A normalized Git repository source and optional checkout ref."""
 
     url: str
@@ -38,6 +51,22 @@ def install_extension(
     extensions_dir: Path | None = None,
     command_runner: CommandRunner = subprocess.run,
 ) -> Path:
+    # [FUNCTION DOC]
+    # Install one extension and return the final installed path.
+    # Inputs: source string (local path, possibly with ~, or a Git source); keyword
+    # force (replace an existing install); optional extensions directory override;
+    # command runner used for git.
+    # Behavior: create the destination root; if the source exists locally, resolve it
+    # and derive the name from its basename (files must end in .py); otherwise parse it
+    # as a Git source. Create a staging root inside the destination root, mirror the
+    # "extensions/<name>" layout there, copy the file, copy the directory (skipping VCS,
+    # virtualenv and cache folders) or clone the repo into it, validate via discovery,
+    # then publish into destination root / name.
+    # Raises ExtensionInstallError for all failures; OSErrors are wrapped. The staging
+    # root is always removed afterwards (removal errors ignored).
+    # Side effects: filesystem writes, git subprocesses, network access for clones.
+    # KNOWN ISSUE: an existing local path that is neither a regular file nor a
+    # directory (e.g. a socket) yields "unsupported local extension source".
     """Install one extension into Tau's user extension directory.
 
     Local Python files are copied. Local package directories and Git
@@ -86,6 +115,15 @@ def install_extension(
 
 
 def parse_git_extension_source(source: str) -> GitExtensionSource:
+    # [FUNCTION DOC]
+    # Parse a Pi-style Git source into a GitExtensionSource.
+    # Strips an optional "git:" prefix; a trailing "@ref" after the last "/" or ":" is
+    # split off as the ref (empty ref is an error). "github.com/..." gets an https://
+    # prefix; https, http, ssh, git, file URLs and "git@" scp-style sources are kept as
+    # is; anything else is rejected. The name is the last path segment (after "/" or
+    # ":") with a trailing ".git" removed, and must pass install-name validation.
+    # Raises ExtensionInstallError for empty source/ref, unsupported scheme, bad name.
+    # Pure function.
     """Normalize a Pi-style Git source accepted by ``tau install``."""
     raw = source[4:] if source.startswith("git:") else source
     if not raw:
@@ -121,6 +159,12 @@ def _clone_git_source(
     *,
     command_runner: CommandRunner,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Run "git clone -- <url> <destination>" via the command runner (captured
+    # text output, no check); on non-zero exit raise ExtensionInstallError with stderr,
+    # stdout, or a generic detail. If a ref is set, run a detached "git checkout" of it
+    # in the clone and raise similarly on failure. Side effects: subprocess, network,
+    # filesystem.
     result = command_runner(
         ["git", "clone", "--", source.url, str(destination)],
         capture_output=True,
@@ -144,6 +188,10 @@ def _clone_git_source(
 
 
 def _local_install_name(source: Path) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return the install name for a local source (its basename) after checking
+    # that a file source has a .py suffix and the name is valid. Raises
+    # ExtensionInstallError otherwise.
     if source.is_file() and source.suffix != ".py":
         raise ExtensionInstallError("a local extension file must have a .py suffix")
     name = source.name
@@ -152,11 +200,20 @@ def _local_install_name(source: Path) -> str:
 
 
 def _validate_install_name(name: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Ensure a name starts with a letter or digit and contains only letters,
+    # digits, dot, underscore and dash (and is not "." or ".."). Raises
+    # ExtensionInstallError otherwise; returns nothing.
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or name in {".", ".."}:
         raise ExtensionInstallError(f"extension source has an unsupported install name: {name!r}")
 
 
 def _validate_staged_extension(staging_root: Path) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Run normal extension discovery with the staging root as the Tau resource
+    # root (cwd is the process cwd). Raises ExtensionInstallError if any error-severity
+    # diagnostics are produced (messages joined) or if nothing was discovered.
+    # Side effects: reads the staged files (discovery may import nothing; only scans).
     paths = TauResourcePaths(root=staging_root, cwd=Path.cwd())
     discovered, diagnostics = discover_extensions(paths)
     errors = [diagnostic.message for diagnostic in diagnostics if diagnostic.severity == "error"]
@@ -170,6 +227,13 @@ def _validate_staged_extension(staging_root: Path) -> None:
 
 
 def _publish_staged_extension(staging: Path, destination: Path, *, force: bool) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Move the staged extension to its destination.
+    # If the destination exists (or is a symlink): without force raise
+    # ExtensionInstallError; with force, remove any stale ".<name>.backup" sibling,
+    # move the destination to that backup, move staging into place (restoring the backup
+    # and re-raising on any failure), then delete the backup. Otherwise just move
+    # staging into place. Side effects: filesystem renames and deletions.
     if destination.exists() or destination.is_symlink():
         if not force:
             raise ExtensionInstallError(
@@ -189,11 +253,17 @@ def _publish_staged_extension(staging: Path, destination: Path, *, force: bool) 
 
 
 def _local_copy_ignore(_directory: str, names: Sequence[str]) -> set[str]:
+    # [FUNCTION DOC]
+    # HELPER: Ignore callback for directory copying; returns the subset of names that
+    # are VCS directories, ".venv", or Python/pytest/mypy cache directories.
     ignored = {".git", ".hg", ".svn", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
     return ignored.intersection(names)
 
 
 def _remove_path(path: Path) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Delete a path: unlink symlinks and files (missing is fine), recursively
+    # remove directories, do nothing if it does not exist. May raise OSError.
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok=True)
     elif path.is_dir():

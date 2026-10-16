@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Tests for Tau's OAuth providers and runtime: Anthropic token refresh (JSON
+# body, redaction and truncation of error details), GitHub Copilot device login,
+# untrusted verification URI rejection and enterprise metadata, the device-code
+# polling loop (slow_down backoff and cancellation), the runtime credential
+# resolver (refresh, atomic persistence, single-flight refresh under
+# concurrency), per-event-loop refresh locks, and the built-in provider registry.
+# HTTP is faked with an httpx mock transport.
 import asyncio
 from typing import cast
 
@@ -43,10 +51,18 @@ def _callbacks(
     prompt: str = "",
     device_codes: list[OAuthDeviceCodeInfo] | None = None,
 ) -> OAuthLoginCallbacks:
+    # [FUNCTION DOC]
+    # HELPER: build login callbacks for tests: on_auth ignores input, on_device_code
+    # appends to the given list when provided, on_prompt returns the fixed prompt
+    # answer, on_select returns nothing (cancelled).
     async def on_prompt(_prompt: OAuthPrompt) -> str:
+        # [FUNCTION DOC]
+        # HELPER: async prompt callback returning the preconfigured answer.
         return prompt
 
     async def on_select(_prompt: OAuthSelectPrompt) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: async select callback that always returns nothing.
         return None
 
     return OAuthLoginCallbacks(
@@ -59,7 +75,12 @@ def _callbacks(
 
 @pytest.mark.anyio
 async def test_refresh_anthropic_token_uses_json_and_redacts_failed_response() -> None:
+    # [FUNCTION DOC]
+    # Asserts refresh posts JSON containing the client id to the token URL, and a
+    # 401 raises OAuthError mentioning the status but neither the body nor the token.
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: mock transport handler checking the request and returning 401.
         assert request.url == ANTHROPIC_TOKEN_URL
         assert request.headers["content-type"] == "application/json"
         assert request.content
@@ -77,9 +98,14 @@ async def test_refresh_anthropic_token_uses_json_and_redacts_failed_response() -
 
 @pytest.mark.anyio
 async def test_refresh_anthropic_token_reports_structured_oauth_error() -> None:
+    # [FUNCTION DOC]
+    # Asserts a structured OAuth error body yields "error: description" in the
+    # raised message without the refresh token.
     """A dead refresh token should say so, not just report a status code."""
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: mock handler returning a 400 invalid_grant JSON error.
         return httpx.Response(
             400,
             json={
@@ -98,9 +124,14 @@ async def test_refresh_anthropic_token_reports_structured_oauth_error() -> None:
 
 @pytest.mark.anyio
 async def test_refresh_anthropic_token_reports_nested_error_without_echoing_token() -> None:
+    # [FUNCTION DOC]
+    # Asserts a nested Anthropic error envelope yields "type: message" detail with
+    # the token replaced by a redaction marker and the message kept under 300 chars.
     """Anthropic's nested envelope still yields detail, minus anything we sent."""
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: mock handler returning a nested error echoing the token plus padding.
         return httpx.Response(
             400,
             json={
@@ -124,10 +155,15 @@ async def test_refresh_anthropic_token_reports_nested_error_without_echoing_toke
 
 @pytest.mark.anyio
 async def test_refresh_anthropic_token_scrubs_a_token_before_truncating() -> None:
+    # [FUNCTION DOC]
+    # Asserts redaction happens before truncation so a token straddling the
+    # 200-character cut leaves no prefix; message ends with the redaction marker.
     """Scrub then truncate: the other order leaks the surviving prefix."""
     secret = "refresh-" + "s" * 40
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: mock handler placing the secret across the truncation boundary.
         # Place the token so it straddles the 200-character truncation point.
         return httpx.Response(
             400,
@@ -146,7 +182,12 @@ async def test_refresh_anthropic_token_scrubs_a_token_before_truncating() -> Non
 
 @pytest.mark.anyio
 async def test_refresh_anthropic_token_returns_provider_neutral_credential() -> None:
+    # [FUNCTION DOC]
+    # Asserts a successful refresh returns a credential with new access and refresh
+    # tokens, no account id, and a positive expiry.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: mock handler returning a successful token response.
         return httpx.Response(
             200,
             json={
@@ -167,9 +208,17 @@ async def test_refresh_anthropic_token_returns_provider_neutral_credential() -> 
 
 @pytest.mark.anyio
 async def test_github_copilot_device_login_and_token_exchange() -> None:
+    # [FUNCTION DOC]
+    # Asserts the full Copilot device flow: device code request with client id,
+    # device code info passed to the callback, GitHub token exchange, Copilot token
+    # fetch with bearer auth, credential with GitHub refresh token and Copilot
+    # access token, and base URL derived from the proxy endpoint in the token.
     device_codes: list[OAuthDeviceCodeInfo] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: mock handler routing device code, access token and Copilot token
+        # endpoints; raises AssertionError for unexpected URLs.
         if request.url.path == "/login/device/code":
             assert f"client_id={GITHUB_COPILOT_CLIENT_ID}" in request.content.decode()
             return httpx.Response(
@@ -216,7 +265,11 @@ async def test_github_copilot_device_login_and_token_exchange() -> None:
 
 @pytest.mark.anyio
 async def test_github_copilot_rejects_untrusted_device_verification_uri() -> None:
+    # [FUNCTION DOC]
+    # Asserts a non-https verification URI aborts login with OAuthError.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: mock handler returning a device code with a file URI.
         return httpx.Response(
             200,
             json={
@@ -235,7 +288,12 @@ async def test_github_copilot_rejects_untrusted_device_verification_uri() -> Non
 
 @pytest.mark.anyio
 async def test_refresh_github_copilot_preserves_enterprise_metadata() -> None:
+    # [FUNCTION DOC]
+    # Asserts refresh against an enterprise domain hits its api host and keeps the
+    # metadata; also checks domain normalization and enterprise base URL derivation.
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: mock handler asserting the enterprise API host and returning a token.
         assert request.url.host == "api.ghe.example.com"
         return httpx.Response(200, json={"token": "copilot", "expires_at": 9999999999})
 
@@ -257,6 +315,10 @@ async def test_refresh_github_copilot_preserves_enterprise_metadata() -> None:
 
 @pytest.mark.anyio
 async def test_device_poll_slow_down_and_cancel() -> None:
+    # [FUNCTION DOC]
+    # Asserts a slow_down result increases the wait by 5 seconds before the next
+    # poll, completion returns the value, and a pre-set cancel event raises
+    # OAuthError "Login cancelled".
     sleeps: list[float] = []
     results = iter(
         [
@@ -266,9 +328,13 @@ async def test_device_poll_slow_down_and_cancel() -> None:
     )
 
     async def fake_poll() -> DevicePollResult[str]:
+        # [FUNCTION DOC]
+        # HELPER: return the next scripted poll result.
         return next(results)
 
     async def fake_sleep(seconds: float) -> None:
+        # [FUNCTION DOC]
+        # HELPER: record the requested sleep duration instead of sleeping.
         sleeps.append(seconds)
 
     assert (
@@ -290,15 +356,27 @@ async def test_device_poll_slow_down_and_cancel() -> None:
 
 @pytest.mark.anyio
 async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an expired stored credential is refreshed through a registered fake
+    # provider, runtime auth uses the new token and base URL, the store persists
+    # the new credential, and no temp files remain. Mutates and resets the global
+    # OAuth registry.
     class FakeOAuthProvider:
+        # [CLASS DOC]
+        # HELPER: fake OAuth provider whose refresh returns a long-lived "new-access"
+        # credential and whose runtime auth uses a fixed business base URL.
         id = "github-copilot"
         name = "Fake GitHub Copilot"
         flow_kinds = ("device_code",)
 
         async def login(self, _callbacks: OAuthLoginCallbacks) -> OAuthCredential:
+            # [FUNCTION DOC]
+            # HELPER: not used; raises AssertionError.
             raise AssertionError("not used")
 
         async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
+            # [FUNCTION DOC]
+            # HELPER: return a new credential keeping refresh token and metadata.
             return OAuthCredential(
                 access="new-access",
                 refresh=credential.refresh,
@@ -307,6 +385,8 @@ async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(tmp_path
             )
 
         def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
+            # [FUNCTION DOC]
+            # HELPER: map the access token to runtime auth with a fixed base URL.
             return OAuthRuntimeAuth(
                 api_key=credential.access,
                 base_url="https://api.business.githubcopilot.com",
@@ -336,18 +416,31 @@ async def test_runtime_oauth_resolver_refreshes_and_persists_atomically(tmp_path
 
 @pytest.mark.anyio
 async def test_runtime_oauth_resolver_spends_a_refresh_token_once(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Asserts three concurrent resolver calls refresh only once (the rotating token
+    # is spent once), all get the new access token, and the rotated refresh token is
+    # persisted.
     """Concurrent calls must not both spend the same rotating refresh token."""
     refreshes: list[str] = []
 
     class RotatingOAuthProvider:
+        # [CLASS DOC]
+        # HELPER: fake provider that rejects reuse of a spent refresh token and returns
+        # a rotated credential, yielding to let racing tasks interleave.
         id = "github-copilot"
         name = "Rotating"
         flow_kinds = ("device_code",)
 
         async def login(self, _callbacks: OAuthLoginCallbacks) -> OAuthCredential:
+            # [FUNCTION DOC]
+            # HELPER: not used; raises AssertionError.
             raise AssertionError("not used")
 
         async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
+            # [FUNCTION DOC]
+            # HELPER: return unexpired credentials unchanged; raise OAuthError invalid_grant
+            # for an already-spent refresh token; otherwise record it and return the rotated
+            # credential after one scheduling yield.
             if not oauth_credential_is_expired(credential):
                 return credential
             if credential.refresh in refreshes:
@@ -361,6 +454,8 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(tmp_path) -> N
             )
 
         def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
+            # [FUNCTION DOC]
+            # HELPER: map the access token to runtime auth.
             return OAuthRuntimeAuth(api_key=credential.access)
 
     store = FileCredentialStore(tmp_path / "credentials.json")
@@ -386,13 +481,22 @@ async def test_runtime_oauth_resolver_spends_a_refresh_token_once(tmp_path) -> N
 
 
 def test_refresh_locks_are_not_shared_between_event_loops() -> None:
+    # [FUNCTION DOC]
+    # Regression: runs contention on the per-provider refresh lock in two separate
+    # event loops and asserts neither fails with a cross-loop error and the locks
+    # are distinct objects.
     """A lock cached across loops only fails once contended — so contend it."""
 
     async def _hold(lock: asyncio.Lock) -> None:
+        # [FUNCTION DOC]
+        # HELPER: acquire the lock and yield once before releasing.
         async with lock:
             await asyncio.sleep(0)
 
     async def contend() -> asyncio.Lock:
+        # [FUNCTION DOC]
+        # HELPER: get the refresh lock for "anthropic" and contend it with two holders
+        # under a 5 second timeout; returns the lock.
         lock = _refresh_lock("anthropic")
         async with asyncio.timeout(5):
             await asyncio.gather(_hold(lock), _hold(lock))
@@ -410,6 +514,9 @@ def test_refresh_locks_are_not_shared_between_event_loops() -> None:
 
 
 def test_builtin_oauth_registry_matches_supported_subscription_providers() -> None:
+    # [FUNCTION DOC]
+    # Asserts the built-in registry holds anthropic, github-copilot and
+    # openai-codex, the Anthropic display name, and unknown ids return nothing.
     assert oauth_provider_ids() == {"anthropic", "github-copilot", "openai-codex"}
     anthropic = get_oauth_provider("anthropic")
     assert anthropic is not None

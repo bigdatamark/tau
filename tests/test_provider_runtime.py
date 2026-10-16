@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Tests for tau_coding.provider_runtime: turning a provider configuration plus a
+# file-backed credential store into a concrete tau_ai provider (Codex, Anthropic,
+# OpenAI-compatible) with the right auth, image support, cache retention/affinity
+# settings, model aliases, max tokens, base URL and reasoning-effort mapping.
+# All tests use a temporary credentials file; they inspect the private provider
+# config rather than making network calls.
 from dataclasses import replace
 
 import pytest
@@ -18,6 +25,8 @@ from tau_coding.provider_runtime import OpenAICodexCredentialResolver, create_mo
 
 
 def test_create_model_provider_returns_openai_codex_provider(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # A default Codex config yields a Codex provider with a client-version resolver.
     store = FileCredentialStore(tmp_path / "credentials.json")
 
     provider = create_model_provider(
@@ -30,6 +39,9 @@ def test_create_model_provider_returns_openai_codex_provider(tmp_path) -> None:
 
 
 def test_create_model_provider_uses_codex_model_image_capability(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # For the catalog Codex config, a vision-capable model enables image support and a
+    # text-only model disables it.
     store = FileCredentialStore(tmp_path / "credentials.json")
     config = provider_config_from_catalog_entry("openai-codex")
 
@@ -51,6 +63,9 @@ def test_create_model_provider_uses_codex_model_image_capability(tmp_path) -> No
 
 
 def test_direct_openai_runtime_enables_responses_cache_affinity(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # The direct OpenAI catalog provider enables prompt cache keys and session-affinity
+    # headers in OpenAI format.
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("openai", "sk-test")
 
@@ -67,6 +82,9 @@ def test_direct_openai_runtime_enables_responses_cache_affinity(tmp_path) -> Non
 
 
 def test_huggingface_runtime_pins_backing_provider_with_model_alias(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Selecting an explicit Hugging Face inference provider aliases the model id to
+    # "<model>:<provider>".
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("huggingface", "hf-test")
     config = provider_config_from_catalog_entry("huggingface")
@@ -83,6 +101,9 @@ def test_huggingface_runtime_pins_backing_provider_with_model_alias(tmp_path) ->
 
 
 def test_huggingface_runtime_rejects_policy_suffix(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # A routing policy name such as "fastest" instead of an explicit inference provider
+    # raises ProviderConfigError mentioning "explicit".
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("huggingface", "hf-test")
 
@@ -96,6 +117,9 @@ def test_huggingface_runtime_rejects_policy_suffix(tmp_path) -> None:
 
 
 def test_compatible_gateway_defaults_to_no_openai_cache_affinity(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Third-party OpenAI-compatible gateways (Together) disable prompt cache keys and
+    # session-affinity headers by default.
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("together", "gateway-key")
 
@@ -110,6 +134,10 @@ def test_compatible_gateway_defaults_to_no_openai_cache_affinity(tmp_path) -> No
 
 
 def test_create_model_provider_uses_anthropic_oauth_runtime_auth(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Anthropic OAuth credentials produce bearer auth with a credential resolver, an
+    # OAuth system prompt, an Authorization header with the access token, and long
+    # (1 hour) cache retention.
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
         "anthropic",
@@ -133,6 +161,8 @@ def test_create_model_provider_uses_anthropic_oauth_runtime_auth(tmp_path) -> No
 
 
 def test_anthropic_api_key_auth_keeps_the_default_cache_retention(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Anthropic API-key auth keeps short cache retention.
     """1h cache writes cost 2x base, so an API-key user must not get them silently."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("anthropic", "sk-test")
@@ -151,6 +181,9 @@ def test_anthropic_protocol_gateways_disable_cache_breakpoints(
     provider_name: str,
     tmp_path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over gateways speaking the Anthropic protocol: cache retention is
+    # "none" so no cache_control blocks are sent.
     """Gateways speaking the Anthropic protocol may reject cache_control blocks."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key(provider_name, "gateway-key")
@@ -163,6 +196,9 @@ def test_anthropic_protocol_gateways_disable_cache_breakpoints(
 
 
 def test_provider_compat_can_re_enable_cache_breakpoints_on_a_gateway(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # A compat override supportsCacheControl re-enables short retention and tool cache
+    # breakpoints on a gateway.
     """A gateway proxying real Claude must be able to opt back in without a source edit."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("minimax", "gateway-key")
@@ -177,6 +213,8 @@ def test_provider_compat_can_re_enable_cache_breakpoints_on_a_gateway(tmp_path) 
 
 
 def test_provider_compat_can_clamp_the_one_hour_ttl_on_oauth(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Compat supportsLongCacheRetention false downgrades OAuth retention to short.
     """The escape hatch if Anthropic ever stops honoring ttl=1h on subscriptions."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
@@ -192,6 +230,9 @@ def test_provider_compat_can_clamp_the_one_hour_ttl_on_oauth(tmp_path) -> None:
 
 
 def test_provider_compat_can_suppress_only_the_tools_breakpoint(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Compat supportsCacheControlOnTools false keeps short retention but disables the
+    # tools cache breakpoint.
     """Some gateways accept cache_control everywhere except inside tool objects."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_api_key("anthropic", "sk-test")
@@ -205,6 +246,8 @@ def test_provider_compat_can_suppress_only_the_tools_breakpoint(tmp_path) -> Non
 
 
 def test_copilot_anthropic_protocol_models_disable_cache_breakpoints(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # GitHub Copilot Claude models use the Anthropic provider with retention "none".
     """Copilot proxies the Anthropic protocol, so it gets no cache_control either."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
@@ -227,6 +270,9 @@ def test_copilot_anthropic_protocol_models_disable_cache_breakpoints(tmp_path) -
 
 
 def test_copilot_model_metadata_compat_can_enable_cache_breakpoints(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Per-model compat supportsCacheControl on a Copilot Claude model enables long
+    # retention (Copilot uses OAuth/subscription auth).
     """Per-model compat reaches the openai-compatible Anthropic-protocol branch."""
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
@@ -258,6 +304,8 @@ def test_copilot_model_metadata_compat_can_enable_cache_breakpoints(tmp_path) ->
 def test_create_model_provider_uses_model_max_tokens_for_anthropic_protocol_model(
     tmp_path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Per-model max_tokens metadata is passed to the Anthropic-protocol provider.
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
         "github-copilot",
@@ -284,6 +332,9 @@ def test_create_model_provider_uses_model_max_tokens_for_anthropic_protocol_mode
 
 
 def test_create_model_provider_uses_copilot_token_base_url(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # The Copilot base URL is derived from the token's proxy endpoint ("proxy." becomes
+    # "api.") and a credential resolver is installed.
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
         "github-copilot",
@@ -304,6 +355,9 @@ def test_create_model_provider_uses_copilot_token_base_url(tmp_path) -> None:
 
 
 def test_create_model_provider_rejects_model_not_declared_for_provider(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Requesting a model not listed for a provider raises ProviderConfigError with the
+    # provider and model names.
     store = FileCredentialStore(tmp_path / "credentials.json")
     provider_config = OpenAICompatibleProviderConfig(
         name="local",
@@ -319,6 +373,9 @@ def test_create_model_provider_rejects_model_not_declared_for_provider(tmp_path)
 
 
 def test_create_model_provider_maps_codex_reasoning_effort_like_pi(tmp_path) -> None:
+    # [FUNCTION DOC]
+    # Codex thinking levels map like Pi: off means no reasoning effort, minimal maps to
+    # "low", xhigh stays "xhigh".
     store = FileCredentialStore(tmp_path / "credentials.json")
     provider_config = OpenAICodexProviderConfig(
         thinking_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
@@ -360,6 +417,11 @@ def test_create_model_provider_coerces_unsupported_startup_thinking_level(
     # Regression: startup used to pass the global default ("medium") straight
     # to create_model_provider, which crashed for models like kimi-code:k3
     # that only support xhigh. Now k3 also supports low and high.
+    # [FUNCTION DOC]
+    # Regression test: an unsupported thinking level ("medium") for a model raises
+    # ProviderConfigError, while the startup-resolved level (the provider's default)
+    # works and maps to the model's provider-specific value ("max").
+    # Side effects: sets a test API key environment variable via monkeypatch.
     monkeypatch.setenv("TAU_TEST_KIMI_CODE_API_KEY", "test-key")
     store = FileCredentialStore(tmp_path / "credentials.json")
     provider_config = OpenAICompatibleProviderConfig(
@@ -412,6 +474,10 @@ async def test_openai_codex_credential_resolver_refreshes_expired_credentials(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With expired stored Codex OAuth credentials, the resolver calls the (patched)
+    # refresh function with the stored refresh token, returns the new access token and
+    # account id, and persists the refreshed credential in the store.
     store = FileCredentialStore(tmp_path / "credentials.json")
     store.set_oauth(
         "openai-codex",
@@ -424,6 +490,9 @@ async def test_openai_codex_credential_resolver_refreshes_expired_credentials(
     )
 
     async def fake_refresh(refresh_token: str) -> OAuthCredential:
+        # [FUNCTION DOC]
+        # HELPER: Stand-in token refresh; asserts the old refresh token was passed and
+        # returns a fresh long-lived credential.
         assert refresh_token == "old-refresh"
         return OAuthCredential(
             access="new-access",

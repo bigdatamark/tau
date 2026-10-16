@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Tests for print-mode renderers in tau_coding.rendering: the streaming transcript
+# renderer (stdout text, stderr tool/retry/error lines), the final-text renderer (prints
+# only the final assistant message, errors on finish) and the JSONL event renderer
+# (canonical Pi-style camelCase event objects). Uses pytest capsys to capture output.
 import json
 
 import pytest
@@ -20,16 +25,27 @@ from tau_coding.rendering import FinalTextRenderer, JsonEventRenderer, Transcrip
 
 
 def _assistant_update(event) -> MessageUpdateEvent:  # noqa: ANN001
+    # [FUNCTION DOC]
+    # HELPER: Wrap a provider assistant-message event in an agent message-update event whose
+    # message is the event's partial assistant message.
     return MessageUpdateEvent(message=event.partial, assistant_message_event=event)
 
 
 def _error_end(message: str) -> MessageEndEvent:
+    # [FUNCTION DOC]
+    # HELPER: Build a message-end event for an assistant message with stop reason "error"
+    # and the given error message text.
     return MessageEndEvent(message=AssistantMessage(stop_reason="error", error_message=message))
 
 
 def test_transcript_renderer_streams_text_and_tool_events(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # [FUNCTION DOC]
+    # Feeds start, a thinking delta, two text deltas, an auto-retry start, and tool start/
+    # update/end events. Asserts stdout is exactly "Hello" plus newline, thinking text never
+    # appears, and stderr contains the retry message, the tool call line, progress text,
+    # the success check mark with tool name, and the result text; finish returns True.
     renderer = TranscriptRenderer()
     partial = AssistantMessage(content="")
 
@@ -86,6 +102,9 @@ def test_transcript_renderer_streams_text_and_tool_events(
 def test_transcript_renderer_keeps_full_bash_command(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # [FUNCTION DOC]
+    # A bash tool start renders the full command with a "(timeout 120s)" suffix on stderr
+    # and omits the human description argument.
     renderer = TranscriptRenderer()
     command = "git diff --check && git commit -m 'Finish work'"
 
@@ -109,7 +128,14 @@ def test_transcript_renderer_keeps_full_bash_command(
 def test_transcript_renderer_uses_custom_message_renderer(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # [FUNCTION DOC]
+    # A display custom message at message end is rendered through the supplied custom
+    # renderer (called with type, content, details, expanded False); its Rich markup output
+    # appears on stderr and raw message content does not.
     def render(custom_type: str, content: str, details: object, expanded: bool) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: Fake custom message renderer asserting the expected type and non-expanded
+        # mode, returning a Rich markup string.
         assert custom_type == "subagent-notification"
         assert expanded is False
         return "[bold]✓ research done[/bold]"
@@ -133,6 +159,9 @@ def test_transcript_renderer_uses_custom_message_renderer(
 def test_transcript_renderer_fails_on_assistant_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # [FUNCTION DOC]
+    # An assistant error message end prints "Error: provider failed" to stderr and makes
+    # finish return False.
     renderer = TranscriptRenderer()
 
     renderer.render(_error_end("provider failed"))
@@ -149,6 +178,9 @@ def test_transcript_renderer_fails_on_assistant_error(
 def test_renderers_finish_successfully_after_recovered_auto_retry(
     renderer_type: type[TranscriptRenderer] | type[FinalTextRenderer] | type[JsonEventRenderer],
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrised over all three renderers: an error followed by a successful auto-retry
+    # end event clears the failure so finish returns True.
     renderer = renderer_type()
 
     renderer.render(_error_end("provider failed"))
@@ -160,6 +192,9 @@ def test_renderers_finish_successfully_after_recovered_auto_retry(
 def test_final_text_renderer_prints_only_final_message(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # [FUNCTION DOC]
+    # Streaming deltas print nothing; the final assistant message end prints its text plus
+    # newline to stdout. finish returns True throughout.
     renderer = FinalTextRenderer()
     partial = AssistantMessage(content="ignored")
 
@@ -175,6 +210,9 @@ def test_final_text_renderer_prints_only_final_message(
 
 
 def test_final_text_renderer_prints_errors_on_finish(capsys: pytest.CaptureFixture[str]) -> None:
+    # [FUNCTION DOC]
+    # Errors are deferred: nothing on stderr at message end, then finish returns False and
+    # prints the error message to stderr.
     renderer = FinalTextRenderer()
 
     renderer.render(_error_end("provider failed"))
@@ -184,6 +222,10 @@ def test_final_text_renderer_prints_errors_on_finish(capsys: pytest.CaptureFixtu
 
 
 def test_json_renderer_emits_canonical_jsonl(capsys: pytest.CaptureFixture[str]) -> None:
+    # [FUNCTION DOC]
+    # Each event becomes one JSON line: message_start, queue_update with steering and
+    # followUp lists, message_update with nested assistantMessageEvent thinking_delta, and
+    # a message end with stopReason "error"; finish returns False.
     renderer = JsonEventRenderer()
     partial = AssistantMessage(content=[TextContent(text="hidden reasoning")])
 

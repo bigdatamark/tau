@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Anthropic Claude Pro/Max subscription OAuth provider for tau_coding.
+# Implements the authorization-code + PKCE browser login (with a local
+# callback server on port 53692 and manual paste fallback), token refresh,
+# safe error-detail extraction from the token endpoint, and the registered
+# provider object that converts stored credentials into runtime bearer auth
+# headers. Side effects: opens browsers, runs a local HTTP server, performs
+# network requests to Anthropic's token endpoint.
 """Anthropic Claude Pro/Max OAuth provider."""
 
 from __future__ import annotations
@@ -52,6 +60,19 @@ async def login_anthropic(
     open_browser: bool = True,
     client: httpx.AsyncClient | None = None,
 ) -> OAuthCredential:
+    # [FUNCTION DOC]
+    # Run the full Anthropic OAuth login. Inputs (keyword-only): callback to show
+    # auth info (URL + instructions), async prompt callback, optional async manual
+    # code-input callback, optional progress callback, whether to open a browser,
+    # optional HTTP client. Creates a PKCE pair (the verifier doubles as OAuth
+    # state), builds the authorize URL, starts the local callback server, reports
+    # the URL, optionally opens the browser, then waits for whichever comes first
+    # of the server callback or manual input; if neither yields a value, prompts
+    # the user to paste the code or redirect URL. Parses the input, checks state,
+    # and exchanges the code for tokens.
+    # Output: an OAuth credential (access, refresh, expiry ms).
+    # Raises OAuthError on state mismatch, missing code, or token failures.
+    # Always closes the local server.
     """Run Anthropic's authorization-code + PKCE login flow."""
     verifier, challenge = create_pkce_pair()
     params = {
@@ -120,6 +141,11 @@ async def refresh_anthropic_token(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> OAuthCredential:
+    # [FUNCTION DOC]
+    # Exchange a refresh token for new credentials via the token endpoint
+    # (refresh grant). Keeps the old refresh token if the response omits one.
+    # Input: refresh token, optional HTTP client. Output: OAuth credential.
+    # Raises OAuthError on failure. Side effect: network request.
     """Refresh Anthropic OAuth credentials."""
     return await _anthropic_token_request(
         {
@@ -140,6 +166,16 @@ async def _anthropic_token_request(
     action: str,
     previous_refresh: str | None = None,
 ) -> OAuthCredential:
+    # [FUNCTION DOC]
+    # HELPER: POST a JSON token request to Anthropic's token endpoint and parse
+    # the credential. Inputs: request fields, optional client (a temporary one
+    # with 30 s timeout is created and closed if absent), action label for error
+    # messages, optional previous refresh token fallback. On HTTP status >= 400
+    # raises OAuthError with a scrubbed error detail. Requires a JSON object
+    # with a non-empty access token, a refresh token (or fallback), and a positive
+    # numeric expires-in. Output: credential whose expiry is now + expires-in
+    # minus a 5-minute skew, in epoch milliseconds.
+    # Raises OAuthError on malformed responses; JSON decode errors propagate.
     owns_client = client is None
     active_client = client or create_async_client(timeout=30)
     try:
@@ -175,6 +211,11 @@ async def _anthropic_token_request(
 
 
 def _error_detail(response: httpx.Response, *, secrets: Iterable[str] = ()) -> str:
+    # [FUNCTION DOC]
+    # HELPER: summarize a failed token response safely. Parses the JSON body
+    # (non-JSON -> no detail), extracts structured error fields only, replaces
+    # any sent secret of length at least 8 with a redaction marker, and truncates
+    # to 200 characters. Returns "no error detail" when nothing usable is found.
     """Summarize a token-endpoint failure body.
 
     The endpoint explains itself ("invalid_grant: Refresh token not found or
@@ -199,6 +240,11 @@ def _error_detail(response: httpx.Response, *, secrets: Iterable[str] = ()) -> s
 
 
 def _error_fields(raw: dict[str, Any]) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: extract "code: description" from either the flat OAuth error shape
+    # (error + error description) or the nested Anthropic API shape (error object
+    # with type and message; a top-level message is also accepted). Returns the
+    # combined string, either part alone, or None.
     """Pull the error code and message out of either error envelope.
 
     OAuth failures arrive as flat ``error``/``error_description``, while the
@@ -222,6 +268,12 @@ async def _wait_for_input(
     server: Any,
     manual_callback: Callable[[], Awaitable[str]] | None,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: race the local callback server's code wait against the manual
+    # input callback. Creates a task for each available source; returns None if
+    # none. Waits for the first to complete, cancels the rest, tells the server to
+    # stop waiting, and returns the first finished task's result (which may be
+    # None). Exceptions from the finished task propagate.
     tasks: list[asyncio.Task[str | None]] = []
     if server is not None:
         tasks.append(asyncio.create_task(server.wait_for_code()))
@@ -238,10 +290,16 @@ async def _wait_for_input(
 
 
 async def _manual_value(callback: Callable[[], Awaitable[str]]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: await the manual input callback and return its string (wraps it as
+    # a coroutine suitable for a task).
     return await callback()
 
 
 def _required_string(raw: dict[str, Any], name: str, *, action: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: return the named non-empty string field from a response mapping,
+    # else raise OAuthError mentioning the action and field.
     value = raw.get(name)
     if not isinstance(value, str) or not value:
         raise OAuthError(f"Anthropic token {action} response missing {name}")
@@ -249,11 +307,17 @@ def _required_string(raw: dict[str, Any], name: str, *, action: str) -> str:
 
 
 def _optional_string(raw: dict[str, Any], name: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: return the named field if it is a non-empty string, else None.
     value = raw.get(name)
     return value if isinstance(value, str) and value else None
 
 
 class AnthropicOAuthProvider:
+    # [CLASS DOC]
+    # Registered OAuth provider object for Anthropic subscriptions: id
+    # "anthropic", display name, browser flow kind. Stateless; delegates to the
+    # module functions.
     """Registered Anthropic Claude subscription OAuth behavior."""
 
     id = ANTHROPIC_OAUTH_PROVIDER
@@ -261,6 +325,9 @@ class AnthropicOAuthProvider:
     flow_kinds: tuple[OAuthFlowKind, ...] = ("browser",)
 
     async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredential:
+        # [FUNCTION DOC]
+        # Run the browser login using the given login callbacks (auth, prompt,
+        # manual code input, progress). Returns the new credential; errors propagate.
         return await login_anthropic(
             on_auth=callbacks.on_auth,
             on_prompt=callbacks.on_prompt,
@@ -269,11 +336,18 @@ class AnthropicOAuthProvider:
         )
 
     async def refresh(self, credential: OAuthCredential) -> OAuthCredential:
+        # [FUNCTION DOC]
+        # Return the credential unchanged if not expired; otherwise refresh it via
+        # the token endpoint and return the new credential. May raise OAuthError.
         if not oauth_credential_is_expired(credential):
             return credential
         return await refresh_anthropic_token(credential.refresh)
 
     def runtime_auth(self, credential: OAuthCredential) -> OAuthRuntimeAuth:
+        # [FUNCTION DOC]
+        # Build runtime auth from a credential: the access token as API key plus
+        # headers for bearer authorization, the Claude Code / OAuth beta flags, a
+        # claude-cli user agent and an x-app cli header. No side effects.
         return OAuthRuntimeAuth(
             api_key=credential.access,
             headers={

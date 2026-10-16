@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# JSONL persistence boundary for session entries: serializes entries one per
+# line and deserializes them, migrating older persisted formats (Tau-v1
+# messages, legacy target-less labels, camelCase custom-message fields) into
+# the current canonical entry models before pydantic validation. Migration is
+# intentionally confined here so runtime models stay strict.
+# Pure transformation of strings and decoded JSON; no file I/O itself.
 """JSONL serialization and Tau-v1 persisted-session migration."""
 
 from __future__ import annotations
@@ -13,15 +20,35 @@ _SESSION_ENTRY_ADAPTER: TypeAdapter[SessionEntry] = TypeAdapter(SessionEntry)
 
 
 class SessionJsonlError(ValueError):
+    # [CLASS DOC]
+    # Exception type (a ValueError subclass) raised when a JSONL line cannot be
+    # decoded or validated as a session entry; messages include the line number
+    # when known.
     """Raised when a session JSONL line cannot be decoded."""
 
 
 def entry_to_json_line(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # Serializes one session entry to compact JSON via the shared entry type
+    # adapter, omitting fields whose value is None, and appends a newline.
+    # Input: a session entry. Output: one newline-terminated JSON line.
+    # No side effects.
     """Serialize one entry in Tau's canonical persisted shape."""
     return _SESSION_ENTRY_ADAPTER.dump_json(entry, exclude_none=True).decode() + "\n"
 
 
 def entry_from_json_line(line: str, *, line_number: int | None = None) -> SessionEntry:
+    # [FUNCTION DOC]
+    # Parses a single JSON line, migrates it (with no legacy label target, so
+    # target-less labels fall back to their parent id or own id), and validates
+    # it into a session entry.
+    # Inputs: the line text and optional keyword line number used in errors.
+    # Output: the validated entry.
+    # Raises SessionJsonlError wrapping JSON decode, validation, type or value
+    # errors. No side effects.
+    # KNOWN ISSUE: unlike the batch function, a single-line decode cannot pick the
+    # earliest branchable entry as a legacy label target, so the same legacy label
+    # may migrate to a different target depending on which function is used.
     """Deserialize one entry, migrating persisted Tau-v1 messages first."""
     location = f" on line {line_number}" if line_number is not None else ""
     try:
@@ -33,6 +60,13 @@ def entry_from_json_line(line: str, *, line_number: int | None = None) -> Sessio
 
 
 def entries_from_json_lines(lines: list[str]) -> list[SessionEntry]:
+    # [FUNCTION DOC]
+    # Decodes a list of JSONL lines in order, skipping blank lines. First parses
+    # all JSON (so the legacy label target can be chosen across the whole file),
+    # computes one legacy label target id, then migrates and validates each value.
+    # Input: list of line strings. Output: list of entries in file order.
+    # Raises SessionJsonlError naming the 1-based line number on JSON decode,
+    # validation, type or value errors. No side effects.
     """Deserialize non-empty JSONL lines in order.
 
     Legacy session-level labels had no target. They deterministically become a
@@ -61,6 +95,22 @@ def entries_from_json_lines(lines: list[str]) -> list[SessionEntry]:
 
 
 def _migrate_session_entry(value: Any, *, legacy_label_target_id: str | None) -> Any:
+    # [FUNCTION DOC]
+    # HELPER: returns a canonical shallow copy of one decoded entry value.
+    # Non-mapping values pass through unchanged. Rules:
+    # - label entries lacking target_id get one: the supplied legacy target, else
+    #   the entry's parent_id, else its own id.
+    # - custom_message entries: camelCase customType is renamed to custom_type
+    #   (existing custom_type wins).
+    # - other non-message entries pass through unchanged.
+    # - message entries have their inner message migrated; if the result has the
+    #   custom role, the entry is converted to a custom_message entry: millisecond
+    #   numeric message timestamp (not boolean) becomes seconds on the entry,
+    #   custom_type/content/display (default true)/details are lifted from the
+    #   message, and the message field is removed.
+    # Inputs: decoded value and keyword legacy label target id. Output: migrated
+    # value. Does not mutate the input mapping (copies), though nested values are
+    # shared.
     """Return a canonical copy of one decoded persisted entry.
 
     The extension API may break in lockstep, but user session history must not.
@@ -101,6 +151,11 @@ def _migrate_session_entry(value: Any, *, legacy_label_target_id: str | None) ->
 
 
 def _legacy_label_target_id(values: list[Any]) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: picks a deterministic target for legacy labels: the id of the first
+    # message, compaction or branch_summary entry; failing that, the id of the
+    # first entry that is not a label or leaf; failing that, none. Only string ids
+    # count. Input: list of decoded values. Output: id string or none.
     """Choose one stable target for target-less pre-bookmark label records."""
     branchable_types = {"message", "compaction", "branch_summary"}
     for value in values:
@@ -117,6 +172,25 @@ def _legacy_label_target_id(values: list[Any]) -> str | None:
 
 
 def _migrate_message(value: Any) -> Any:
+    # [FUNCTION DOC]
+    # HELPER: migrates one persisted message mapping from Tau-v1 to the current
+    # shape, returning a copy (non-mapping values pass through). Rules by role:
+    # - user with custom_type/customType: becomes role custom with customType set
+    #   and display defaulting to true.
+    # - assistant: a usage mapping with missing/null cost gets an empty cost
+    #   mapping; string content becomes a list with one text block (if non-empty)
+    #   followed by any tool_calls/toolCalls blocks; list content gets any separate
+    #   tool calls appended; the separate tool-call keys are removed.
+    # - tool: becomes toolResult; name to toolName (default "unknown"),
+    #   tool_call_id to toolCallId (default empty), ok to isError (inverted,
+    #   default ok), string content to a text block list (empty list when blank),
+    #   legacy data merged under details (details win) or used as details, and a
+    #   legacy error string becomes the content when content is empty.
+    # - anything else: returned as a copy unchanged.
+    # No exceptions raised deliberately; no side effects.
+    # KNOWN ISSUE: when both tool_calls and toolCalls are present, the inner pop of
+    # toolCalls always runs and its value is silently discarded in favor of
+    # tool_calls.
     if not isinstance(value, dict):
         return value
     message = dict(value)

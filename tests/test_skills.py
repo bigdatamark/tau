@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Tests for markdown skill discovery, precedence, diagnostics, invocation
+# expansion/formatting/parsing, the skill index and the
+# disable-model-invocation flag. Uses temporary directories as Tau and
+# .agents resource roots.
 from pathlib import Path
 
 import pytest
@@ -16,12 +21,19 @@ from tau_coding.resources import ResourceError
 
 
 def test_load_skills_does_not_include_tau_self_knowledge(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an empty Tau root with no agents root yields no skills (no bundled
+    # self-knowledge skills are injected).
     skills = load_skills(TauResourcePaths(root=tmp_path, agents_root=None))
 
     assert skills == []
 
 
 def test_load_skills_from_directory(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Creates two skill subdirectories (one with front-matter description, one
+    # without) and asserts both load, with the description taken from front
+    # matter or derived from the first heading.
     """Skills must live in ``<dir>/<name>/SKILL.md`` subdirectories."""
     skills_dir = tmp_path / "skills"
     (skills_dir / "python-testing").mkdir(parents=True)
@@ -43,6 +55,9 @@ def test_load_skills_from_directory(tmp_path: Path) -> None:
 
 
 def test_load_skills_includes_user_and_project_agents_directories(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts skills under the user agents home and the project's .agents/skills
+    # are both loaded.
     """Skills in .agents/skills/ must be subdirectories containing SKILL.md."""
     tau_home = tmp_path / "home" / ".tau"
     agents_home = tmp_path / "home" / ".agents"
@@ -62,6 +77,9 @@ def test_load_skills_includes_user_and_project_agents_directories(tmp_path: Path
 
 
 def test_user_skill_can_use_a_former_bundled_skill_name(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a user skill named like a formerly bundled skill loads from the
+    # user path with no diagnostics.
     skill_dir = tmp_path / "skills" / "tau-model-catalog"
     skill_dir.mkdir(parents=True)
     skill_path = skill_dir / "SKILL.md"
@@ -76,6 +94,9 @@ def test_user_skill_can_use_a_former_bundled_skill_name(tmp_path: Path) -> None:
 
 
 def test_project_agents_skill_overrides_user_agents_skill(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a project .agents skill replaces a same-named user .agents skill
+    # (path and description come from the project copy).
     """Project .agents/skills/ skills take precedence over user-level ones."""
     tau_home = tmp_path / "home" / ".tau"
     agents_home = tmp_path / "home" / ".agents"
@@ -95,6 +116,9 @@ def test_project_agents_skill_overrides_user_agents_skill(tmp_path: Path) -> Non
 
 
 def test_load_skills_with_diagnostics_reports_overrides(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a project .tau skill overrides a user .tau skill and exactly one
+    # "overrides lower-precedence resource" skill diagnostic names it.
     tau_home = tmp_path / "home" / ".tau"
     agents_home = tmp_path / "home" / ".agents"
     cwd = tmp_path / "project"
@@ -122,6 +146,10 @@ def test_load_skills_with_diagnostics_reports_overrides(tmp_path: Path) -> None:
 def test_load_skills_with_diagnostics_reports_bare_md_migration_hint(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts a bare legacy .md file yields exactly one info diagnostic with its
+    # name, path and a migration hint pointing to name/SKILL.md, while a proper
+    # skill directory still loads.
     """Bare ``.md`` files at a skills-dir root produce an info diagnostic.
 
     They are silently skipped from the loaded skill set, but users are told
@@ -147,6 +175,9 @@ def test_load_skills_with_diagnostics_reports_bare_md_migration_hint(
 
 
 def test_agents_root_is_not_a_skills_directory(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts markdown files directly in the .agents root (AGENTS.md, README.md,
+    # review.md) are not loaded as skills.
     """The .agents root directory itself must not be scanned for skills.
 
     Files like ``README.md`` or ``AGENTS.md`` in the root should be ignored.
@@ -164,6 +195,9 @@ def test_agents_root_is_not_a_skills_directory(tmp_path: Path) -> None:
 
 
 def test_agents_skills_dir_ignores_bare_md_files(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a bare .md file beside a skill directory in .agents/skills is not
+    # loaded and does not stop the valid skill loading.
     """Bare .md files in .agents/skills/ are not treated as skills.
 
     Only subdirectories containing ``SKILL.md`` are valid. Files like
@@ -182,6 +216,8 @@ def test_agents_skills_dir_ignores_bare_md_files(tmp_path: Path) -> None:
 
 
 def test_tau_skills_dir_ignores_bare_md_files(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Same as the .agents case but for the Tau skills directory.
     """Bare .md files in .tau/skills/ are also ignored (unified with .agents/).
 
     Tau diverges from Pi here: Pi keeps a permissive ``.pi/skills`` for
@@ -199,6 +235,10 @@ def test_tau_skills_dir_ignores_bare_md_files(tmp_path: Path) -> None:
 
 
 def test_expand_skill_command_includes_skill_and_user_request(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts "/skill:testing add parser tests" expands to a skill tag with name
+    # and location, a references line, the skill body, and the request after the
+    # closing tag.
     skills_dir = tmp_path / "skills" / "testing"
     skills_dir.mkdir(parents=True)
     (skills_dir / "SKILL.md").write_text("# Testing\nRun pytest.", encoding="utf-8")
@@ -215,6 +255,9 @@ def test_expand_skill_command_includes_skill_and_user_request(tmp_path: Path) ->
 
 
 def test_expand_skill_command_includes_multiline_user_request(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a multi-line request after the command is preserved verbatim
+    # (stripped) after the closing tag.
     skill = Skill(
         name="testing",
         path=tmp_path / "skills" / "testing" / "SKILL.md",
@@ -232,6 +275,8 @@ def test_expand_skill_command_includes_multiline_user_request(tmp_path: Path) ->
 
 
 def test_format_skill_invocation_without_extra_instructions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the exact invocation string when no instructions are supplied.
     skill = Skill(
         name="testing",
         path=tmp_path / "skills" / "testing" / "SKILL.md",
@@ -251,6 +296,9 @@ def test_format_skill_invocation_without_extra_instructions(tmp_path: Path) -> N
 
 
 def test_parse_skill_invocation_extracts_display_metadata(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts round-tripping a formatted invocation recovers name, location,
+    # content and additional instructions.
     skill = Skill(
         name="testing",
         path=tmp_path / "skills" / "testing" / "SKILL.md",
@@ -269,6 +317,8 @@ def test_parse_skill_invocation_extracts_display_metadata(tmp_path: Path) -> Non
 
 
 def test_expand_skill_command_returns_none_for_normal_prompt(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts non-skill text expands to none.
     assert (
         expand_skill_command(
             "hello", load_skills(TauResourcePaths(root=tmp_path, agents_root=None))
@@ -278,11 +328,17 @@ def test_expand_skill_command_returns_none_for_normal_prompt(tmp_path: Path) -> 
 
 
 def test_expand_skill_command_rejects_unknown_skill() -> None:
+    # [FUNCTION DOC]
+    # Asserts an unknown skill name raises ResourceError mentioning "Unknown
+    # skill".
     with pytest.raises(ResourceError, match="Unknown skill"):
         expand_skill_command("/skill:missing", [])
 
 
 def test_build_skill_index(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the index lists a loaded skill with its description and contains no
+    # formerly bundled skill names.
     skills_dir = tmp_path / "skills" / "testing"
     skills_dir.mkdir(parents=True)
     (skills_dir / "SKILL.md").write_text(
@@ -299,6 +355,9 @@ def test_build_skill_index(tmp_path: Path) -> None:
 
 
 def test_load_skill_parses_disable_model_invocation(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the disable flag is true only for the literal value true; missing,
+    # false and "yes" all leave it false.
     skills_dir = tmp_path / "skills"
     (skills_dir / "hidden").mkdir(parents=True)
     (skills_dir / "hidden" / "SKILL.md").write_text(
@@ -331,6 +390,8 @@ def test_load_skill_parses_disable_model_invocation(tmp_path: Path) -> None:
 
 
 def test_disable_model_invocation_accepts_case_insensitive_true(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts "True" (capitalized) also enables the flag.
     skills_dir = tmp_path / "skills" / "hidden"
     skills_dir.mkdir(parents=True)
     (skills_dir / "SKILL.md").write_text(
@@ -344,6 +405,9 @@ def test_disable_model_invocation_accepts_case_insensitive_true(tmp_path: Path) 
 
 
 def test_disabled_skill_remains_invocable_via_skill_command(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a skill hidden from the model can still be expanded explicitly by
+    # the user.
     skill = Skill(
         name="hidden",
         path=tmp_path / "skills" / "hidden" / "SKILL.md",
@@ -359,6 +423,9 @@ def test_disabled_skill_remains_invocable_via_skill_command(tmp_path: Path) -> N
 
 
 def test_build_skill_index_excludes_disabled_skills(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts hidden skills are omitted from the index and an index of only
+    # hidden skills reads "Available skills: none".
     visible = Skill(
         name="visible",
         path=tmp_path / "visible" / "SKILL.md",

@@ -1,3 +1,18 @@
+# [PACKAGE DOC]
+# Public facade of Tau's extension system (tau_coding layer, not the portable
+# agent core). Contains no logic: it re-exports names from submodules so
+# extensions and the app can import from one place:
+# - api: the ExtensionAPI handed to an extension's setup function, hook event and
+#   result types (tool_call, tool_result, input, session start/shutdown, turn
+#   start/end), event-type constants, and UI bridge / widget / renderer types.
+# - loader: discovery of extension files in search directories and importing
+#   them into loaded-extension records with diagnostics.
+# - provider_registry and providers: dynamically registered model providers,
+#   their auth resolution, model snapshots and refresh results.
+# - runtime: the runtime binding loaded extensions to a running session.
+# - local_backends: registry and operation types for local model backends.
+# Importing this package imports all of those submodules (side effect only of
+# module import). The export list defines the supported public surface.
 """Tau extension system: discovery, loading, and the extension API."""
 
 from tau_coding.extensions.api import (

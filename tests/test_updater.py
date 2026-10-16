@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Tests for the self-updater: install-method detection (uv tool, pipx, uv pip,
+# pip), choosing the matching upgrade command, refusals for direct-URL, Conda/
+# Pixi and unknown installs, Windows command-line quoting, and the detached
+# Windows PowerShell handoff that waits for the running Tau process to exit
+# before updating. Uses injected runners/launchers; real PowerShell tests run
+# only on Windows and are skipped elsewhere.
 import base64
 import json
 import os
@@ -15,11 +22,19 @@ from tau_coding.updater import detect_install_method, update_tau
 
 
 def _success(command: tuple[str, ...], **kwargs: object) -> CompletedProcess[str]:
+    # [FUNCTION DOC]
+    # HELPER: fake subprocess runner asserting it is called with capture_output,
+    # text and check disabled, returning a completed process with exit code 0 and
+    # stdout "upgraded".
     assert kwargs == {"capture_output": True, "text": True, "check": False}
     return CompletedProcess(command, 0, stdout="upgraded", stderr="")
 
 
 def test_detect_install_method_uses_receipts_before_installer_metadata(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts detection returns none with no hints, maps installer "uv" to uv-pip
+    # and "pip" to pip, but a uv receipt file forces uv-tool and a pipx metadata
+    # file forces pipx regardless of installer metadata.
     assert detect_install_method(tmp_path) is None
     assert detect_install_method(tmp_path, installer="uv") == "uv-pip"
     assert detect_install_method(tmp_path, installer="pip") == "pip"
@@ -33,10 +48,15 @@ def test_detect_install_method_uses_receipts_before_installer_metadata(tmp_path:
 
 
 def test_update_tau_uses_uv_tool_for_uv_owned_tool_environment(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a uv-tool environment on Linux runs exactly one "uv tool install
+    # tau-ai@<latest>" command (pinned to the fetched latest version) and succeeds.
     (tmp_path / "uv-receipt.toml").touch()
     calls: list[tuple[str, ...]] = []
 
     def runner(command: tuple[str, ...], **kwargs: object) -> CompletedProcess[str]:
+        # [FUNCTION DOC]
+        # HELPER: records each command then delegates to the success runner.
         calls.append(command)
         return _success(command, **kwargs)
 
@@ -54,15 +74,28 @@ def test_update_tau_uses_uv_tool_for_uv_owned_tool_environment(tmp_path: Path) -
 
 
 def test_update_tau_hands_windows_uv_tool_update_to_waiting_process(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that on win32 the uv tool update is not run in-process but handed to
+    # a detached PowerShell script: result succeeded and deferred, stdout mentions
+    # scheduling and the log path, one launch with script path, parent pid, log
+    # path and a base64 JSON payload of executable and quoted arguments, creation
+    # flags for a detached new process group, and the written script waits for the
+    # parent (tolerating an already-exited process) before starting the update via
+    # a non-shell process start.
+    # Side effects: writes the handoff script into the tmp dir.
     (tmp_path / "uv-receipt.toml").touch()
     handoff_dir = tmp_path / "handoff"
     launches: list[tuple[tuple[str, ...], dict[str, object]]] = []
 
     def launcher(command: tuple[str, ...], **kwargs: object) -> object:
+        # [FUNCTION DOC]
+        # HELPER: fake detached launcher recording command and options.
         launches.append((command, kwargs))
         return object()
 
     def runner(*args: object, **kwargs: object) -> CompletedProcess[str]:
+        # [FUNCTION DOC]
+        # HELPER: runner that fails the test if called (uv must not run in-process).
         del args, kwargs
         raise AssertionError("uv must not run in the live Tau process")
 
@@ -124,10 +157,16 @@ def test_update_tau_hands_windows_uv_tool_update_to_waiting_process(tmp_path: Pa
     ],
 )
 def test_quote_windows_argument_uses_microsoft_runtime_rules(argument: str, expected: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: asserts each argument is always double-quoted, embedded quotes
+    # are backslash-escaped, and backslashes preceding a quote or the closing quote
+    # are doubled, per Microsoft C runtime parsing rules.
     assert updater._quote_windows_argument(argument) == expected
 
 
 def test_windows_command_line_preserves_argument_boundaries() -> None:
+    # [FUNCTION DOC]
+    # Asserts multiple arguments are individually quoted and space-joined.
     assert updater._windows_command_line(("", "a b", 'c"', "tail\\")) == (
         '"" "a b" "c\\"" "tail\\\\"'
     )
@@ -136,9 +175,15 @@ def test_windows_command_line_preserves_argument_boundaries() -> None:
 def test_windows_handoff_reports_staging_write_failure_and_removes_owned_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Monkeypatches temp-dir creation and makes writing the script fail; asserts a
+    # failed result with the staging error message and that the self-created
+    # directory was removed.
     update_dir = tmp_path / "owned-handoff"
 
     def make_update_dir(*args: object, **kwargs: object) -> str:
+        # [FUNCTION DOC]
+        # HELPER: replacement temp-dir factory that creates and returns a known dir.
         del args, kwargs
         update_dir.mkdir()
         return str(update_dir)
@@ -146,6 +191,9 @@ def test_windows_handoff_reports_staging_write_failure_and_removes_owned_directo
     original_write_text = Path.write_text
 
     def fail_script_write(path: Path, *args: object, **kwargs: object) -> int:
+        # [FUNCTION DOC]
+        # HELPER: path text-writer that raises OSError for the update script only and
+        # delegates to the original writer otherwise.
         if path == update_dir / "update.ps1":
             raise OSError("disk is full")
         return original_write_text(path, *args, **kwargs)
@@ -169,9 +217,14 @@ def test_windows_handoff_reports_staging_write_failure_and_removes_owned_directo
 def test_windows_handoff_reports_launch_failure_and_preserves_caller_directory(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts a launcher OSError yields a failed result with the launch error
+    # message, while a caller-supplied handoff directory is kept but emptied.
     update_dir = tmp_path / "caller-handoff"
 
     def fail_launch(*args: object, **kwargs: object) -> object:
+        # [FUNCTION DOC]
+        # HELPER: launcher that always raises OSError.
         del args, kwargs
         raise OSError("process creation denied")
 
@@ -192,6 +245,9 @@ def test_windows_handoff_reports_launch_failure_and_preserves_caller_directory(
 
 
 def _wait_for_file(path: Path, timeout: float = 10) -> None:
+    # [FUNCTION DOC]
+    # HELPER: polls every 50 ms until the path exists or the timeout (default 10
+    # s) elapses; raises AssertionError on timeout.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():
@@ -201,6 +257,10 @@ def _wait_for_file(path: Path, timeout: float = 10) -> None:
 
 
 def _wait_for_text(path: Path, expected: str, timeout: float = 10) -> str:
+    # [FUNCTION DOC]
+    # HELPER: polls until the file exists and its UTF-8 (BOM-tolerant) text
+    # contains the expected string, returning the text; raises AssertionError on
+    # timeout.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():
@@ -212,6 +272,10 @@ def _wait_for_text(path: Path, expected: str, timeout: float = 10) -> str:
 
 
 def _powershell_engines() -> list[str | None]:
+    # [FUNCTION DOC]
+    # HELPER: returns available Windows PowerShell executables (powershell.exe,
+    # pwsh.exe, deduplicated) for parametrization, or a single none entry when not
+    # on Windows or none are found (causing skips).
     if sys.platform != "win32":
         return [None]
     engines = [shutil.which(name) for name in ("powershell.exe", "pwsh.exe")]
@@ -220,6 +284,8 @@ def _powershell_engines() -> list[str | None]:
 
 
 def _engine_id(engine: str | None) -> str:
+    # [FUNCTION DOC]
+    # HELPER: test id for an engine: its file name, or "unavailable".
     return Path(engine).name if engine else "unavailable"
 
 
@@ -227,6 +293,15 @@ def _engine_id(engine: str | None) -> str:
 def test_windows_handoff_blocks_for_live_parent_and_preserves_arguments(
     tmp_path: Path, powershell: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Windows-only integration test: starts a sleeping parent process, hands off a
+    # fake updater (a copied Python in a spaced path running a script that writes
+    # its argv to a marker and exits 23) with tricky arguments, asserts the
+    # updater has not run while the parent lives, then terminates the parent and
+    # asserts the marker receives exactly the original arguments and the log
+    # records exit code 23. Always kills the parent in cleanup.
+    # Side effects: spawns processes, copies the interpreter and DLLs, sets
+    # PYTHONHOME.
     if powershell is None:
         pytest.skip("requires Windows and PowerShell")
     parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -280,6 +355,10 @@ def test_windows_handoff_blocks_for_live_parent_and_preserves_arguments(
 
 @pytest.mark.parametrize("powershell", _powershell_engines(), ids=_engine_id)
 def test_windows_helper_wait_failure_is_fail_closed(tmp_path: Path, powershell: str | None) -> None:
+    # [FUNCTION DOC]
+    # Windows-only: runs the update script through a wrapper that overrides
+    # Wait-Process to throw; asserts nonzero exit, the updater never ran and the
+    # log says it could not wait for the Tau process.
     if powershell is None:
         pytest.skip("requires Windows and PowerShell")
     update_dir = tmp_path / "wait-failure"
@@ -340,6 +419,9 @@ def test_windows_helper_wait_failure_is_fail_closed(tmp_path: Path, powershell: 
 
 
 def test_update_tau_reports_uv_latest_version_lookup_failure(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that when the latest-version fetcher returns none for a uv-tool
+    # environment, the update fails with the PyPI lookup message.
     (tmp_path / "uv-receipt.toml").touch()
 
     result = update_tau(
@@ -354,6 +436,8 @@ def test_update_tau_reports_uv_latest_version_lookup_failure(tmp_path: Path) -> 
 
 
 def test_update_tau_uses_pipx_for_pipx_owned_environment(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a pipx environment uses "pipx upgrade tau-ai".
     (tmp_path / "pipx_metadata.json").touch()
 
     result = update_tau(
@@ -366,6 +450,8 @@ def test_update_tau_uses_pipx_for_pipx_owned_environment(tmp_path: Path) -> None
 
 
 def test_update_tau_reuses_uv_pip_for_uv_installed_distribution(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts installer uv uses "uv pip install --python <exe> --upgrade tau-ai".
     result = update_tau(
         runner=_success,
         python_executable="/env/bin/python",
@@ -386,6 +472,8 @@ def test_update_tau_reuses_uv_pip_for_uv_installed_distribution(tmp_path: Path) 
 
 
 def test_update_tau_uses_current_environment_pip_for_pip_install(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts installer pip uses "<exe> -m pip install --upgrade tau-ai".
     result = update_tau(
         runner=_success,
         python_executable="/env/bin/python",
@@ -405,10 +493,15 @@ def test_update_tau_uses_current_environment_pip_for_pip_install(tmp_path: Path)
 
 
 def test_update_tau_does_not_fall_back_when_owner_update_fails(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a failing uv tool command produces a failure "command: stderr" and
+    # no other command is attempted.
     (tmp_path / "uv-receipt.toml").touch()
     calls: list[tuple[str, ...]] = []
 
     def runner(command: tuple[str, ...], **kwargs: object) -> CompletedProcess[str]:
+        # [FUNCTION DOC]
+        # HELPER: records the command and returns exit code 2 with stderr "uv failed".
         del kwargs
         calls.append(command)
         return CompletedProcess(command, 2, stdout="", stderr="uv failed")
@@ -426,6 +519,9 @@ def test_update_tau_does_not_fall_back_when_owner_update_fails(tmp_path: Path) -
 
 
 def test_update_tau_refuses_direct_url_install(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a direct-URL (e.g. local checkout) install is refused with a message
+    # naming the original source.
     result = update_tau(
         runner=_success,
         environment_prefix=tmp_path,
@@ -439,6 +535,9 @@ def test_update_tau_refuses_direct_url_install(tmp_path: Path) -> None:
 
 
 def test_update_tau_refuses_conda_or_pixi_environment(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an environment containing conda-meta is refused as Conda/Pixi
+    # managed.
     (tmp_path / "conda-meta").mkdir()
 
     result = update_tau(
@@ -452,6 +551,9 @@ def test_update_tau_refuses_conda_or_pixi_environment(tmp_path: Path) -> None:
 
 
 def test_update_tau_refuses_unknown_installer(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an unrecognized installer name is refused, reporting the metadata
+    # value.
     result = update_tau(
         runner=_success,
         environment_prefix=tmp_path,

@@ -1,3 +1,9 @@
+# [MODULE DOC]
+# Tests for tau_coding.session_export: rendering a session's entry tree to a single self-contained
+# HTML document (branch tree rail, active path/leaf, compaction details, bookmark labels, escaped
+# system prompt, syntax-highlighted tool arguments, filter chips and accordions, tool/error marking,
+# hidden custom messages, embedded base64 JSONL download, theme toggle and Tau palettes, usage tab)
+# and writing it to disk. Assertions check substrings of the generated HTML.
 import base64
 import re
 from pathlib import Path
@@ -22,6 +28,11 @@ from tau_coding.tui.themes import TAU_DARK_THEME, TAU_LIGHT_THEME
 
 
 def test_render_session_html_preserves_branch_tree() -> None:
+    # [FUNCTION DOC]
+    # Test: a branched tree with a tool call/result, a compaction entry with usage and a legacy leaf
+    # pointer renders title/source, every entry anchor, the compaction as active entry (latest
+    # appended entry), HTML-escaped user text, active path/leaf markers, first-kept-entry link and the
+    # summary request usage (cacheRead) without a "Replaces entries" section.
     entries = [
         MessageEntry(id="root", message=UserMessage(content="Start <session>")),
         MessageEntry(
@@ -81,6 +92,9 @@ def test_render_session_html_preserves_branch_tree() -> None:
 
 
 def test_render_session_html_resolves_bookmark_labels_on_tree_nodes() -> None:
+    # [FUNCTION DOC]
+    # Test: a label entry renders an escaped bookmark label on the target node (and its aria-label), a
+    # "Set bookmark" description, and a link to the target entry.
     entries = [
         MessageEntry(id="root", message=UserMessage(content="Start")),
         LabelEntry(
@@ -100,6 +114,9 @@ def test_render_session_html_resolves_bookmark_labels_on_tree_nodes() -> None:
 
 
 def test_render_session_html_handles_long_legacy_leaf_history() -> None:
+    # [FUNCTION DOC]
+    # Test: 1100 message+leaf pairs render without failure (no recursion limits), include the final
+    # entries, and do not link to the final leaf entry.
     entries: list[MessageEntry | LeafEntry] = []
     parent_id: str | None = None
     for index in range(1_100):
@@ -128,6 +145,9 @@ def test_render_session_html_handles_long_legacy_leaf_history() -> None:
 
 
 def test_render_session_html_uses_static_document_layout() -> None:
+    # [FUNCTION DOC]
+    # Test: the document uses the static shell layout (eyebrow, main shell, tree rail, entry stream,
+    # theme toggle) and references no external links or http(s) URLs.
     entries = [MessageEntry(id="root", message=UserMessage(content="Export layout"))]
 
     html = render_session_html(entries, title="Layout Export")
@@ -146,6 +166,9 @@ def test_render_session_html_uses_static_document_layout() -> None:
 
 
 def test_render_session_html_includes_escaped_readable_system_prompt() -> None:
+    # [FUNCTION DOC]
+    # Test: a provided system prompt renders in a collapsible block before the shell, HTML-escaped with
+    # preserved whitespace and wrapping styles, and with the project-instructions caveat.
     entries = [MessageEntry(id="root", message=UserMessage(content="Hello"))]
     system_prompt = "First line\n  indented <script>alert('x')</script>\n" + "long-word-" * 40
 
@@ -162,6 +185,8 @@ def test_render_session_html_includes_escaped_readable_system_prompt() -> None:
 
 
 def test_render_session_html_omits_unavailable_system_prompt() -> None:
+    # [FUNCTION DOC]
+    # Test: with no system prompt the system-prompt block and caveat are absent.
     html = render_session_html([])
 
     assert '<details class="system-prompt">' not in html
@@ -169,6 +194,8 @@ def test_render_session_html_omits_unavailable_system_prompt() -> None:
 
 
 def test_render_session_html_syntax_highlights_tool_call_arguments() -> None:
+    # [FUNCTION DOC]
+    # Test: tool call arguments are rendered with Pygments highlighting markup.
     entries = [
         MessageEntry(
             id="root",
@@ -188,6 +215,10 @@ def test_render_session_html_syntax_highlights_tool_call_arguments() -> None:
 
 
 def test_render_session_html_includes_filter_bar_and_accordions() -> None:
+    # [FUNCTION DOC]
+    # Test: filter bar chips show tool/event counts, an expand-all accordion toggle and its script, entry
+    # kind attributes, closed tool-call accordions, short "NN · Tool: name" titles, tool-name node types
+    # in the sidebar and the hammer icon path.
     entries = [
         SessionInfoEntry(id="info", title="Filtered export", cwd="/tmp"),
         MessageEntry(
@@ -239,6 +270,9 @@ def test_render_session_html_includes_filter_bar_and_accordions() -> None:
 
 
 def test_render_session_html_marks_tool_only_assistant_messages_as_tools() -> None:
+    # [FUNCTION DOC]
+    # Test: an assistant message containing only tool calls is classified as a tool entry with the tool
+    # name as preview and node type.
     entries = [
         MessageEntry(
             id="tool-only",
@@ -256,6 +290,8 @@ def test_render_session_html_marks_tool_only_assistant_messages_as_tools() -> No
 
 
 def test_render_session_html_marks_error_tool_results() -> None:
+    # [FUNCTION DOC]
+    # Test: an error tool result gets the is-error class and an "error" flag.
     entries = [
         MessageEntry(
             id="failure",
@@ -275,6 +311,9 @@ def test_render_session_html_marks_error_tool_results() -> None:
 
 
 def test_render_session_html_honors_custom_message_display() -> None:
+    # [FUNCTION DOC]
+    # Test: custom messages with display disabled are omitted from the visible page (and the next entry's
+    # parent link skips to the visible ancestor), but remain in the embedded base64 JSONL data.
     entries = [
         CustomMessageEntry(
             id="visible",
@@ -314,6 +353,9 @@ def test_render_session_html_honors_custom_message_display() -> None:
 
 
 def test_render_session_html_includes_jsonl_download() -> None:
+    # [FUNCTION DOC]
+    # Test: the embedded JSONL download contains every entry (including leaf pointers), uses the source
+    # file's basename as download name, and excludes the live system prompt.
     entries = [
         MessageEntry(id="root", message=UserMessage(content="Hello")),
         MessageEntry(id="reply", parent_id="root", message=AssistantMessage(content="Hi")),
@@ -346,6 +388,8 @@ def test_render_session_html_includes_jsonl_download() -> None:
 
 
 def test_render_session_html_jsonl_filename_falls_back_to_title_slug() -> None:
+    # [FUNCTION DOC]
+    # Test: without a source path, the download filename is a lowercase hyphenated slug of the title.
     entries = [MessageEntry(id="root", message=UserMessage(content="Hello"))]
 
     html = render_session_html(entries, title="Fix Login Redirect Bug!")
@@ -354,6 +398,8 @@ def test_render_session_html_jsonl_filename_falls_back_to_title_slug() -> None:
 
 
 def test_render_session_html_includes_theme_toggle_script() -> None:
+    # [FUNCTION DOC]
+    # Test: the page includes a theme toggle script using localStorage and a data-theme attribute.
     entries = [MessageEntry(id="root", message=UserMessage(content="Hello"))]
 
     html = render_session_html(entries, title="Toggle Export")
@@ -364,6 +410,9 @@ def test_render_session_html_includes_theme_toggle_script() -> None:
 
 
 def test_export_session_html_writes_file(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: exporting writes an HTML file starting with the doctype and returns the output path.
+    # Side effect: writes into tmp_path.
     entries = [MessageEntry(id="root", message=UserMessage(content="Hello"))]
     output_path = tmp_path / "session.html"
 
@@ -374,6 +423,9 @@ def test_export_session_html_writes_file(tmp_path: Path) -> None:
 
 
 def test_render_session_html_includes_usage_tab() -> None:
+    # [FUNCTION DOC]
+    # Test: the usage tab panel, chart, PNG button, cache hit rate and estimated cost appear, with
+    # accessible tab buttons, arrow-key navigation and #usage/#cache hash routing.
     entries = [
         MessageEntry(id="root", message=UserMessage(content="Hello")),
         MessageEntry(
@@ -405,6 +457,9 @@ def test_render_session_html_includes_usage_tab() -> None:
 
 
 def test_render_session_html_uses_tau_theme_palette() -> None:
+    # [FUNCTION DOC]
+    # Test: the CSS uses the Tau light and dark theme accent/background colors, a dark theme root class,
+    # a theme change event, and chart elements with per-theme error colors.
     entries = [
         MessageEntry(id="root", message=UserMessage(content="Hello")),
         MessageEntry(

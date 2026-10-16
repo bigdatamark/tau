@@ -1,3 +1,7 @@
+# [MODULE DOC]
+# Tests for tau_coding.context_window: deterministic character-based token estimation,
+# context usage estimation that prefers the latest valid provider usage report,
+# Pi-style auto-compaction thresholds, and compaction summary/prompt construction.
 from pathlib import Path
 
 from tau_agent import AssistantMessage, TextContent, ToolCall, ToolResultMessage, Usage, UserMessage
@@ -17,6 +21,9 @@ from tau_coding.tools import create_coding_tools
 
 
 def test_text_token_estimate_is_deterministic() -> None:
+    # [FUNCTION DOC]
+    # Text estimate is ceiling of characters divided by four: "" -> 0, 1 to 4 chars -> 1,
+    # 5 chars -> 2.
     assert estimate_text_tokens("") == 0
     assert estimate_text_tokens("a") == 1
     assert estimate_text_tokens("abcd") == 1
@@ -24,6 +31,10 @@ def test_text_token_estimate_is_deterministic() -> None:
 
 
 def test_message_token_estimate_counts_roles_and_tool_calls() -> None:
+    # [FUNCTION DOC]
+    # User, assistant-with-tool-call and tool-result messages each estimate above their
+    # raw text estimate (role/structure overhead), and the assistant with a tool call
+    # estimates above the plain user message.
     tool_call = ToolCall(id="call-1", name="read", arguments={"path": "README.md"})
 
     user_tokens = estimate_message_tokens(UserMessage(content="hello"))
@@ -42,6 +53,9 @@ def test_message_token_estimate_counts_roles_and_tool_calls() -> None:
 
 
 def test_context_token_estimate_includes_system_messages_and_tools(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Total estimate for system prompt, two messages and the coding tool set (created in
+    # tmp_path) exceeds the estimate of the concatenated raw text alone.
     tools = tuple(create_coding_tools(cwd=tmp_path))
 
     estimate = estimate_context_tokens(
@@ -54,6 +68,10 @@ def test_context_token_estimate_includes_system_messages_and_tools(tmp_path: Pat
 
 
 def test_context_usage_uses_latest_provider_report_and_estimates_only_trailing_messages() -> None:
+    # [FUNCTION DOC]
+    # When the latest assistant message carries provider usage (total 100000), the usage
+    # estimate uses it, estimates only messages after it (trailing user message), and
+    # totals provider tokens plus trailing tokens; system text is not re-counted.
     reported = AssistantMessage(
         content="answer",
         usage=Usage(input=70_000, output=2_000, cache_read=28_000, total_tokens=100_000),
@@ -74,6 +92,10 @@ def test_context_usage_uses_latest_provider_report_and_estimates_only_trailing_m
 
 
 def test_context_usage_ignores_stale_provider_report_after_newer_prefix_is_inserted() -> None:
+    # [FUNCTION DOC]
+    # A provider report on an assistant message that is older (by timestamp) than a
+    # preceding message (e.g. an inserted compaction summary) is ignored; falls back to
+    # pure estimation, which is far below 100000.
     stale = AssistantMessage(
         content="old answer",
         usage=Usage(total_tokens=100_000),
@@ -88,6 +110,8 @@ def test_context_usage_ignores_stale_provider_report_after_newer_prefix_is_inser
 
 
 def test_context_usage_ignores_error_response_usage() -> None:
+    # [FUNCTION DOC]
+    # Usage attached to an assistant message with stop reason "error" is not used.
     failed = AssistantMessage(
         stop_reason="error",
         error_message="failed",
@@ -101,12 +125,18 @@ def test_context_usage_ignores_error_response_usage() -> None:
 
 
 def test_auto_compaction_threshold_keeps_pi_style_reserve() -> None:
+    # [FUNCTION DOC]
+    # 128000-token window yields threshold 111616; a 16384 window clamps to 1; a zero
+    # window yields None (no auto-compaction).
     assert auto_compaction_threshold_for_context_window(128_000) == 111_616
     assert auto_compaction_threshold_for_context_window(16_384) == 1
     assert auto_compaction_threshold_for_context_window(0) is None
 
 
 def test_context_usage_estimate_reports_breakdown(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Without provider usage the estimate reports message and tool counts, system/message/
+    # tool token components that sum to the total, and matches estimate_context_tokens.
     tools = tuple(create_coding_tools(cwd=tmp_path))
     messages = (UserMessage(content="hello"), AssistantMessage(content="hi"))
 
@@ -124,6 +154,10 @@ def test_context_usage_estimate_reports_breakdown(tmp_path: Path) -> None:
 
 
 def test_summarize_messages_for_compaction_is_deterministic() -> None:
+    # [FUNCTION DOC]
+    # The fallback summary lists a header with message count and one numbered line per
+    # message: role, text, tool call names for assistants, and "tool: <name> ok: <text>"
+    # for tool results.
     tool_call = ToolCall(id="call-1", name="read", arguments={"path": "README.md"})
 
     summary = summarize_messages_for_compaction(
@@ -149,6 +183,10 @@ def test_summarize_messages_for_compaction_is_deterministic() -> None:
 
 
 def test_compaction_summary_prompt_uses_pi_format_and_custom_instructions() -> None:
+    # [FUNCTION DOC]
+    # The summary prompt wraps the conversation in conversation tags, includes Pi's exact
+    # structured format instructions (Goal section, preserve file paths), the custom
+    # "Additional focus" line, and message text.
     prompt = build_compaction_summary_prompt(
         (
             UserMessage(content="Refactor src/app.py"),
@@ -166,6 +204,10 @@ def test_compaction_summary_prompt_uses_pi_format_and_custom_instructions() -> N
 
 
 def test_compaction_summary_prompt_updates_previous_summary() -> None:
+    # [FUNCTION DOC]
+    # A leading user message starting with "Previous conversation summary:" is extracted
+    # into previous-summary tags and the prompt switches to the update variant mentioning
+    # NEW conversation messages; serialising other messages omits the summary header.
     prompt = build_compaction_summary_prompt(
         (
             UserMessage(content="Previous conversation summary:\n## Goal\nShip compaction."),

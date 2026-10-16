@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Deterministic tests for the portable agent loop (tau_agent.loop.run_agent_loop)
+# using the scripted FakeProvider and fake tools: canonical event ordering,
+# provider wait timing, nested thinking events, tool execution and tool-result
+# message lifecycle, tool call id/signal/progress plumbing, unknown tools, provider
+# errors, replay hygiene for failed assistants and malformed tool history,
+# steering/follow-up injection and the max_turns guard. Pure in-memory; no I/O.
 import asyncio
 from collections.abc import AsyncIterator, Mapping
 from itertools import chain, repeat
@@ -36,6 +43,8 @@ from tau_ai import CancellationToken, FakeProvider
 
 
 async def _collect(stream: AsyncIterator[AgentEvent]) -> list[AgentEvent]:
+    # [FUNCTION DOC]
+    # HELPER: Drain an async event stream into a list and return it.
     return [event async for event in stream]
 
 
@@ -43,6 +52,9 @@ def _tool(
     name: str,
     execute_fn,
 ) -> AgentTool:  # noqa: ANN001
+    # [FUNCTION DOC]
+    # HELPER: Build a minimal agent tool with the given name, a title-cased label,
+    # a "Run <name>." description, an empty object schema and the given executor.
     return AgentTool(
         name=name,
         label=name.title(),
@@ -54,6 +66,11 @@ def _tool(
 
 @pytest.mark.anyio
 async def test_agent_loop_streams_canonical_nested_events() -> None:
+    # [FUNCTION DOC]
+    # Runs one text-only turn and asserts the exact event sequence (agent_start,
+    # turn_start, message_start, two message_update, message_end, turn_end,
+    # agent_end), that update events carry the provider text deltas, and that the
+    # final assistant message is appended to the caller's message list.
     messages: list[AgentMessage] = [UserMessage(content="Say hello")]
     assistant = AssistantMessage(content="Hello", model="fake")
     provider = FakeProvider(
@@ -89,6 +106,10 @@ async def test_agent_loop_streams_canonical_nested_events() -> None:
 async def test_agent_loop_records_only_monotonic_provider_wait_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Monkeypatches the loop's monotonic clock with scripted ticks and asserts the
+    # assistant timing records time-to-first-output of 1250 ms and a total duration
+    # of 5000 ms, i.e. only provider wait windows are measured.
     ticks = chain(
         [
             0,
@@ -125,6 +146,9 @@ async def test_agent_loop_records_only_monotonic_provider_wait_time(
 async def test_agent_loop_does_not_invent_ttft_without_an_output_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # With a provider that emits no deltas, asserts time-to-first-output stays None
+    # while total duration (1100 ms from scripted ticks) is still recorded.
     ticks = chain(
         [0, 100_000_000, 1_000_000_000, 2_000_000_000],
         repeat(2_000_000_000),
@@ -150,6 +174,9 @@ async def test_agent_loop_does_not_invent_ttft_without_an_output_event(
 
 @pytest.mark.anyio
 async def test_agent_loop_nests_thinking_events_without_losing_final_message() -> None:
+    # [FUNCTION DOC]
+    # Asserts thinking deltas are surfaced as nested assistant-message events inside
+    # message_update events and the final provider message is what gets appended.
     messages: list[AgentMessage] = [UserMessage(content="Think briefly")]
     assistant = AssistantMessage(content="Done", model="fake")
     provider = FakeProvider(
@@ -188,12 +215,21 @@ async def test_agent_loop_nests_thinking_events_without_losing_final_message() -
 
 @pytest.mark.anyio
 async def test_agent_loop_executes_tool_and_emits_tool_result_message_lifecycle() -> None:
+    # [FUNCTION DOC]
+    # Scripts a tool-use turn followed by a final turn and asserts: a tool result
+    # message is appended with role, tool name, text and details from the tool; the
+    # result message emits only message_end (no start/update of its own in the
+    # filtered check); three message_start events overall; and the second provider
+    # call received user, assistant and tool result messages.
     async def execute(
         tool_call_id: str,
         arguments: Mapping[str, JSONValue],
         signal: CancellationToken | None = None,
         on_update=None,  # noqa: ANN001
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake read tool returning text "contents of <path>" and details with
+        # the path.
         del tool_call_id, signal, on_update
         return AgentToolResult(
             content=[TextContent(text=f"contents of {arguments['path']}")],
@@ -238,6 +274,10 @@ async def test_agent_loop_executes_tool_and_emits_tool_result_message_lifecycle(
 
 @pytest.mark.anyio
 async def test_agent_loop_passes_call_id_signal_and_progress_to_tool() -> None:
+    # [FUNCTION DOC]
+    # Asserts the tool executor receives the call id and the exact cancellation
+    # token, and that a progress update it reports surfaces as a tool execution
+    # update event with the partial text.
     observed: list[tuple[str, CancellationToken | None]] = []
 
     async def execute(
@@ -246,6 +286,9 @@ async def test_agent_loop_passes_call_id_signal_and_progress_to_tool() -> None:
         signal: CancellationToken | None = None,
         on_update=None,  # noqa: ANN001
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake tool recording (call id, signal), asserting a progress callback
+        # exists, sending a "working" partial result, yielding once and returning "done".
         del arguments
         observed.append((tool_call_id, signal))
         assert on_update is not None
@@ -282,6 +325,9 @@ async def test_agent_loop_passes_call_id_signal_and_progress_to_tool() -> None:
 
 @pytest.mark.anyio
 async def test_agent_loop_records_unknown_tool_as_canonical_error_result() -> None:
+    # [FUNCTION DOC]
+    # Asserts calling an unregistered tool produces an error tool execution end
+    # event and an error tool result message with text "Tool missing not found".
     call = ToolCall(id="call-1", name="missing", arguments={})
     assistant = AssistantMessage(content=[call], model="fake")
     messages: list[AgentMessage] = [UserMessage(content="Use it")]
@@ -310,6 +356,9 @@ async def test_agent_loop_records_unknown_tool_as_canonical_error_result() -> No
 
 @pytest.mark.anyio
 async def test_agent_loop_converts_provider_error_to_assistant_error_message() -> None:
+    # [FUNCTION DOC]
+    # Asserts a provider error event yields the short event sequence without updates
+    # and appends an assistant message with stop reason "error" and the error text.
     messages: list[AgentMessage] = [UserMessage(content="hello")]
     provider = FakeProvider([[assistant_error("provider failed")]])
 
@@ -339,6 +388,11 @@ async def test_agent_loop_converts_provider_error_to_assistant_error_message() -
 
 @pytest.mark.anyio
 async def test_agent_loop_excludes_empty_failed_assistant_from_next_provider_call() -> None:
+    # [FUNCTION DOC]
+    # Runs a failing call then a second run; asserts the failed assistant stays in
+    # the stored history but is excluded from the messages replayed to the provider,
+    # which sees only the two user prompts, and that the recovered message ends the
+    # history.
     messages: list[AgentMessage] = []
     recovered = AssistantMessage(content="recovered", model="fake")
     provider = FakeProvider(
@@ -382,6 +436,11 @@ async def test_agent_loop_excludes_empty_failed_assistant_from_next_provider_cal
 
 @pytest.mark.anyio
 async def test_agent_loop_repairs_malformed_tool_history_before_provider_call() -> None:
+    # [FUNCTION DOC]
+    # Given history with an unanswered tool call, a later user message and an
+    # orphan tool result, asserts the provider receives the assistant, a synthetic
+    # error tool result for the unanswered call, then the user message, with the
+    # orphan dropped from the replay but kept in stored history.
     call = ToolCall(id="call-1", name="read", arguments={"path": "README.md"})
     assistant = AssistantMessage(content=[call])
     late_user = UserMessage(content="continue")
@@ -413,6 +472,10 @@ async def test_agent_loop_repairs_malformed_tool_history_before_provider_call() 
 
 @pytest.mark.anyio
 async def test_agent_loop_injects_steering_and_follow_up_messages() -> None:
+    # [FUNCTION DOC]
+    # Asserts steering messages are injected after tool execution and follow-up
+    # messages after the agent would stop, producing user messages start/steer/
+    # follow up and three provider calls.
     call = ToolCall(id="call-1", name="work", arguments={})
 
     async def execute(
@@ -421,6 +484,8 @@ async def test_agent_loop_injects_steering_and_follow_up_messages() -> None:
         signal=None,  # noqa: ANN001
         on_update=None,  # noqa: ANN001
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake tool that ignores its inputs and returns "ok".
         del tool_call_id, arguments, signal, on_update
         return AgentToolResult(content="ok")
 
@@ -438,6 +503,9 @@ async def test_agent_loop_injects_steering_and_follow_up_messages() -> None:
     follow_up = [UserMessage(content="follow up")]
 
     def pop(queue: list[UserMessage]) -> tuple[UserMessage, ...]:
+        # [FUNCTION DOC]
+        # HELPER: Pop and return the first queued message as a one-element tuple, or an
+        # empty tuple when the queue is empty (mutates the queue).
         return (queue.pop(0),) if queue else ()
 
     messages: list[AgentMessage] = [UserMessage(content="start")]
@@ -463,6 +531,9 @@ async def test_agent_loop_injects_steering_and_follow_up_messages() -> None:
 
 @pytest.mark.anyio
 async def test_agent_loop_stops_with_assistant_error_after_max_turns() -> None:
+    # [FUNCTION DOC]
+    # Asserts that with max_turns=1 and a tool-use response, the loop stops after one
+    # provider call and appends an assistant error "Agent stopped after max_turns=1".
     call = ToolCall(id="call-1", name="missing", arguments={})
     assistant = AssistantMessage(content=[call], model="fake")
     provider = FakeProvider(

@@ -1,3 +1,9 @@
+# [PACKAGE DOC]
+# Package for the trusted built-in llama.cpp local backend extension.
+# Re-exports the public service/state API (endpoint normalization, discovery,
+# service, state store, constants) and provides the extension setup hook that
+# registers a llama.cpp provider and a provider-neutral local backend with the
+# extension API.
 """Trusted built-in llama.cpp local backend."""
 
 from __future__ import annotations
@@ -42,6 +48,16 @@ def setup(
     tau: ExtensionAPI,
     context: BuiltInExtensionContext | None = None,
 ) -> None:
+    # [FUNCTION DOC]
+    # Extension entry point. Inputs: the extension API object and an optional
+    # built-in extension context. When no context is given, builds a default one
+    # from default Tau paths, a file credential store at the default credentials
+    # path, and a copy of the process environment. Constructs a LlamaCppService
+    # wired to a state store, credential store, environment, optional HTTP client
+    # and the API's register/update provider and register-local-backend callbacks,
+    # then registers the service's provider and local backend.
+    # Returns nothing. Side effects: registers into the extension API; may read
+    # the environment. Exceptions from registration propagate.
     """Register the trusted provider and provider-neutral local backend."""
     dependencies = context or BuiltInExtensionContext(
         paths=TauPaths(),

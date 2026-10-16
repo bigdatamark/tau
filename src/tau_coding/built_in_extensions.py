@@ -1,3 +1,13 @@
+# [MODULE DOC]
+# Declarations of trusted extensions that ship inside Tau itself (currently
+# only the llama.cpp integration).
+# Behavior: defines the BuiltInExtensionContext of trusted runtime
+# dependencies, the BuiltInExtension declaration record with strict validation,
+# two setup callable type aliases, lazy-import setup shims for llama.cpp and the
+# BUILT_IN_EXTENSIONS tuple, which is the explicit, non-discoverable list the
+# extension runtime loads before filesystem extensions.
+# Side effects: none at import beyond constructing the declaration tuple (the
+# llama.cpp module is only imported when its setup runs).
 """Trusted extension declarations bundled with Tau."""
 
 from __future__ import annotations
@@ -18,6 +28,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class BuiltInExtensionContext:
+    # [CLASS DOC]
+    # Frozen, slotted dataclass of trusted dependencies passed only to bundled
+    # extensions: Tau paths (home dirs), the credential store, a snapshot mapping of
+    # environment variables and an optional shared async HTTP client (none means the
+    # extension creates/uses its own). Holds data only; no behavior.
     """Trusted runtime dependencies supplied only to bundled extensions.
 
     Filesystem extensions receive the ordinary :class:`ExtensionAPI` only. The
@@ -38,6 +53,11 @@ BuiltInExtensionContextSetup = Callable[["ExtensionAPI", BuiltInExtensionContext
 
 @dataclass(frozen=True, slots=True)
 class BuiltInExtension:
+    # [CLASS DOC]
+    # Frozen, slotted dataclass declaring one bundled extension: its name, a sync
+    # setup callable taking the ExtensionAPI, a hidden flag (default true, hides it
+    # from ordinary extension listings) and an optional sync contextual setup taking
+    # the API plus a BuiltInExtensionContext (preferred by the runtime when given).
     """One trusted extension setup function shipped as part of Tau.
 
     Built-ins use the normal extension API and runtime lifecycle. They differ
@@ -51,6 +71,14 @@ class BuiltInExtension:
     setup_with_context: BuiltInExtensionContextSetup | None = None
 
     def __post_init__(self) -> None:
+        # [FUNCTION DOC]
+        # Validates the declaration after construction.
+        # Inputs: the instance fields. Outputs: none.
+        # Raises ValueError when: name is not a non-empty string after stripping; name
+        # has surrounding whitespace; setup is not callable; setup (or its type's call
+        # method) is a coroutine function; hidden is not a real bool; setup_with_context
+        # is given but not callable, or is (or its call method is) a coroutine function.
+        # Side effects: none.
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("Built-in extension name must be a non-empty string")
         if self.name != self.name.strip():
@@ -73,11 +101,20 @@ class BuiltInExtension:
 
     @property
     def source_id(self) -> str:
+        # [FUNCTION DOC]
+        # Property returning the stable source identity string "built-in:" followed by
+        # the extension name. No side effects, never raises.
         """Return the stable host-owned source identity for this declaration."""
         return f"built-in:{self.name}"
 
 
 def _llama_cpp_setup(api: ExtensionAPI) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Context-free setup shim for the llama.cpp built-in. Lazily imports
+    # the llama_cpp builtin module's setup function and calls it with only the API.
+    # Inputs: the ExtensionAPI. Outputs: none.
+    # Side effects: module import; whatever registration the extension performs.
+    # Exceptions from import or setup propagate.
     """Load the product extension with its normal process dependencies."""
     from tau_coding.extensions.builtins.llama_cpp import setup
 
@@ -88,6 +125,12 @@ def _llama_cpp_setup_with_context(
     api: ExtensionAPI,
     context: BuiltInExtensionContext,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Contextual setup shim for llama.cpp. Lazily imports the builtin
+    # module's setup function and calls it with the API and the trusted
+    # BuiltInExtensionContext.
+    # Inputs: ExtensionAPI and context. Outputs: none.
+    # Side effects: module import; extension registration. Errors propagate.
     """Load the product extension lazily with trusted runtime dependencies."""
     from tau_coding.extensions.builtins.llama_cpp import setup
 

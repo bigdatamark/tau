@@ -1,3 +1,9 @@
+# [MODULE DOC]
+# User-level on-disk cache of the authenticated OpenAI Codex model catalog,
+# scoped to one Codex account id and a schema version. Provides atomic JSON
+# writes and strict, fail-closed reads that validate every model (id, name,
+# input modalities, thinking levels, default level, limits) and return nothing
+# on any inconsistency.
 """Persisted cache for authenticated OpenAI Codex model catalogs."""
 
 from __future__ import annotations
@@ -23,6 +29,9 @@ CODEX_MODEL_STORE_SCHEMA_VERSION = 1
 
 
 def codex_model_store_path(paths: TauPaths | None = None) -> Path:
+    # [FUNCTION DOC]
+    # Returns the Codex model cache file path from the given Tau paths, or from
+    # default Tau paths when none are given. No I/O.
     """Return the user-level Codex model-catalog cache path."""
     return (paths or TauPaths()).codex_models_store_path
 
@@ -32,6 +41,15 @@ def cached_codex_model_catalog(
     *,
     account_id: str | None,
 ) -> RuntimeModelCatalog | None:
+    # [FUNCTION DOC]
+    # Reads the cached catalog for the active account.
+    # Inputs: optional Tau paths and keyword account id.
+    # Output: the runtime model catalog, or none when the account id is empty, the
+    # file is missing/unreadable/invalid JSON, the schema version differs, the
+    # stored account differs, or the catalog fails validation. Never raises for
+    # these cases. Side effect: reads the cache file.
+    # KNOWN ISSUE: save strips whitespace from the account id but this lookup
+    # compares the unstripped id, so an id with surrounding whitespace never hits.
     """Return the cached catalog only when it belongs to the active account."""
     if not account_id:
         return None
@@ -53,6 +71,16 @@ def save_codex_model_catalog(
     paths: TauPaths | None = None,
     now: float | None = None,
 ) -> Path:
+    # [FUNCTION DOC]
+    # Persists a catalog snapshot atomically.
+    # Inputs: the catalog, keyword account id (stripped; must be non-empty),
+    # optional Tau paths and optional "now" timestamp (defaults to current time).
+    # Writes a JSON object with schema_version, account_id, saved_at and the
+    # serialized catalog (indented, sorted keys, trailing newline) to a temporary
+    # file in the same directory, then renames it over the target.
+    # Output: the cache path. Raises ValueError for an empty account id and
+    # re-raises any write error after deleting the temporary file.
+    # Side effects: creates parent directories and writes/replaces the cache file.
     """Persist one validated, account-scoped Codex model snapshot atomically."""
     normalized_account_id = account_id.strip()
     if not normalized_account_id:
@@ -89,10 +117,18 @@ def save_codex_model_catalog(
 
 
 def _catalog_to_json(catalog: RuntimeModelCatalog) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: serializes a catalog to a mapping with a "models" list of serialized
+    # models. No side effects.
     return {"models": [_model_to_json(model) for model in catalog.models]}
 
 
 def _model_to_json(model: RuntimeModel) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: serializes one runtime model to a mapping with id, name, input
+    # modalities, thinking levels and default thinking level, plus a limits mapping
+    # (context window, max output tokens, effective context window percent, auto
+    # compact token limit) when limits are present.
     result: dict[str, Any] = {
         "id": model.id,
         "name": model.name,
@@ -111,6 +147,10 @@ def _model_to_json(model: RuntimeModel) -> dict[str, Any]:
 
 
 def _catalog_from_json(value: object) -> RuntimeModelCatalog | None:
+    # [FUNCTION DOC]
+    # HELPER: validates and rebuilds a catalog from decoded JSON. Returns none
+    # unless the value is a mapping with a non-empty "models" list whose every item
+    # parses as a model with a unique id. Output: a catalog of the models in order.
     if not isinstance(value, Mapping):
         return None
     models_value = value.get("models")
@@ -126,6 +166,13 @@ def _catalog_from_json(value: object) -> RuntimeModelCatalog | None:
 
 
 def _model_from_json(value: object) -> RuntimeModel | None:
+    # [FUNCTION DOC]
+    # HELPER: validates and rebuilds one runtime model. Requires a non-empty string
+    # id; an optional string name; a non-empty list of unique modalities from
+    # text/image; a list of unique thinking levels from off, minimal, low, medium,
+    # high, xhigh, max; a default level that is null or one of those levels; and,
+    # if present, valid limits. Any violation, or a TypeError/ValueError from the
+    # model constructor, returns none. No side effects.
     if not isinstance(value, Mapping):
         return None
     model_id = value.get("id")
@@ -177,6 +224,11 @@ def _model_from_json(value: object) -> RuntimeModel | None:
 
 
 def _limits_from_json(value: object) -> RuntimeModelLimits | None:
+    # [FUNCTION DOC]
+    # HELPER: validates and rebuilds model limits. Requires an integer (not
+    # boolean) context window; optional integer max output tokens and auto compact
+    # limit; an integer effective percent defaulting to 100. Returns none on any
+    # type violation or ValueError from the limits constructor.
     if not isinstance(value, Mapping):
         return None
     context_window = value.get("context_window")

@@ -1,3 +1,16 @@
+# [MODULE DOC]
+# Extension discovery and module loading for the tau_coding layer.
+# Extensions are Python files exposing a synchronous "setup" function that takes
+# the extension API. Sources, in load order (earlier wins name conflicts, as in
+# Pi): the project ".tau/extensions" directory (opt-in, only if project resources
+# are enabled), the user "<Tau home>/extensions" directory, then explicitly
+# passed paths. Inside a directory, entries are top-level ".py" files or
+# subdirectories with either a pyproject.toml declaring entry files under the
+# tool.tau "extensions" list or an "extension.py" file; names starting with "_"
+# or "." are skipped. Each extension is imported under a unique synthetic module
+# name ("tau_extension_<slug>_<counter>"), directory extensions as packages so
+# relative imports work. Failures become diagnostics rather than exceptions.
+# Module state: a global load counter incremented per import.
 """Extension discovery and module loading."""
 
 from __future__ import annotations
@@ -24,6 +37,12 @@ ExtensionSource = Literal["built-in", "user", "explicit", "project"]
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredExtension:
+    # [CLASS DOC]
+    # Immutable record of an extension entry file found during discovery: name,
+    # entry file path, optional package directory (set for directory/manifest
+    # extensions), a canonical source ID (assigned on acceptance as
+    # "extension:" plus the resolved file URI) and the source kind (built-in, user,
+    # explicit or project; default explicit).
     """A discovered extension entry file before loading."""
 
     name: str
@@ -35,6 +54,10 @@ class DiscoveredExtension:
 
 @dataclass(frozen=True, slots=True)
 class LoadedExtension:
+    # [CLASS DOC]
+    # Immutable record of a successfully imported extension: name, entry path (may
+    # be None for non-file extensions), source ID, the setup callable, source kind
+    # and a hidden flag (default False; not set by this loader).
     """A successfully imported extension module and its entry point."""
 
     name: str
@@ -47,6 +70,10 @@ class LoadedExtension:
 
 @dataclass(frozen=True, slots=True)
 class ExtensionSourceMetadata:
+    # [CLASS DOC]
+    # Immutable, non-executable provenance for an active extension source (name,
+    # source ID, source kind, hidden flag, path); used by other modules to describe
+    # extensions without keeping the setup callable.
     """Non-executable provenance retained for one active extension source."""
 
     name: str
@@ -58,6 +85,9 @@ class ExtensionSourceMetadata:
 
 @dataclass(frozen=True, slots=True)
 class ExtensionLoadResult:
+    # [CLASS DOC]
+    # Immutable result of loading: the loaded extensions in order and all non-fatal
+    # discovery and load diagnostics.
     """Loaded extensions plus non-fatal discovery/load diagnostics."""
 
     extensions: tuple[LoadedExtension, ...]
@@ -70,6 +100,11 @@ def extension_dirs(
     include_project_dir: bool = False,
     include_user_dir: bool = True,
 ) -> tuple[Path, ...]:
+    # [FUNCTION DOC]
+    # Return the extension directories in load order: the project ".tau/extensions"
+    # (only when requested, a cwd is known and project resources are enabled), then
+    # the user root's "extensions" (when requested). Paths are user-expanded and
+    # de-duplicated. Output: a tuple of paths (existence not checked). Pure.
     """Return extension directories in load order (project first, then user).
 
     Unlike skills precedence, extension ordering follows Pi's rule: earlier
@@ -93,6 +128,20 @@ def discover_extensions(
     include_project_dir: bool = False,
     include_user_dir: bool = True,
 ) -> tuple[tuple[DiscoveredExtension, ...], tuple[ResourceDiagnostic, ...]]:
+    # [FUNCTION DOC]
+    # Discover extension entry files without importing them.
+    # Inputs: resource paths; explicit extra paths; whether to scan resource
+    # directories at all; whether to include project and user directories.
+    # Behavior: scans project then user directories (skipping a directory already
+    # scanned after resolution), then each explicit path: a directory uses its
+    # manifest entries, else its "extension.py", else its contained extensions
+    # (diagnostic if none found); a file is used directly; a missing path yields an
+    # error diagnostic. Entries are accepted first-wins: a repeated resolved path is
+    # silently skipped, a repeated name gets a "duplicate extension name ignored"
+    # diagnostic. Accepted entries get their source ID.
+    # Output: a tuple of discovered entries and a tuple of diagnostics.
+    # Raises nothing intentionally; filesystem errors (e.g. permission errors when
+    # listing) may propagate. Side effects: filesystem reads only.
     """Discover extension entry files.
 
     Discovery covers project and user extension directories plus explicitly
@@ -105,6 +154,10 @@ def discover_extensions(
     seen_names: set[str] = set()
 
     def add(entry: DiscoveredExtension) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Accept an entry unless its resolved path or name was already seen (the
+        # latter records a duplicate-name diagnostic); on acceptance record both and
+        # append a copy with the source ID set. Mutates the enclosing lists and sets.
         resolved = entry.path.resolve()
         if resolved in seen_paths:
             return
@@ -191,6 +244,13 @@ def load_extensions(
     include_project_dir: bool = False,
     include_user_dir: bool = True,
 ) -> ExtensionLoadResult:
+    # [FUNCTION DOC]
+    # Discover (same inputs as discover_extensions) and then import each extension
+    # in order, collecting the loaded records and appending per-extension load
+    # diagnostics after discovery diagnostics. Output: an ExtensionLoadResult.
+    # Raises RuntimeError only if a discovered entry lacks a source ID (should not
+    # happen). Side effects: executes extension module code and registers modules
+    # in the interpreter's module table.
     """Discover and import extensions, isolating per-extension failures."""
     discovered, diagnostics = discover_extensions(
         paths,
@@ -224,6 +284,12 @@ def _discover_in_dir(
     *,
     source: ExtensionSource,
 ) -> Iterator[DiscoveredExtension]:
+    # [FUNCTION DOC]
+    # HELPER: Generator over extensions in one directory, sorted by name. Returns
+    # nothing if the path is not a directory. Skips names starting with "_" or ".";
+    # yields ".py" files by stem; for subdirectories yields manifest entries
+    # (re-labelled with the given source) or else a package entry for
+    # "extension.py". Appends manifest diagnostics to the given list.
     if not directory.is_dir():
         return
     for path in sorted(directory.iterdir(), key=lambda item: item.name):
@@ -249,6 +315,17 @@ def _discover_in_dir(
 def _manifest_entries(
     directory: Path, diagnostics: list[ResourceDiagnostic]
 ) -> list[DiscoveredExtension]:
+    # [FUNCTION DOC]
+    # HELPER: Read "<dir>/pyproject.toml" and return entries declared in the
+    # tool.tau "extensions" list. Returns an empty list when the manifest is absent
+    # or declares nothing; unreadable/invalid TOML records a warning-level diagnostic
+    # and returns empty; a non-list or non-string items record an error diagnostic
+    # and return empty; each missing declared file records an error and is skipped.
+    # Each entry is a package entry whose package dir is the file's parent and whose
+    # name is the parent directory name for "extension.py", else the file stem
+    # (source left at its default, explicit).
+    # KNOWN ISSUE: declared paths are not checked to stay inside the directory, so a
+    # manifest can point at files elsewhere (e.g. via "..").
     """Resolve entry files declared in `<dir>/pyproject.toml` under `[tool.tau]`.
 
     Pi's loader resolves a directory's `package.json` `pi.extensions` field
@@ -315,6 +392,17 @@ def _load_extension(
     *,
     source_id: str,
 ) -> tuple[LoadedExtension | None, list[ResourceDiagnostic]]:
+    # [FUNCTION DOC]
+    # HELPER: Import one extension and validate its entry point.
+    # Behavior: increments the global counter, builds a unique module name, creates
+    # an import spec (as a package when a package dir is set), registers the module
+    # in the module table and executes it. Any exception (including BaseException
+    # such as SystemExit) during import, a missing/non-callable setup, or an async
+    # setup removes the module again and returns None with one error diagnostic.
+    # Output: a pair of the loaded record (or None) and a list of diagnostics.
+    # Side effects: runs extension code; mutates the module table and counter.
+    # KNOWN ISSUE: on failure only the top-level synthetic module is removed;
+    # submodules imported by a package extension remain in the module table.
     global _load_counter
     _load_counter += 1
     module_name = f"{_MODULE_NAME_PREFIX}_{_slugify(entry.name)}_{_load_counter}"
@@ -368,6 +456,10 @@ def _load_extension(
 
 
 def unload_extension_modules() -> int:
+    # [FUNCTION DOC]
+    # Remove every module whose name starts with "tau_extension_" from the module
+    # table so a reload imports fresh modules. Output: count removed. Side effect:
+    # mutates the global module table.
     """Remove previously imported extension modules from `sys.modules`.
 
     Used by reload so re-discovered extensions import fresh module objects.
@@ -380,6 +472,9 @@ def unload_extension_modules() -> int:
 
 
 def _error_diagnostic(entry: DiscoveredExtension, message: str) -> ResourceDiagnostic:
+    # [FUNCTION DOC]
+    # HELPER: Build an error-severity extension diagnostic for the entry's name and
+    # path with the given message. Pure.
     return ResourceDiagnostic(
         kind="extension",
         name=entry.name,
@@ -390,10 +485,17 @@ def _error_diagnostic(entry: DiscoveredExtension, message: str) -> ResourceDiagn
 
 
 def _slugify(name: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Lowercase the name and replace every non-alphanumeric character with
+    # an underscore, for use in module names. Pure.
     return "".join(char if char.isalnum() else "_" for char in name).lower()
 
 
 def _dedupe(paths: list[Path]) -> list[Path]:
+    # [FUNCTION DOC]
+    # HELPER: Return user-expanded paths with duplicates removed, preserving first
+    # occurrence order. Compares expanded (not resolved) paths, so symlinked
+    # aliases are not merged. Pure.
     seen: set[Path] = set()
     deduped: list[Path] = []
     for path in paths:

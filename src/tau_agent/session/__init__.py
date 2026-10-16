@@ -1,3 +1,14 @@
+# [PACKAGE DOC]
+# Package facade for Tau's append-only session tree primitives (part of the
+# portable tau_agent harness, independent of CLI/session file locations).
+# Behavior: re-exports the session entry models (message, model change,
+# thinking level change, compaction, branch summary, custom, custom message,
+# label, leaf, session info entries and the SessionEntry union), JSONL
+# serialization helpers and their error type, the in-memory SessionState,
+# storage backends (abstract SessionStorage, in-memory and JSONL file storage),
+# and tree helpers (entries_by_id, path_to_entry, SessionTreeError).
+# Inputs/outputs: none at runtime beyond the exported names.
+# Side effects: imports the submodules entries, jsonl, memory, storage, tree.
 """Append-only session tree primitives for Tau."""
 
 from __future__ import annotations

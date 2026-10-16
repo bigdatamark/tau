@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Example Tau extension module (not part of the installed package) showing the
+# "tool_call" hook. It defines a tuple of regular expressions for dangerous shell
+# commands (rm with a flag cluster containing both r and f, git push --force,
+# git reset --hard, chmod -R 777, dd if=, mkfs) and blocks any bash tool call
+# whose command matches one, so the tool never runs and the model receives the
+# block reason instead. Loaded by Tau's extension loader, which calls setup.
 """Tau extension that blocks dangerous bash commands before they run.
 
 Demonstrates the `tool_call` hook: return a blocking result and the tool
@@ -24,6 +31,18 @@ DANGEROUS_PATTERNS = (
 
 
 def _gate_tool_call(event: ToolCallHookEvent, context) -> ToolCallHookResult | None:  # noqa: ANN001
+    # [FUNCTION DOC]
+    # HELPER: tool_call hook handler.
+    # Inputs: the tool-call hook event (tool name and argument mapping) and an
+    # unused extension context. Behavior: ignores every tool other than "bash";
+    # reads the "command" argument (missing becomes empty string, coerced to text)
+    # and checks the dangerous patterns in order. Output: on the first match, a hook
+    # result with block set and a reason naming the matched pattern and telling the
+    # model to ask the user to run it manually; otherwise None (allow).
+    # Raises nothing; no side effects.
+    # KNOWN ISSUE: the "git push --force" pattern also matches --force-with-lease, and
+    # the patterns are easily bypassed (e.g. "rm -r -f", quoting, other shells); it is
+    # a demonstration, not a security boundary.
     del context
     if event.tool_name != "bash":
         return None
@@ -41,5 +60,10 @@ def _gate_tool_call(event: ToolCallHookEvent, context) -> ToolCallHookResult | N
 
 
 def setup(tau: ExtensionAPI) -> None:
+    # [FUNCTION DOC]
+    # Extension entry point called by the loader with the extension API object.
+    # Behavior: registers the bash guard handler for the "tool_call" event.
+    # Inputs: the extension API. Output: None. Side effect: mutates the API's hook
+    # registrations. Raises nothing itself.
     """Subscribe the bash guard."""
     tau.on("tool_call", _gate_tool_call)

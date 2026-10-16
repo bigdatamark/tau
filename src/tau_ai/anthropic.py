@@ -1,3 +1,13 @@
+# [MODULE DOC]
+# Anthropic Messages API provider for the tau_ai layer. Converts provider-neutral
+# agent messages and tools into a streaming Messages request (system prompt,
+# optional OAuth identity prompt, thinking configuration, prompt-cache
+# breakpoints within Anthropic's four-breakpoint budget: tools, system, and two
+# message tails), POSTs it with SSE streaming, parses the event stream into
+# provider-neutral events (start, text/thinking deltas, tool calls, end with
+# usage, errors, retry notices) and canonicalizes them into Pi-compatible
+# assistant message events. Handles retries for retryable HTTP statuses,
+# transient stream errors and transport errors before content is emitted.
 """Anthropic Messages API provider."""
 
 from __future__ import annotations
@@ -76,6 +86,10 @@ CACHEABLE_BLOCK_TYPES = frozenset({"text", "image", "tool_result"})
 
 
 class AnthropicProvider:
+    # [CLASS DOC]
+    # Provider adapter for Anthropic's streaming Messages API (also used for
+    # Anthropic-protocol gateways such as GitHub Copilot). Holds the config and an
+    # optional HTTP client; creates and owns a client lazily when none is given.
     """Provider adapter for Anthropic's streaming Messages API."""
 
     def __init__(
@@ -84,11 +98,17 @@ class AnthropicProvider:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Inputs: an AnthropicConfig and optional shared HTTP client. Records whether
+        # the provider owns the client (true when none was passed). No I/O.
         self._config = config
         self._client = client
         self._owns_client = client is None
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # Close the HTTP client only if this provider created it, then forget it.
+        # Side effect: network client shutdown. Raises whatever closing raises.
         """Close the underlying HTTP client if this provider created it."""
         if self._client is not None and self._owns_client:
             await self._client.aclose()
@@ -104,6 +124,11 @@ class AnthropicProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # [FUNCTION DOC]
+        # Public streaming entry point. Inputs: model ID, system prompt, message list,
+        # tool list, optional cancellation token, and an ignored session ID. Output: an
+        # async iterator of canonical assistant message events (api
+        # "anthropic-messages", provider "anthropic"). Lazy: no request until iterated.
         """Stream one response as Pi-compatible assistant message events."""
         del session_id
         raw = self._stream_provider_events(
@@ -122,9 +147,44 @@ class AnthropicProvider:
         tools: list[AgentTool],
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Return an async iterator of provider-neutral events for one response.
+        # See the nested iterator for behavior.
         """Stream one Anthropic response as provider-neutral events."""
 
         async def iterator() -> AsyncIterator[ProviderEvent]:
+            # [FUNCTION DOC]
+            # HELPER: Perform the request and parse the stream.
+            # Behavior: resolves credentials (a credential resolver, if configured, supplies
+            # the API key, extra headers and an optional base URL normalized to end in
+            # "/v1"); builds the payload; sets version/content-type headers plus configured
+            # and auth headers, a Copilot vision header for github-copilot requests with
+            # images, and either a Bearer Authorization header (not overriding an existing
+            # one) or "x-api-key". POSTs to "<base>/messages" in a retry loop:
+            # - HTTP status 400 or above: reads the body; retryable statuses (408, 409, 425,
+            #   429, 5xx while attempts remain) yield a retry event, wait (stop silently if
+            #   cancelled during the wait) and retry; otherwise yield an error event with a
+            #   formatted message, status, body and attempt count, then stop.
+            # - Success: yields a response-start event, then for each SSE data line: stops
+            #   silently if cancelled; invalid JSON yields an error and stops; message_start
+            #   sets initial usage; content_block_start of tool_use records a tool builder's
+            #   ID and name; content_block_delta appends text (yielding text deltas),
+            #   thinking (yielding thinking deltas), signature fragments, or tool argument
+            #   JSON fragments; message_delta updates the stop reason and usage; an "error"
+            #   event is retried when nothing was emitted yet, attempts remain and the error
+            #   type is transient (api_error, overloaded_error, rate_limit_error), otherwise
+            #   yields an error event and stops. Other event types are ignored.
+            # - After the stream: yields one tool-call event per builder in index order,
+            #   then a response-end event with an assistant message (thinking block first if
+            #   any, then text and tool calls) carrying usage and the finish reason.
+            # - Retryable transport errors: retried if nothing emitted and attempts remain,
+            #   otherwise yield an error event and stop.
+            # Output: provider events. Raises non-retryable exceptions (e.g. credential
+            # resolver errors). Side effects: network I/O, sleeping between retries.
+            # KNOWN ISSUE: a retry after a mid-stream transient error or transport error
+            # happens after a response-start event was already yielded, so the retried
+            # attempt yields a second start event; cancellation mid-stream returns without
+            # any end or error event.
             client = self._get_client()
             api_key = self._config.api_key
             base_url = self._config.base_url
@@ -375,11 +435,17 @@ class AnthropicProvider:
         return iterator()
 
     def _get_client(self) -> httpx.AsyncClient:
+        # [FUNCTION DOC]
+        # HELPER: Return the HTTP client, creating one with the configured timeout on
+        # first use (mutates the provider).
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
 
     def _should_retry(self, attempt: int, *, status_code: int | None = None) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Return True if the attempt number is below the configured maximum and
+        # either no status is given or the status is 408, 409, 425, 429 or 500+.
         if attempt >= self._config.max_retries:
             return False
         return status_code is None or status_code in {408, 409, 425, 429} or status_code >= 500
@@ -395,6 +461,10 @@ _TRANSIENT_ANTHROPIC_STREAM_ERROR_TYPES = frozenset(
 
 
 def _anthropic_stream_error_details(event: Mapping[str, JSONValue]) -> tuple[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: Extract the error type and message from an SSE "error" event; returns
+    # an empty type and "Provider returned an error" when the error object is
+    # missing, and that default message when the message is empty. Pure.
     """Return the provider classification and message from an Anthropic SSE error."""
     error = event.get("error")
     if not isinstance(error, Mapping):
@@ -405,17 +475,30 @@ def _anthropic_stream_error_details(event: Mapping[str, JSONValue]) -> tuple[str
 
 
 def _retryable_anthropic_stream_error(error_type: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: Return whether the error type (case-insensitive) is one of the
+    # transient types api_error, overloaded_error or rate_limit_error. Pure.
     """Return whether an Anthropic SSE error is transient and safe to retry."""
     return error_type.lower() in _TRANSIENT_ANTHROPIC_STREAM_ERROR_TYPES
 
 
 class _AnthropicToolBuilder:
+    # [CLASS DOC]
+    # HELPER: Mutable accumulator for one streamed tool_use block: ID, name and the
+    # list of partial argument JSON fragments.
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Start with empty ID, name and fragment list.
         self.id = ""
         self.name = ""
         self.arguments_parts: list[str] = []
 
     def build(self, index: int) -> ToolCall:
+        # [FUNCTION DOC]
+        # HELPER: Join argument fragments and parse them as a JSON object (empty text
+        # gives an empty mapping; unparsable or non-object text is preserved under
+        # "_raw_arguments"). Return a tool call with the recorded ID (or
+        # "tool-call-<index>" if empty), the name and the arguments. Raises nothing.
         arguments_text = "".join(self.arguments_parts)
         arguments = _loads_object(arguments_text) if arguments_text else {}
         if arguments is None:
@@ -442,6 +525,17 @@ def _build_messages_payload(
     cache_retention: CacheRetention = CACHE_RETENTION_SHORT,
     cache_control_on_tools: bool = True,
 ) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Build the Messages API request body.
+    # Behavior: max tokens defaults to 4096 and is raised to at least the thinking
+    # budget plus 1024; converts each message (dropping assistant messages that end
+    # up with no content); applies message cache breakpoints; sets model, stream
+    # true, the system field and messages. Thinking: "disabled" mode sends
+    # type disabled; "adaptive" with an effort sends adaptive thinking with
+    # summarized display and an output effort setting; otherwise a budget sends
+    # enabled thinking with that budget. Tools are converted with a cache marker on
+    # the last tool only (when caching is enabled and allowed on tools).
+    # Output: a JSON-compatible mapping. Pure aside from building new objects.
     resolved_max_tokens = max_tokens or DEFAULT_MAX_TOKENS
     if thinking_budget_tokens is not None:
         resolved_max_tokens = max(resolved_max_tokens, thinking_budget_tokens + 1024)
@@ -487,6 +581,9 @@ def _build_messages_payload(
 
 
 def _cache_control(cache_retention: CacheRetention) -> dict[str, JSONValue] | None:
+    # [FUNCTION DOC]
+    # HELPER: Map a cache retention preference to a cache_control marker: None for
+    # "none", ephemeral with a "1h" TTL for "long", plain ephemeral otherwise. Pure.
     """Return the cache_control marker for a retention preference, if enabled.
 
     Attach sites copy the result, so no two breakpoints share one dict.
@@ -503,6 +600,12 @@ def _anthropic_system(
     oauth_system_prompt: str | None,
     cache_control: dict[str, JSONValue] | None,
 ) -> JSONValue:
+    # [FUNCTION DOC]
+    # HELPER: Build the system field. Without caching: two text blocks (OAuth
+    # identity prompt then system) when an OAuth prompt exists, else the plain
+    # string. With caching: text blocks for the non-empty OAuth prompt and system,
+    # with a copy of the cache marker on the final block only; returns the plain
+    # string if both are empty. Pure.
     """Build the system field, marking its tail as a cache breakpoint when enabled.
 
     Only the final block is marked. A breakpoint on the OAuth identity block would
@@ -532,6 +635,11 @@ def _apply_message_cache_breakpoints(
     messages: list[dict[str, JSONValue]],
     cache_control: dict[str, JSONValue] | None,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: When caching is enabled and there are messages, mark the last message
+    # and the previous request boundary (if any) as cache breakpoints, in place.
+    # Raises AssertionError only if more than two positions were chosen (defensive).
+    # Side effect: mutates the message mappings.
     """Mark this request's tail and the previous request's tail, in place.
 
     Two breakpoints rather than one: Anthropic checks at most 20 block positions
@@ -554,6 +662,9 @@ def _apply_message_cache_breakpoints(
 
 
 def _previous_request_boundary(messages: list[dict[str, JSONValue]]) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: Find the last assistant message, then return the index of the closest
+    # user-role message before it; None if either is absent. Pure.
     """Return the index where the previous request's message list ended.
 
     Tau's transcript is append-only and every request stops immediately before the
@@ -585,6 +696,12 @@ def _mark_cache_breakpoint(
     message: dict[str, JSONValue],
     cache_control: dict[str, JSONValue],
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Add a copy of the cache marker to a user message's final content
+    # block, in place. Non-user messages are ignored; a non-empty string content is
+    # converted to one text block carrying the marker; empty content, non-mapping
+    # or non-cacheable final blocks (only text, image, tool_result qualify), and
+    # tool results with empty inner content are left unmarked.
     """Attach cache_control to a user message's final content block, if eligible."""
     if message.get("role") != "user":
         return
@@ -613,6 +730,15 @@ def _mark_cache_breakpoint(
 
 
 def _anthropic_message(message: AgentMessage, *, supports_images: bool) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert one agent message to an Anthropic message mapping.
+    # User messages: plain text content, or text plus base64 image blocks when
+    # images are present (images replaced by a placeholder when unsupported).
+    # Assistant messages: text blocks, thinking blocks only when the message came
+    # from the anthropic-messages API (with signature if present), and tool_use
+    # blocks with portable IDs. Tool results: a user message with one tool_result
+    # block (portable ID, text and image content, error flag). Any other message
+    # type is first converted to a user message and then converted. Pure.
     if isinstance(message, UserMessage):
         text, images = text_and_images(
             message.content,
@@ -679,6 +805,9 @@ def _anthropic_message(message: AgentMessage, *, supports_images: bool) -> dict[
 
 
 def _anthropic_image(image: ImageContent) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert an image content item into a base64 image source block with
+    # its MIME type. Pure.
     return {
         "type": "image",
         "source": {
@@ -694,6 +823,9 @@ def _anthropic_tool(
     *,
     cache_control: dict[str, JSONValue] | None = None,
 ) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Convert a tool to name, description and a copy of its input schema,
+    # adding a copy of the cache marker when given. Pure.
     payload: dict[str, JSONValue] = {
         "name": tool.name,
         "description": tool.description,
@@ -705,6 +837,9 @@ def _anthropic_tool(
 
 
 def _parse_sse_line(line: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the stripped payload of an SSE "data:" line, or None for blank
+    # lines, non-data lines and empty data payloads. Pure.
     line = line.strip()
     if not line or not line.startswith("data:"):
         return None
@@ -713,6 +848,9 @@ def _parse_sse_line(line: str) -> str | None:
 
 
 def _loads_object(text: str) -> dict[str, Any] | None:
+    # [FUNCTION DOC]
+    # HELPER: Parse JSON text and return it only if it is an object; None on parse
+    # errors or other JSON types. Pure.
     try:
         value = loads(text)
     except ValueError:
@@ -721,19 +859,30 @@ def _loads_object(text: str) -> dict[str, Any] | None:
 
 
 def _string_or_empty(value: object) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return the value if it is a string, else an empty string. Pure.
     return value if isinstance(value, str) else ""
 
 
 def _int_or_none(value: object) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the value if it is an integer (booleans excluded), else None.
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _nonnegative_int_or_none(value: object) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the value if it is a non-negative integer, else None.
     integer = _int_or_none(value)
     return integer if integer is not None and integer >= 0 else None
 
 
 def _usage_from_message_start(raw: object) -> Usage:
+    # [FUNCTION DOC]
+    # HELPER: Build usage from the message_start usage object: input, output, cache
+    # read and cache write token counts (invalid or missing become 0), the one-hour
+    # cache write count from the cache_creation details (None if missing), and a
+    # total equal to the sum of the four counts. Cost is left unset. Pure.
     """Build a Usage from the ``message_start`` event's ``message.usage``.
 
     Ports Pi's anthropic-messages.ts message_start handling. Cost is left unset
@@ -762,6 +911,12 @@ def _usage_from_message_start(raw: object) -> Usage:
 
 
 def _apply_message_delta_usage(usage: Usage | None, raw: object) -> Usage | None:
+    # [FUNCTION DOC]
+    # HELPER: Overlay message_delta usage onto the running usage (creating one if
+    # None): overwrite only the input, output, cache read and cache write counts
+    # that are valid non-negative integers, set reasoning tokens from output token
+    # details if present, and recompute the total. Returns the usage unchanged when
+    # the raw value is not a mapping. Mutates the given usage object.
     """Apply the ``message_delta`` event's ``usage`` onto the running Usage.
 
     Ports Pi's anthropic-messages.ts message_delta handling: only overwrite

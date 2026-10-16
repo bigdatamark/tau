@@ -1,3 +1,6 @@
+# [MODULE DOC]
+# Tests for the Anthropic provider's server-sent-events parsing, using an httpx
+# mock transport instead of the network.
 from collections.abc import AsyncIterator
 
 import httpx
@@ -8,12 +11,26 @@ from tau_ai import AnthropicConfig, AnthropicProvider, AssistantDoneEvent
 
 
 async def _collect(stream: AsyncIterator[object]) -> list[object]:
+    # [FUNCTION DOC]
+    # HELPER: Drain an async iterator into a list.
+    # Input: any async iterator. Output: list of all yielded items in order.
+    # Raises whatever the iterator raises; consumes the iterator.
     return [event async for event in stream]
 
 
 @pytest.mark.anyio
 async def test_anthropic_provider_ignores_empty_data_frames() -> None:
+    # [FUNCTION DOC]
+    # Test that an SSE stream containing an empty "data:" frame between real events
+    # is skipped rather than failing JSON parsing, and the provider still finishes
+    # with an assistant-done event whose message text is "ok".
+    # Uses a mock HTTP client returning a canned event stream (message_start, empty
+    # frame, one text delta, message_delta with end_turn, message_stop).
+    # Raises an assertion error on failure; no I/O beyond the in-memory mock.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock transport handler; ignores the request and returns HTTP 200 with
+        # an event-stream content type and the canned SSE body described above.
         return httpx.Response(
             200,
             text=(

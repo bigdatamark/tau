@@ -1,8 +1,15 @@
+# [MODULE DOC]
+# Tests for tool-history repair in the agent package: making provider-bound
+# history well-formed by synthesizing missing tool results, dropping orphan and
+# duplicate results, and moving results next to their tool calls.
 from tau_agent import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from tau_agent.tool_history import repair_tool_history
 
 
 def _call(call_id: str = "call-1", name: str = "read") -> ToolCall:
+    # [FUNCTION DOC]
+    # HELPER: Build a tool-call content item with the given ID (default "call-1")
+    # and tool name (default "read") and a fixed path argument "README.md".
     return ToolCall(id=call_id, name=name, arguments={"path": "README.md"})
 
 
@@ -12,6 +19,9 @@ def _result(
     text: str = "contents",
     is_error: bool = False,
 ) -> ToolResultMessage:
+    # [FUNCTION DOC]
+    # HELPER: Build a "read" tool-result message for the given call ID with a single
+    # text content item (default "contents") and an error flag (default False).
     return ToolResultMessage(
         tool_call_id=call_id,
         tool_name="read",
@@ -21,6 +31,9 @@ def _result(
 
 
 def test_valid_tool_history_is_unchanged() -> None:
+    # [FUNCTION DOC]
+    # Test that a well-formed history is returned unchanged, reported as not
+    # changed, and its diagnostic data has all four counters at zero.
     call = _call()
     result = _result()
     messages = (
@@ -43,6 +56,10 @@ def test_valid_tool_history_is_unchanged() -> None:
 
 
 def test_missing_result_gets_synthetic_interruption() -> None:
+    # [FUNCTION DOC]
+    # Test that a tool call with no result gets a synthesized error result appended
+    # with the call's ID and name and text "Tool call interrupted by user", and the
+    # synthesized counter is 1.
     call = _call()
 
     repair = repair_tool_history((UserMessage(content="read"), AssistantMessage(content=[call])))
@@ -58,6 +75,9 @@ def test_missing_result_gets_synthetic_interruption() -> None:
 
 
 def test_orphan_result_is_dropped_without_inventing_a_call() -> None:
+    # [FUNCTION DOC]
+    # Test that a result with no matching call is dropped (not paired with an
+    # invented call) and counted as an orphan.
     user = UserMessage(content="continue")
     orphan = _result("call-missing")
 
@@ -70,6 +90,9 @@ def test_orphan_result_is_dropped_without_inventing_a_call() -> None:
 
 
 def test_late_result_moves_next_to_its_call() -> None:
+    # [FUNCTION DOC]
+    # Test that a result appearing after an intervening user message is moved
+    # directly after its assistant tool call and counted as reordered.
     call = _call()
     assistant = AssistantMessage(content=[call])
     user = UserMessage(content="continue")
@@ -83,6 +106,9 @@ def test_late_result_moves_next_to_its_call() -> None:
 
 
 def test_duplicate_results_prefer_real_output_over_interruption() -> None:
+    # [FUNCTION DOC]
+    # Test that when a call has both a synthetic interruption result and a real
+    # result, the real one is kept and one duplicate is counted as dropped.
     call = _call()
     assistant = AssistantMessage(content=[call])
     interrupted = _result(text="Tool call interrupted by user", is_error=True)
@@ -95,6 +121,9 @@ def test_duplicate_results_prefer_real_output_over_interruption() -> None:
 
 
 def test_repeated_call_ids_keep_one_result_per_turn() -> None:
+    # [FUNCTION DOC]
+    # Test that the same call ID reused in two separate turns, each with its own
+    # adjacent result, is valid and left unchanged.
     first_call = _call("same")
     first_assistant = AssistantMessage(content=[first_call])
     first_result = _result("same", text="first")
@@ -111,6 +140,10 @@ def test_repeated_call_ids_keep_one_result_per_turn() -> None:
 
 
 def test_repeated_call_id_reserves_later_adjacent_result() -> None:
+    # [FUNCTION DOC]
+    # Test that when a reused call ID's first turn lacks a result, the later
+    # adjacent result stays with the second call and the first call gets a
+    # synthesized interruption result instead.
     first_assistant = AssistantMessage(content=[_call("same")])
     user = UserMessage(content="continue")
     second_assistant = AssistantMessage(content=[_call("same")])
@@ -126,6 +159,9 @@ def test_repeated_call_id_reserves_later_adjacent_result() -> None:
 
 
 def test_parallel_results_follow_tool_call_order() -> None:
+    # [FUNCTION DOC]
+    # Test that results for multiple calls in one assistant message are reordered
+    # to match the order of the tool calls.
     first = _call("call-1", "read")
     second = _call("call-2", "bash")
     assistant = AssistantMessage(content=[first, second])

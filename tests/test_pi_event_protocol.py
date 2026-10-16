@@ -1,3 +1,7 @@
+# [MODULE DOC]
+# Contract tests for the canonical Pi-shaped event stream: the agent harness wraps
+# provider assistant-message events in message_update events, emits message and
+# tool-execution lifecycle events, and tau_agent stays independent of tau_ai.
 """Focused contract tests for the canonical Pi-shaped event stream."""
 
 from pathlib import Path
@@ -30,6 +34,10 @@ from tau_ai import FakeProvider
 
 
 def test_tau_agent_does_not_import_tau_ai() -> None:
+    # [FUNCTION DOC]
+    # Scans every Python file under src/tau_agent (relative to the current working
+    # directory, so must run from repo root) and asserts none imports tau_ai.
+    # Side effects: reads source files.
     for path in Path("src/tau_agent").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert "from tau_ai" not in source, path
@@ -37,6 +45,9 @@ def test_tau_agent_does_not_import_tau_ai() -> None:
 
 
 def test_tau_ai_reexports_canonical_event_classes() -> None:
+    # [FUNCTION DOC]
+    # Asserts tau_ai.events re-exports the same text-delta event class object defined in
+    # tau_agent.provider_events (identity, not a copy).
     from tau_ai.events import TextDeltaEvent as public
 
     assert public is TextDeltaEvent
@@ -44,6 +55,11 @@ def test_tau_ai_reexports_canonical_event_classes() -> None:
 
 @pytest.mark.anyio
 async def test_text_stream_has_nested_updates_and_terminal_messages() -> None:
+    # [FUNCTION DOC]
+    # Drives the harness with a fake provider streaming a single "hello" text block and
+    # asserts the exact outer event type sequence (agent/turn/message start and end, with
+    # three message_update events), that the updates wrap text_start/text_delta/text_end
+    # in order, and that the agent-end event's final message equals the hello message.
     empty = AssistantMessage(model="fake")
     hello = AssistantMessage(model="fake", content=[TextContent(text="hello")])
     provider = FakeProvider(
@@ -86,6 +102,10 @@ async def test_text_stream_has_nested_updates_and_terminal_messages() -> None:
 
 @pytest.mark.anyio
 async def test_tool_result_gets_execution_and_message_lifecycle_events() -> None:
+    # [FUNCTION DOC]
+    # Fake provider first requests a call to an unregistered tool, then finishes with
+    # text. Asserts tool-execution start/end and the tool-result message-end share the
+    # same tool call id and that the execution ended as an error (unknown tool).
     call = ToolCall(id="call-1", name="missing", arguments={})
     partial = AssistantMessage(model="fake", content=[call])
     provider = FakeProvider(

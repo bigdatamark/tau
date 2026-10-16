@@ -1,3 +1,7 @@
+# [MODULE DOC]
+# Tests for the Codex model-catalog cache store in tau_coding.codex_model_store.
+# Covers round-tripping a runtime model catalog to disk scoped by account id, and
+# rejection (returning None) of malformed cached documents.
 import json
 from pathlib import Path
 
@@ -13,6 +17,11 @@ from tau_coding.paths import TauPaths
 
 
 def test_codex_model_catalog_round_trips_with_account_scope(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Saves a one-model catalog (with limits, image modality and thinking levels) for
+    # account "account-1" at a fixed timestamp, then asserts: the returned path is the
+    # configured Codex model store path; loading for a different account returns None;
+    # loading for the same account returns an equal catalog. Writes files under tmp_path.
     paths = TauPaths(home=tmp_path / ".tau")
     catalog = RuntimeModelCatalog(
         (
@@ -44,6 +53,11 @@ def test_codex_model_catalog_round_trips_with_account_scope(tmp_path: Path) -> N
 def test_codex_model_catalog_cache_rejects_invalid_model_values(
     tmp_path: Path, field: str, invalid_item: object
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrised over the list fields input_modalities and thinking_levels and over
+    # invalid items (empty mapping, empty list, None, int, bool, unknown string).
+    # Writes a schema-version-1 cache document whose model has one invalid item in the
+    # chosen field and asserts the loader returns None rather than raising.
     paths = TauPaths(home=tmp_path)
     model = {
         "id": "gpt-live",
@@ -62,6 +76,10 @@ def test_codex_model_catalog_cache_rejects_invalid_model_values(
 
 
 def test_codex_model_catalog_cache_rejects_invalid_documents(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Writes a well-formed schema-version-1 document whose catalog has an empty model list
+    # and asserts the loader treats it as invalid (returns None), i.e. empty catalogs are
+    # not accepted from cache.
     paths = TauPaths(home=tmp_path / ".tau")
     paths.codex_models_store_path.parent.mkdir(parents=True)
     paths.codex_models_store_path.write_text(

@@ -1,3 +1,9 @@
+# [MODULE DOC]
+# End-to-end regressions for resuming OpenAI Codex sessions: a live-discovered model
+# ("gpt-6-astra") that is absent from static provider config must be restored from session
+# metadata on startup and on in-app resume, and the model picker must highlight it. Uses real
+# JSONL session storage, SessionManager and the Textual app with a fake catalog provider.
+# Relies on the conftest fixture isolating HOME so TauPaths() writes under a temp home.
 """End-to-end Codex resume regressions with real session loading and fake transport."""
 
 from pathlib import Path
@@ -22,17 +28,26 @@ from tau_coding.tui import app as tui_app
 
 
 class CatalogProvider(FakeProvider):
+    # [CLASS DOC]
+    # HELPER: Fake provider (no scripted responses) whose model discovery returns a catalog with
+    # "gpt-5.6-sol" and, optionally, "gpt-6-astra". Closing is a no-op.
     def __init__(self, *, include_astra: bool = True) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Initialize with an empty script; keyword flag controls whether "gpt-6-astra" is discovered.
         super().__init__([])
         self.include_astra = include_astra
 
     async def discover_models(self) -> RuntimeModelCatalog:
+        # [FUNCTION DOC]
+        # HELPER: Async; return a runtime model catalog of sol plus astra when enabled.
         models = (RuntimeModel(id="gpt-5.6-sol"),)
         if self.include_astra:
             models += (RuntimeModel(id="gpt-6-astra"),)
         return RuntimeModelCatalog(models)
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Async no-op close.
         pass
 
 
@@ -40,6 +55,10 @@ class CatalogProvider(FakeProvider):
 async def test_initial_live_selection_replays_corrected_fallback_metadata(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: loading a new session with static default "gpt-5.6-sol" but requested model
+    # "gpt-6-astra" (discovered live) selects astra; after committing deferred entries, storage holds
+    # exactly one model-change entry for astra. Closes the session afterwards. Writes to tmp_path.
     monkeypatch.delenv("TAU_OFFLINE", raising=False)
     static = OpenAICodexProviderConfig(models=("gpt-5.6-sol",), default_model="gpt-5.6-sol")
     settings = ProviderSettings(default_provider="openai-codex", providers=(static,))
@@ -77,6 +96,13 @@ async def test_initial_live_selection_replays_corrected_fallback_metadata(
 async def test_codex_resume_restores_astra_through_real_frontend(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flow: str, stale_index: bool
 ) -> None:
+    # [FUNCTION DOC]
+    # Async parametrized test (flow startup/resume x stale session-index model): creates credentials
+    # and a session whose JSONL history ends with a model change to astra, patches provider settings
+    # and provider factories, then either runs run_tui_app with a stub app class (startup) or loads a
+    # different session and resumes the target (resume, with discovery temporarily lacking astra at
+    # load). Asserts provider is openai-codex, model is astra, and the picker highlights astra.
+    # Side effects: writes credentials and sessions under the (test-isolated) Tau home.
     monkeypatch.delenv("TAU_OFFLINE", raising=False)
     paths = TauPaths()
     manager = SessionManager(paths)
@@ -105,7 +131,12 @@ async def test_codex_resume_restores_astra_through_real_frontend(
     real_app = tui_app.TauTuiApp
 
     async def inspect_picker(session: CodingSession) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Async; patch the session's catalog refresh to only reload provider settings, run the
+        # real TUI app headlessly, open the model picker and assert the highlighted choice is astra.
         async def refresh() -> None:
+            # [FUNCTION DOC]
+            # HELPER: Async replacement for catalog refresh that just reloads provider settings.
             session.reload_provider_settings()
 
         monkeypatch.setattr(session, "refresh_model_catalogs", refresh)
@@ -123,10 +154,17 @@ async def test_codex_resume_restores_astra_through_real_frontend(
     if flow == "startup":
 
         class InspectApp:
+            # [CLASS DOC]
+            # HELPER: Stand-in for the TUI app class used by run_tui_app in the startup flow; stores the
+            # session and, when run, asserts the restored provider/model then inspects the real picker.
             def __init__(self, session: CodingSession, **kwargs: object) -> None:
+                # [FUNCTION DOC]
+                # HELPER: Store the session; ignore other keyword arguments.
                 self.session = session
 
             async def run_async(self) -> None:
+                # [FUNCTION DOC]
+                # HELPER: Async; assert provider and model were restored, then run the picker inspection.
                 assert self.session.provider_name == "openai-codex"
                 assert self.session.model == "gpt-6-astra"
                 await inspect_picker(self.session)

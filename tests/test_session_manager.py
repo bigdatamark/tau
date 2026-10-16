@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Tests for the coding-session manager: per-project session directories and JSONL indexes under
+# the Tau home, session id validation (format, reserved and non-portable names, length), exclusive
+# and atomic creation with rollback, prepare-then-index flow, cwd filtering, latest-session
+# lookup, tolerant index parsing (extra fields, legacy routes), default sessions, touch updates,
+# archiving/unarchiving sessions and projects, and ordering by update time. Every test uses temp
+# Tau and agents homes.
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,6 +17,12 @@ from tau_coding.session_manager import CodingSessionRecord, SessionManager
 
 
 def test_session_manager_creates_and_lists_sessions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Create a session with model, provider, inference provider and title; verify recorded fields
+    # (fixed inference-provider mode), that the transcript lives in a per-project directory under
+    # sessions named after the project plus a six-character suffix, that the index file is per
+    # project (not global), the transcript file is named by session id, and get/list (global and
+    # by cwd) return the record.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -40,6 +53,9 @@ def test_session_manager_creates_and_lists_sessions(tmp_path: Path) -> None:
 def test_session_manager_round_trips_unicode_line_separator_in_title(
     tmp_path: Path, separator: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over Unicode line/paragraph separators and NEL in the title: verify the record
+    # survives the JSONL index unchanged via get and list.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -52,6 +68,9 @@ def test_session_manager_round_trips_unicode_line_separator_in_title(
 
 @pytest.mark.parametrize("session_id", ["", "-bad", "bad-", "bad id", "../escape"])
 def test_session_manager_rejects_invalid_custom_session_id(tmp_path: Path, session_id: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over empty, leading/trailing dash, spaces and path traversal ids: preparing a
+    # session raises a value error about the id format.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
 
     with pytest.raises(ValueError, match="Session id must be non-empty"):
@@ -60,6 +79,9 @@ def test_session_manager_rejects_invalid_custom_session_id(tmp_path: Path, sessi
 
 @pytest.mark.parametrize("session_id", ["default", "Default", "index", "INDEX"])
 def test_session_manager_rejects_reserved_transcript_names(tmp_path: Path, session_id: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over "default" and "index" in any case: preparing raises a value error saying
+    # the id is reserved.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
 
     with pytest.raises(ValueError, match=f"Session id is reserved: {session_id}"):
@@ -67,6 +89,9 @@ def test_session_manager_rejects_reserved_transcript_names(tmp_path: Path, sessi
 
 
 def test_session_manager_rejects_dynamic_default_session_id(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify the project's computed default session id ("default-" plus project directory name) is
+    # rejected as reserved for custom ids.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     default_id = f"default-{manager.paths.project_session_dir(tmp_path).name}"
 
@@ -76,6 +101,9 @@ def test_session_manager_rejects_dynamic_default_session_id(tmp_path: Path) -> N
 
 @pytest.mark.parametrize("session_id", ["CON", "nul.txt", "LPT9.worker"])
 def test_session_manager_rejects_nonportable_file_names(tmp_path: Path, session_id: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over Windows device names (with or without extensions): preparing raises a
+    # value error about non-portable file names.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
 
     with pytest.raises(ValueError, match=f"Session id is not a portable file name: {session_id}"):
@@ -83,6 +111,8 @@ def test_session_manager_rejects_nonportable_file_names(tmp_path: Path, session_
 
 
 def test_session_manager_rejects_overlong_session_id(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a 129-byte id is rejected with a value error stating the 128-byte limit.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
 
     with pytest.raises(ValueError, match="Session id must be at most 128 bytes"):
@@ -90,6 +120,9 @@ def test_session_manager_rejects_overlong_session_id(tmp_path: Path) -> None:
 
 
 def test_session_manager_exclusive_creation_rejects_orphaned_transcript(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify exclusive creation fails with a runtime error when a transcript file already exists
+    # for the id even though it is not indexed, leaving the file intact and the session unindexed.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     orphan = manager.prepare_session(cwd=tmp_path, model="fake", session_id="orphan")
     orphan.path.write_text("existing transcript\n", encoding="utf-8")
@@ -102,10 +135,17 @@ def test_session_manager_exclusive_creation_rejects_orphaned_transcript(tmp_path
 
 
 def test_session_manager_exclusive_creation_is_atomic(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Run exclusive creation of the same id concurrently from two threads synchronized by a
+    # barrier, each with its own manager; verify exactly one succeeds, the other raises the
+    # "already exists" runtime error, and the session is indexed.
     paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
     barrier = Barrier(2)
 
     def create() -> str:
+        # [FUNCTION DOC]
+        # HELPER: thread worker that builds a manager, waits on the barrier, attempts exclusive
+        # creation and returns the new id.
         manager = SessionManager(paths)
         barrier.wait()
         return manager.create_session_exclusive(
@@ -134,12 +174,18 @@ def test_session_manager_exclusive_creation_is_atomic(tmp_path: Path) -> None:
 def test_session_manager_exclusive_creation_rolls_back_reservation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Monkeypatch indexing to index then raise an OS error; verify exclusive creation propagates
+    # it and rolls back both the transcript reservation file and the index entry.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.prepare_session(cwd=tmp_path, model="fake", session_id="rollback-worker")
 
     index_session = manager.index_session
 
     def fail_after_index(record_to_index: CodingSessionRecord) -> None:
+        # [FUNCTION DOC]
+        # HELPER: replacement indexing function that calls the original indexer then raises an OS
+        # error.
         index_session(record_to_index)
         raise OSError("index failed")
 
@@ -157,6 +203,9 @@ def test_session_manager_exclusive_creation_rolls_back_reservation(
 
 
 def test_session_manager_prepares_unindexed_session(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify prepare returns a record that is not yet visible via get/list, and that indexing it
+    # returns the same record and makes it visible.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -176,6 +225,9 @@ def test_session_manager_prepares_unindexed_session(tmp_path: Path) -> None:
 
 
 def test_session_manager_filters_sessions_by_project_cwd(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify listing by cwd only returns sessions from that project while the global list returns
+    # all.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     first_cwd = tmp_path / "first"
     second_cwd = tmp_path / "second"
@@ -191,6 +243,9 @@ def test_session_manager_filters_sessions_by_project_cwd(tmp_path: Path) -> None
 
 
 def test_session_manager_returns_latest_session_for_cwd(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Create two sessions then touch the older one; verify the latest-for-cwd lookup returns the
+    # touched session (most recently updated).
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -207,6 +262,9 @@ def test_session_manager_returns_latest_session_for_cwd(tmp_path: Path) -> None:
 
 
 def test_session_manager_ignores_extra_index_metadata(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Hand-write an index line with an unknown extra field; verify listing parses the record and
+    # ignores the extra field.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -238,6 +296,9 @@ def test_session_manager_ignores_extra_index_metadata(tmp_path: Path) -> None:
 
 
 def test_session_manager_treats_legacy_pinned_routes_as_fixed(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Hand-write a legacy index line with an inference provider but no mode; verify the mode is
+    # reported as fixed.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -267,6 +328,10 @@ def test_session_manager_treats_legacy_pinned_routes_as_fixed(tmp_path: Path) ->
 
 
 def test_session_manager_gets_or_creates_default_session(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify the default session is created once (id starting "default-", transcript
+    # "default.jsonl") and a second call with different arguments returns the same existing
+    # record.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -284,6 +349,9 @@ def test_session_manager_gets_or_creates_default_session(tmp_path: Path) -> None
 
 
 def test_session_manager_touch_updates_metadata(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify touching a session updates model, provider and title, does not decrease the update
+    # time, and persists the change.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -306,6 +374,10 @@ def test_session_manager_touch_updates_metadata(tmp_path: Path) -> None:
 
 
 def test_session_manager_archives_session_without_deleting_transcript(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify archiving hides a session from listings and shows it among archived ones without
+    # touching the transcript or cwd; repeated archive returns false; unarchive restores it and
+    # repeated unarchive returns false.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()
@@ -326,6 +398,9 @@ def test_session_manager_archives_session_without_deleting_transcript(tmp_path: 
 
 
 def test_session_manager_archives_project_without_deleting_transcripts(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify archiving a project archives all its sessions (other projects untouched) without
+    # deleting transcripts; repeated calls return false; unarchiving restores all.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     other_cwd = tmp_path / "other"
@@ -351,6 +426,9 @@ def test_session_manager_archives_project_without_deleting_transcripts(tmp_path:
 
 
 def test_session_manager_sorts_newest_updated_first(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify listing orders sessions by most recent update first (touched older session appears
+    # first).
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     cwd = tmp_path / "project"
     cwd.mkdir()

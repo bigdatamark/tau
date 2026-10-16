@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Packaging metadata tests. Checks the Python version floor is consistent across
+# pyproject, ruff, mypy and .python-version; that the current project version has
+# an entry in the bundled release notes JSON; and that a built wheel ships the
+# release notes and built-in docs/example extension resources but no bundled
+# skills. Module constants hold the repo root, the release notes source and wheel
+# paths, and the set of required built-in resource paths inside the wheel.
 import json
 import subprocess
 import tomllib
@@ -18,6 +25,10 @@ BUILTIN_RESOURCE_WHEEL_PATHS = {
 
 
 def test_python_version_floor_matches_package_metadata() -> None:
+    # [FUNCTION DOC]
+    # Reads pyproject.toml and .python-version and asserts requires-python is
+    # ">=3.12", ruff target is py312, mypy python_version is 3.12 and the
+    # .python-version file contains 3.12. Side effects: reads files only.
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["requires-python"] == ">=3.12"
@@ -27,6 +38,9 @@ def test_python_version_floor_matches_package_metadata() -> None:
 
 
 def test_current_version_has_release_notes() -> None:
+    # [FUNCTION DOC]
+    # Asserts the release notes JSON file exists and that some entry's "version"
+    # equals the project version in pyproject.toml. Reads files only.
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert RELEASE_NOTES_SOURCE_PATH.is_file(), (
         f"release notes not found at {RELEASE_NOTES_SOURCE_PATH}"
@@ -37,6 +51,12 @@ def test_current_version_has_release_notes() -> None:
 
 
 def test_wheel_includes_release_notes_package_data(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Regression test: runs "uv build --wheel" into a temporary directory (a real
+    # subprocess, slow, needs uv), asserts success and exactly one wheel, then
+    # inspects the zip listing to require the release notes JSON and all built-in
+    # resource paths, and forbids any file under tau_coding/data/skills/.
+    # Input: pytest tmp_path. Side effects: subprocess build, writes to tmp dir.
     """Regression: releases.json must be included in installed wheels."""
     wheel_dir = tmp_path / "wheel"
     wheel_dir.mkdir()

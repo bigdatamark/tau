@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Pi-compatible JSONL RPC frontend for a coding session. A client writes one JSON
+# command object per line on stdin (with "type" and optional "id"); the server
+# writes one compact JSON object per line on stdout: "response" records
+# (command, success, optional id, data or error) and, while a prompt runs, the
+# session's streamed events. Also projects session entries, trees, model info and
+# stats into Pi's camelCase wire shapes. Records larger than 16 MiB are rejected.
 """Pi-compatible JSONL RPC frontend for a Tau coding session."""
 
 from __future__ import annotations
@@ -38,109 +45,233 @@ _MAX_RECORD_BYTES = 16 * 1024 * 1024
 
 
 class RpcSession(Protocol):
+    # [CLASS DOC]
+    # Structural protocol describing the subset of the coding session used by RPC
+    # mode: read-only state (model, provider, thinking levels, model choices,
+    # messages, ids/title, session manager, storage, compaction settings, context
+    # window/token estimate, queue size, stats, command registry, tree state) and
+    # operations (prompt streaming, cancel, model/thinking changes, compaction, new/
+    # resume session, entries, tree/branching, export, terminal commands, rename,
+    # pending session-start emission and close). Implemented by CodingSession.
     """Public CodingSession surface consumed by RPC mode."""
 
     @property
-    def model(self) -> str: ...
+    def model(self) -> str:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current model value. No side effects.
+        ...
 
     @property
-    def provider_name(self) -> str: ...
+    def provider_name(self) -> str:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current provider name value. No side effects.
+        ...
 
     @property
-    def thinking_level(self) -> str: ...
+    def thinking_level(self) -> str:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current thinking level value. No side effects.
+        ...
 
     @property
-    def available_thinking_levels(self) -> tuple[str, ...]: ...
+    def available_thinking_levels(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current available thinking levels value. No side effects.
+        ...
 
     @property
-    def available_model_choices(self) -> tuple[ModelChoice, ...]: ...
+    def available_model_choices(self) -> tuple[ModelChoice, ...]:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current available model choices value. No side effects.
+        ...
 
-    def provider_config(self, provider_name: str) -> ProviderConfig | None: ...
-
-    @property
-    def messages(self) -> tuple[object, ...]: ...
-
-    @property
-    def session_id(self) -> str | None: ...
-
-    @property
-    def session_title(self) -> str | None: ...
+    def provider_config(self, provider_name: str) -> ProviderConfig | None:
+        # [FUNCTION DOC]
+        # Protocol: return the provider configuration for a provider name, or None.
+        ...
 
     @property
-    def session_manager(self) -> SessionManager | None: ...
+    def messages(self) -> tuple[object, ...]:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current messages value. No side effects.
+        ...
 
     @property
-    def storage(self) -> object: ...
+    def session_id(self) -> str | None:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current session id value. No side effects.
+        ...
 
     @property
-    def auto_compact_token_threshold(self) -> int | None: ...
+    def session_title(self) -> str | None:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current session title value. No side effects.
+        ...
 
     @property
-    def auto_compaction_enabled(self) -> bool: ...
+    def session_manager(self) -> SessionManager | None:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current session manager value. No side effects.
+        ...
 
     @property
-    def context_window_tokens(self) -> int: ...
+    def storage(self) -> object:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current storage value. No side effects.
+        ...
 
     @property
-    def context_token_estimate(self) -> int: ...
+    def auto_compact_token_threshold(self) -> int | None:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current auto compact token threshold value. No side effects.
+        ...
 
     @property
-    def queued_message_count(self) -> int: ...
+    def auto_compaction_enabled(self) -> bool:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current auto compaction enabled value. No side effects.
+        ...
 
     @property
-    def session_stats(self) -> SessionStats: ...
+    def context_window_tokens(self) -> int:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current context window tokens value. No side effects.
+        ...
 
     @property
-    def command_registry(self) -> CommandRegistry: ...
+    def context_token_estimate(self) -> int:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current context token estimate value. No side effects.
+        ...
 
     @property
-    def state(self) -> object: ...
+    def queued_message_count(self) -> int:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current queued message count value. No side effects.
+        ...
+
+    @property
+    def session_stats(self) -> SessionStats:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current session stats value. No side effects.
+        ...
+
+    @property
+    def command_registry(self) -> CommandRegistry:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current command registry value. No side effects.
+        ...
+
+    @property
+    def state(self) -> object:
+        # [FUNCTION DOC]
+        # Protocol property: the session's current state value. No side effects.
+        ...
 
     def prompt(
         self,
         content: str,
         *,
         streaming_behavior: Literal["steer", "follow_up"] | None = None,
-    ) -> AsyncIterator[CodingSessionEvent]: ...
+    ) -> AsyncIterator[CodingSessionEvent]:
+        # [FUNCTION DOC]
+        # Protocol: submit user text; returns an async stream of session events. The
+        # keyword streaming behavior (steer or follow_up) selects how to queue the text
+        # while the agent is already running.
+        ...
 
-    def cancel(self) -> None: ...
+    def cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Protocol: request cancellation of the running agent turn.
+        ...
 
-    def set_model_choice(self, choice: ModelChoice) -> None: ...
+    def set_model_choice(self, choice: ModelChoice) -> None:
+        # [FUNCTION DOC]
+        # Protocol: switch to the given provider/model choice.
+        ...
 
-    async def cycle_thinking_level(self) -> str: ...
+    async def cycle_thinking_level(self) -> str:
+        # [FUNCTION DOC]
+        # Protocol: advance to the next thinking level and return it.
+        ...
 
-    async def set_thinking_level(self, level: str) -> str: ...
+    async def set_thinking_level(self, level: str) -> str:
+        # [FUNCTION DOC]
+        # Protocol: set a thinking level by name and return the effective level.
+        ...
 
-    def set_auto_compaction_enabled(self, enabled: bool) -> None: ...
+    def set_auto_compaction_enabled(self, enabled: bool) -> None:
+        # [FUNCTION DOC]
+        # Protocol: enable or disable automatic compaction.
+        ...
 
-    async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult: ...
+    async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult:
+        # [FUNCTION DOC]
+        # Protocol: compact context now with optional instructions; returns details.
+        ...
 
-    async def new_session(self) -> str: ...
+    async def new_session(self) -> str:
+        # [FUNCTION DOC]
+        # Protocol: start a fresh session; returns its id.
+        ...
 
-    async def resume(self, session_id: str) -> str: ...
+    async def resume(self, session_id: str) -> str:
+        # [FUNCTION DOC]
+        # Protocol: resume a stored session by id; returns the id.
+        ...
 
-    async def session_entries(self) -> tuple[SessionEntry, ...]: ...
+    async def session_entries(self) -> tuple[SessionEntry, ...]:
+        # [FUNCTION DOC]
+        # Protocol: return all stored session entries.
+        ...
 
-    async def tree_choices(self) -> tuple[object, ...]: ...
+    async def tree_choices(self) -> tuple[object, ...]:
+        # [FUNCTION DOC]
+        # Protocol: return selectable tree navigation choices.
+        ...
 
-    async def branch_to_entry(self, entry_id: str) -> object: ...
+    async def branch_to_entry(self, entry_id: str) -> object:
+        # [FUNCTION DOC]
+        # Protocol: move the active branch to the given entry id.
+        ...
 
     async def export(
         self, destination: Path | None = None, *, format: str | None = None
-    ) -> Path: ...
+    ) -> Path:
+        # [FUNCTION DOC]
+        # Protocol: export the session to an optional destination in an optional format;
+        # returns the written path.
+        ...
 
     async def run_terminal_command(
         self, command: str, *, add_to_context: bool
-    ) -> TerminalCommandResult: ...
+    ) -> TerminalCommandResult:
+        # [FUNCTION DOC]
+        # Protocol: run a shell command, optionally adding its output to context.
+        ...
 
-    async def set_session_name(self, name: str) -> str: ...
+    async def set_session_name(self, name: str) -> str:
+        # [FUNCTION DOC]
+        # Protocol: rename the session; returns the stored name.
+        ...
 
-    async def emit_pending_session_start(self) -> None: ...
+    async def emit_pending_session_start(self) -> None:
+        # [FUNCTION DOC]
+        # Protocol: emit any deferred session-start extension events.
+        ...
 
-    async def aclose(self) -> None: ...
+    async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # Protocol: release session resources.
+        ...
 
 
 class RpcServer:
+    # [CLASS DOC]
+    # JSONL RPC server bound to one session and a pair of text streams (default
+    # process stdin/stdout). Tracks how many prompt streams are active (to report
+    # isStreaming and require steer/followUp while busy) and serializes writes with
+    # an async lock so concurrent prompt tasks never interleave output lines.
     """Read Pi-style commands and stream responses/events as strict JSONL."""
 
     def __init__(
@@ -150,6 +281,9 @@ class RpcServer:
         stdin: IO[str] | None = None,
         stdout: IO[str] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store the session and streams (defaulting to process stdin/stdout), create the
+        # write lock and set the active prompt counter to zero. No I/O.
         self._session = session
         self._stdin = stdin or sys.stdin
         self._stdout = stdout or sys.stdout
@@ -157,6 +291,15 @@ class RpcServer:
         self._active_prompt_tasks = 0
 
     async def run(self) -> None:
+        # [FUNCTION DOC]
+        # Main loop. First emits pending session-start events. Then, inside a task
+        # group, repeatedly reads a line from stdin in a worker thread until EOF (empty
+        # string): strips one trailing LF and one CR, skips blank lines, rejects lines
+        # over 16 MiB (UTF-8) and non-JSON or non-object values with a "parse" error
+        # response, and dispatches valid objects. At EOF, if prompts are still running,
+        # cancels the session; the task group then waits for prompt tasks to finish.
+        # Finally closes the session. Side effects: reads stdin, writes stdout, spawns
+        # prompt tasks. Raises whatever escapes prompt tasks or session close.
         """Serve commands until stdin reaches EOF."""
         await self._session.emit_pending_session_start()
         async with anyio.create_task_group() as tasks:
@@ -187,6 +330,41 @@ class RpcServer:
         await self._session.aclose()
 
     async def _dispatch(self, command: dict[str, object], tasks: anyio.abc.TaskGroup) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Execute one command object. A missing or non-string "type" yields a
+        # "parse" error. Any exception raised while handling is converted into a failed
+        # response for that command (message is the exception text), including
+        # "Unknown command: <type>". Supported types:
+        # prompt / steer / follow_up: requires non-empty "message"; behavior comes from
+        # the type or an explicit "streamingBehavior" ("steer" or "followUp"); while a
+        # prompt is running a behavior is mandatory. Starts the session prompt, awaits
+        # the first event (an immediately empty stream just gets a success response),
+        # increments the active count, responds success, then streams the rest in a
+        # background task.
+        # abort: cancels the session. get_state: model wire info, thinking level,
+        # streaming flag, fixed compaction/queue mode values, session file/id/name,
+        # auto-compaction flag, message and pending counts. get_messages: all messages.
+        # get_available_models: model wire info per choice. set_model: provider
+        # (default current) plus required modelId; responds with the new model info.
+        # cycle_model: advances to the next choice (wrapping; unknown current starts at
+        # the first) or responds with null data when at most one choice exists.
+        # cycle_thinking_level: likewise for thinking levels, responding with the level.
+        # get_available_thinking_levels; set_thinking_level (required "level");
+        # compact (optional customInstructions; responds with summary, first kept id,
+        # tokens before/after); set_auto_compaction (required boolean "enabled");
+        # bash (required "command", excludeFromContext flag; responds with output and
+        # exit code); abort_bash: always an unsupported error; new_session;
+        # switch_session (sessionId or sessionPath, resolved via the session manager);
+        # get_session_stats; export_html (optional outputPath, home-expanded);
+        # get_fork_messages (user message entries as id and text); get_entries
+        # (optional "since" cursor: only entries after that id, error if not found;
+        # leaf entries omitted; includes the active leaf id); get_tree;
+        # get_last_assistant_text (latest assistant message text or null);
+        # set_session_name (required "name"); fork (required entryId: branches to it
+        # and returns that user message's text or empty string); get_commands
+        # (registered commands described as Pi extension commands with a synthetic
+        # tau://command/ path).
+        # Side effects: session mutations, stdout writes, task spawning.
         request_id = command.get("id")
         command_type = command.get("type")
         if not isinstance(command_type, str):
@@ -497,6 +675,12 @@ class RpcServer:
         stream: AsyncIterator[CodingSessionEvent],
         first_event: CodingSessionEvent,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Background task writing the first event and then each subsequent event
+        # of a prompt stream to stdout. RuntimeError or ValueError from the stream is
+        # reported as an "rpc_error" record. Always decrements the active prompt count.
+        # KNOWN ISSUE: any other exception type escapes, which will cancel the whole task
+        # group and terminate the server loop.
         try:
             await self._write(first_event)
             async for event in stream:
@@ -514,6 +698,10 @@ class RpcServer:
         *,
         include_data: bool = False,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Write a success response record with type "response", the command
+        # name, success true, the request id when not None, and "data" when data is not
+        # None or include_data is set (allowing an explicit null).
         response: dict[str, object] = {
             "type": "response",
             "command": command,
@@ -526,6 +714,9 @@ class RpcServer:
         await self._write(response)
 
     async def _error(self, request_id: object, command: str, error: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Write a failure response with type "response", the command name,
+        # success false, the error message, and the request id when not None.
         response: dict[str, object] = {
             "type": "response",
             "command": command,
@@ -537,6 +728,10 @@ class RpcServer:
         await self._write(response)
 
     async def _write(self, value: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Convert a value to JSON-compatible data, serialize it compactly
+        # (no ASCII escaping), then under the write lock write it plus a newline to
+        # stdout and flush. Raises on non-serializable data or stream errors.
         payload = json.dumps(_jsonable(value), ensure_ascii=False, separators=(",", ":"))
         async with self._write_lock:
             self._stdout.write(payload + "\n")
@@ -544,6 +739,9 @@ class RpcServer:
 
 
 def _required_string(command: Mapping[str, object], key: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return the command's value for a key if it is a non-empty string;
+    # otherwise raise ValueError "<key> must be a non-empty string".
     value = command.get(key)
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} must be a non-empty string")
@@ -551,6 +749,9 @@ def _required_string(command: Mapping[str, object], key: str) -> str:
 
 
 def _required_bool(command: Mapping[str, object], key: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: Return the command's value for a key if it is a boolean; otherwise
+    # raise ValueError "<key> must be a boolean".
     value = command.get(key)
     if not isinstance(value, bool):
         raise ValueError(f"{key} must be a boolean")
@@ -558,6 +759,9 @@ def _required_bool(command: Mapping[str, object], key: str) -> bool:
 
 
 def _optional_string(command: Mapping[str, object], key: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Return None if the key is absent or null, the string if it is a
+    # string, else raise ValueError "<key> must be a string". Empty strings allowed.
     value = command.get(key)
     if value is None:
         return None
@@ -567,10 +771,23 @@ def _optional_string(command: Mapping[str, object], key: str) -> str | None:
 
 
 def _leaf_id(state: object) -> object:
+    # [FUNCTION DOC]
+    # HELPER: Return the state object's active_leaf_id attribute, or None if absent.
     return getattr(state, "active_leaf_id", None)
 
 
 def _model_wire(session: RpcSession, *, choice: ModelChoice | None = None) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Build Pi's model description for the given choice (default: current
+    # provider/model). Looks up provider config and per-model metadata, then
+    # derives: api (metadata api, else the configured api of OpenAI-compatible or
+    # Anthropic configs, else "openai-responses" for openai-codex, else
+    # "openai-completions"); reasoning (metadata flag, else whether the provider
+    # offers thinking levels for the model, else whether the session has any);
+    # context window (metadata, else provider table, else session window); name
+    # (metadata name or model id); baseUrl (metadata, provider, or empty string);
+    # input modalities (metadata or ["text"]); maxTokens (metadata or 16384); cost
+    # per input/output/cacheRead/cacheWrite defaulting to 0. Returns a mapping.
     selected = choice or ModelChoice(provider_name=session.provider_name, model=session.model)
     provider = session.provider_config(selected.provider_name)
     metadata = provider.model_metadata.get(selected.model) if provider is not None else None
@@ -633,11 +850,22 @@ def _model_wire(session: RpcSession, *, choice: ModelChoice | None = None) -> di
 
 
 def _session_file(session: RpcSession) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the session file path as a string when storage is JSONL file
+    # storage, else None.
     storage = session.storage
     return str(storage.path) if isinstance(storage, JsonlSessionStorage) else None
 
 
 def _session_stats_wire(session: RpcSession) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Build Pi's session stats: session file/id, counts of user, assistant
+    # and total messages, tool calls (also reported as tool results), token
+    # breakdown (uncached input = input minus cache read minus cache write, floored
+    # at 0; output; cache read; cache write; total), estimated cost (0 if unknown)
+    # and context usage (estimate, window, percent rounded to 2 decimals).
+    # KNOWN ISSUE: a zero context window raises ZeroDivisionError; toolResults simply
+    # mirrors the tool call count.
     stats = session.session_stats
     user_messages = sum(isinstance(message, UserMessage) for message in session.messages)
     assistant_messages = sum(isinstance(message, AssistantMessage) for message in session.messages)
@@ -678,6 +906,17 @@ def _session_stats_wire(session: RpcSession) -> dict[str, JSONValue]:
 
 
 def _entry_wire(entry: SessionEntry, provider_name: str) -> dict[str, JSONValue] | None:
+    # [FUNCTION DOC]
+    # HELPER: Project one session entry into Pi's entry shape with type, id,
+    # parentId and an ISO UTC timestamp ending in "Z". Leaf entries return None.
+    # Per type: message (JSON message), custom_message (customType, content,
+    # details, display), model_change (provider defaulting to the given provider
+    # name, modelId), thinking_level_change (level or "off"), compaction (Pi shape
+    # with firstKeptEntryId/tokensBefore/usage/details, or a "custom" entry with
+    # customType "tau.compaction" for legacy entries missing those fields),
+    # branch_summary (fromId = branch root, else parent, else own id), custom
+    # (customType = namespace, data), label (targetId, label), session_info (name =
+    # title). Raises AssertionError for an unhandled type.
     if entry.type == "leaf":
         return None
     timestamp = datetime.fromtimestamp(entry.timestamp, tz=UTC)
@@ -742,6 +981,11 @@ def _entry_wire(entry: SessionEntry, provider_name: str) -> dict[str, JSONValue]
 
 
 def _tree_wire(entries: tuple[SessionEntry, ...], provider_name: str) -> list[JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Build a nested tree of projected entries (leaf entries excluded).
+    # Entries whose parent is missing from the set are treated as roots. Returns a
+    # list of nodes each with "entry" and "children", preserving entry order.
+    # Recursive; very deep trees could hit the recursion limit.
     visible = tuple(entry for entry in entries if entry.type != "leaf")
     children: dict[str | None, list[SessionEntry]] = {}
     ids = {entry.id for entry in visible}
@@ -750,6 +994,9 @@ def _tree_wire(entries: tuple[SessionEntry, ...], provider_name: str) -> list[JS
         children.setdefault(parent, []).append(entry)
 
     def build(entry: SessionEntry) -> dict[str, JSONValue]:
+        # [FUNCTION DOC]
+        # HELPER: Recursively project one entry and its children into a node mapping;
+        # raises AssertionError if the entry projects to None.
         projected = _entry_wire(entry, provider_name)
         if projected is None:
             raise AssertionError("Leaf entries must be filtered before tree projection")
@@ -762,6 +1009,12 @@ def _tree_wire(entries: tuple[SessionEntry, ...], provider_name: str) -> list[JS
 
 
 def _resolve_session_id(session: RpcSession, reference: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Resolve a session reference to an id: raises ValueError if no session
+    # manager exists; returns the id directly if the manager knows it; otherwise
+    # treats the reference as a path (home-expanded, resolved) and matches it
+    # against listed session record paths. Raises ValueError "Unknown session" if
+    # nothing matches. Reads the session directory listing.
     manager = session.session_manager
     if manager is None:
         raise ValueError("Session manager is not available")
@@ -776,6 +1029,15 @@ def _resolve_session_id(session: RpcSession, reference: str) -> str:
 
 
 def _jsonable(value: object) -> JSONValue:
+    # [FUNCTION DOC]
+    # HELPER: Recursively convert a value to JSON-compatible data: pydantic models
+    # via JSON-mode dump by alias; dataclass instances via a recursive field dict;
+    # mappings with keys stringified; lists/tuples to lists; primitives as-is;
+    # other objects with a model_dump method dumped likewise; everything else via
+    # its string form.
+    # KNOWN ISSUE: dataclass dumps are not passed back through this function, so
+    # nested non-JSON values (paths, datetimes) inside dataclasses can make the
+    # later JSON serialization fail.
     if isinstance(value, BaseModel):
         return cast(JSONValue, value.model_dump(mode="json", by_alias=True))
     if is_dataclass(value) and not isinstance(value, type):
@@ -795,5 +1057,8 @@ def _jsonable(value: object) -> JSONValue:
 
 
 async def run_rpc_session(session: CodingSession) -> None:
+    # [FUNCTION DOC]
+    # Entry point: run an RPC server over process stdin/stdout for an already
+    # configured coding session until stdin closes. Side effects as RpcServer.run.
     """Run RPC mode for an already configured CodingSession."""
     await RpcServer(session).run()

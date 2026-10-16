@@ -1,3 +1,15 @@
+# [PACKAGE DOC]
+# Public package facade for tau_coding, the coding-agent application layer
+# (CLI app, resources, skills, prompt templates, extensions, commands,
+# providers/OAuth, sessions, rendering, tools and TUI integration).
+# Re-exports the stable public API from submodules (commands, context and
+# context-window estimation, credentials, OAuth registry and types, paths,
+# prompt templates, provider catalog and provider configuration, rendering,
+# resources, session and session export/manager, shell config, skills, system
+# prompt assembly, thinking levels and built-in coding tools) and lists it in
+# the public names list.
+# Side effects on import: imports all those submodules and computes the
+# package version string from the version module.
 """Tau coding-agent application package."""
 
 from __future__ import annotations

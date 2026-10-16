@@ -1,3 +1,12 @@
+# [MODULE DOC]
+# Tests for Tau's JSON-lines RPC mode (the Pi-compatible frontend protocol):
+# each stdin line is a JSON command with optional id and a type; stdout gets one
+# JSON record per line (correlated "response" records plus streamed agent
+# events). Covers prompting, state and model shapes, session renaming, session
+# inspection (entries, tree, last text, fork points, stats), compaction, auto
+# compaction toggle, direct bash, bad input handling, preflight failures, line
+# splitting, and CLI routing of "--mode rpc". Uses a FakeProvider, temporary
+# JSONL session files and in-memory streams.
 import json
 from collections.abc import AsyncIterator
 from io import StringIO
@@ -33,6 +42,10 @@ from tau_coding.rpc import RpcServer
 
 
 async def _session(tmp_path: Path, provider: FakeProvider) -> CodingSession:
+    # [FUNCTION DOC]
+    # HELPER: Load a CodingSession using the given fake provider, model "fake", a
+    # fixed system prompt, a JSONL session file in the temp directory, and that
+    # directory as cwd. Side effect: may create the session file.
     return await CodingSession.load(
         CodingSessionConfig(
             provider=provider,
@@ -46,6 +59,9 @@ async def _session(tmp_path: Path, provider: FakeProvider) -> CodingSession:
 
 @pytest.mark.anyio
 async def test_rpc_streams_correlated_response_and_events(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that a prompt command first yields a success response with the request
+    # id, then streams agent events, ending with "agent_settled".
     provider = FakeProvider(
         [
             [
@@ -74,6 +90,10 @@ async def test_rpc_streams_correlated_response_and_events(tmp_path: Path) -> Non
 
 @pytest.mark.anyio
 async def test_rpc_state_matches_pi_frontend_contract(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that get_state returns exactly the Pi state keys, get_available_models
+    # lists models, cycle_model with a single model returns null data, and
+    # set_thinking_level returns a bare success response.
     session = await _session(tmp_path, FakeProvider([]))
     stdin = StringIO(
         '{"id":"state","type":"get_state"}\n'
@@ -113,6 +133,9 @@ async def test_rpc_state_matches_pi_frontend_contract(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_rpc_set_session_name_persists_rename(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that set_session_name succeeds and the new title is persisted through
+    # the session manager.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.create_session(cwd=tmp_path, model="fake", title="Old name")
     session = await CodingSession.load(
@@ -146,6 +169,10 @@ async def test_rpc_set_session_name_persists_rename(tmp_path: Path) -> None:
 async def test_rpc_model_shape_uses_catalog_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Test that the state's model object is built from provider catalog metadata
+    # (name, api, base URL, reasoning, inputs, context window, max tokens, and cost
+    # with missing cache rates filled as 0.0).
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     provider_config = OpenAICompatibleProviderConfig(
         name="local",
@@ -200,6 +227,11 @@ async def test_rpc_model_shape_uses_catalog_metadata(
 
 @pytest.mark.anyio
 async def test_rpc_session_inspection_matches_pi_shapes(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test get_entries (camelCase parent IDs, model_change projection with a
+    # default "openai" provider for legacy entries, leaf entries hidden), get_tree
+    # nesting, get_last_assistant_text, get_fork_messages and get_session_stats
+    # token totals and float cost.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     user = MessageEntry(message=UserMessage(content="question"))
     assistant = MessageEntry(
@@ -274,6 +306,9 @@ async def test_rpc_session_inspection_matches_pi_shapes(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_rpc_projects_custom_message_entry_with_pi_wire_names(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that a custom message entry is projected with camelCase keys and an ISO
+    # 8601 UTC timestamp string.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     entry = CustomMessageEntry(
         id="custom",
@@ -314,6 +349,11 @@ async def test_rpc_projects_custom_message_entry_with_pi_wire_names(tmp_path: Pa
 
 @pytest.mark.anyio
 async def test_rpc_compaction_returns_canonical_summary_and_boundary(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that the compact command produces the model summary, a first-kept entry
+    # boundary among original entries, a stored compaction entry consistent with
+    # the response (no replaced-ID list, matching tokens before), projected usage,
+    # and that projected compaction entries hide internal replaced-ID fields.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     parent_id: str | None = None
     original_ids: list[str] = []
@@ -389,6 +429,9 @@ async def test_rpc_compaction_returns_canonical_summary_and_boundary(tmp_path: P
 
 @pytest.mark.anyio
 async def test_rpc_projects_legacy_compaction_without_id_list_bridge(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that a legacy compaction entry with only a replaced-ID list is projected
+    # as a "custom" entry of type "tau.compaction" carrying just the summary.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     await storage.append(MessageEntry(id="user", message=UserMessage(content="hi")))
     await storage.append(
@@ -416,6 +459,8 @@ async def test_rpc_projects_legacy_compaction_without_id_list_bridge(tmp_path: P
 
 @pytest.mark.anyio
 async def test_rpc_auto_compaction_control_updates_pi_state(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that set_auto_compaction false is reflected in later state.
     session = await _session(tmp_path, FakeProvider([]))
     stdin = StringIO(
         '{"id":"set","type":"set_auto_compaction","enabled":false}\n'
@@ -432,6 +477,9 @@ async def test_rpc_auto_compaction_control_updates_pi_state(tmp_path: Path) -> N
 
 @pytest.mark.anyio
 async def test_rpc_direct_bash_matches_pi_result_shape(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that the bash command returns output, exit code, cancelled and truncated
+    # fields in Pi's shape (runs a real shell).
     session = await _session(tmp_path, FakeProvider([]))
     stdin = StringIO('{"id":"bash","type":"bash","command":"printf ok"}\n')
     stdout = StringIO()
@@ -449,6 +497,9 @@ async def test_rpc_direct_bash_matches_pi_result_shape(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_rpc_reports_bad_records_and_continues(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that an unparsable line yields a failed "parse" response and processing
+    # continues with the next command (numeric ids are echoed).
     session = await _session(tmp_path, FakeProvider([]))
     stdin = StringIO('not-json\n{"id":2,"type":"get_state"}\n')
     stdout = StringIO()
@@ -469,6 +520,12 @@ async def test_rpc_reports_bad_records_and_continues(tmp_path: Path) -> None:
 def test_rpc_mode_never_dispatches_utility_commands(
     monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized test that "--mode rpc" with a utility subcommand name exits with
+    # usage error code 2 and never invokes the utility command handlers (which are
+    # monkeypatched to record calls).
+    # KNOWN ISSUE: marked as an anyio test although it is a synchronous function;
+    # the marker has no effect here.
     called: list[str] = []
     monkeypatch.setattr(cli_module, "providers_command", lambda: called.append("providers"))
     monkeypatch.setattr(
@@ -485,9 +542,14 @@ def test_rpc_mode_never_dispatches_utility_commands(
 
 
 def test_cli_routes_rpc_mode_without_a_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    # [FUNCTION DOC]
+    # Test that "--mode rpc" with no prompt exits 0 and calls the RPC runner
+    # (monkeypatched).
     called = False
 
     async def fake_run(*args: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Fake RPC runner that records it was called via a nonlocal flag.
         nonlocal called
         called = True
 
@@ -500,6 +562,10 @@ def test_cli_routes_rpc_mode_without_a_prompt(monkeypatch: pytest.MonkeyPatch) -
 
 
 class _PreflightFailureSession:
+    # [CLASS DOC]
+    # HELPER: Minimal stand-in for a coding session exposing just the attributes the
+    # RPC server reads, whose prompt stream fails before any events and whose model
+    # change always fails.
     model = "before"
     provider_name = "provider-before"
     thinking_level = "off"
@@ -513,31 +579,49 @@ class _PreflightFailureSession:
     state = SimpleNamespace(active_leaf_id=None)
 
     async def emit_pending_session_start(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: No-op.
         return None
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: No-op.
         return None
 
     def cancel(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: No-op.
         return None
 
     def prompt(
         self, content: str, *, streaming_behavior: str | None = None
     ) -> AsyncIterator[object]:
+        # [FUNCTION DOC]
+        # HELPER: Return an async iterator that raises ValueError("preflight rejected")
+        # on first iteration.
         del content, streaming_behavior
 
         async def fail() -> AsyncIterator[object]:
+            # [FUNCTION DOC]
+            # HELPER: Async generator that raises immediately; the unreachable yield makes
+            # it a generator.
             raise ValueError("preflight rejected")
             yield
 
         return fail()
 
     def set_model_choice(self, choice: ModelChoice) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Always raise ValueError naming the requested provider and model,
+        # without mutating state.
         raise ValueError(f"Model is not available: {choice.provider_name}:{choice.model}")
 
 
 @pytest.mark.anyio
 async def test_rpc_preflight_failure_returns_one_correlated_failure() -> None:
+    # [FUNCTION DOC]
+    # Test that a prompt failing before streaming yields exactly one failed
+    # response with the error message and request id.
     session = _PreflightFailureSession()
     stdin = StringIO('{"id":"bad","type":"prompt","message":"hi"}\n')
     stdout = StringIO()
@@ -558,6 +642,9 @@ async def test_rpc_preflight_failure_returns_one_correlated_failure() -> None:
 
 @pytest.mark.anyio
 async def test_rpc_failed_model_change_does_not_mutate_session() -> None:
+    # [FUNCTION DOC]
+    # Test that a failed set_model returns failure and leaves provider and model
+    # unchanged.
     session = _PreflightFailureSession()
     stdin = StringIO('{"id":"model","type":"set_model","provider":"other","modelId":"missing"}\n')
     stdout = StringIO()
@@ -572,6 +659,9 @@ async def test_rpc_failed_model_change_does_not_mutate_session() -> None:
 
 @pytest.mark.anyio
 async def test_rpc_splits_only_on_lf_and_accepts_crlf(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that records are split only on line feed (a Unicode line separator inside
+    # a string is preserved) and a trailing carriage return is accepted.
     session = await _session(tmp_path, FakeProvider([]))
     separator = chr(0x2028)
     stdin = StringIO(f'{{"id":"a{separator}b","type":"get_state"}}\r\n')

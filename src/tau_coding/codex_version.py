@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Resolves the latest released OpenAI Codex CLI version (used as the client
+# version header for the Codex provider) from the npm registry, with an on-disk
+# JSON cache (schema version, checked_at timestamp, ETag, version) refreshed at
+# most every four hours. Discovery is never fatal: any failure falls back to the
+# cached version or the built-in default, and the result is never older than the
+# built-in default. Constants define the registry URL, cache schema, refresh
+# interval, HTTP timeout and a strict major.minor.patch pattern.
 """Runtime resolution and caching of the latest released Codex client version."""
 
 from __future__ import annotations
@@ -25,6 +33,9 @@ _VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 class CodexClientVersionResolver:
+    # [CLASS DOC]
+    # Async callable resolver. Holds Tau paths (for the cache file), an optional
+    # injected HTTP client, and a clock function for testability.
     """Resolve a real released Codex version, retaining safe cached fallbacks."""
 
     def __init__(
@@ -34,11 +45,25 @@ class CodexClientVersionResolver:
         client: httpx.AsyncClient | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store paths (default constructed), optional HTTP client and clock (default
+        # wall-clock time). No I/O.
         self._paths = paths or TauPaths()
         self._client = client
         self._now = now
 
     async def __call__(self) -> str:
+        # [FUNCTION DOC]
+        # Return the version string. Reads the cache; if TAU_OFFLINE is set, returns the
+        # best of cached/default without network. If the cache is fresh (checked within
+        # the interval), returns it. Otherwise GETs the npm "latest" document (sending
+        # If-None-Match with the cached ETag); a 304 with cache bumps checked_at and
+        # rewrites the cache; a success parses and validates the version, writes a new
+        # cache document, and returns the max of it and the default. HTTP, type, value
+        # and JSON errors fall back to the cached/default version. Closes the HTTP
+        # client only if it created it. Side effects: network, cache file writes.
+        # KNOWN ISSUE: errors outside the caught families (for example invalid URL or
+        # unexpected exceptions from the client) propagate despite "never fatal" intent.
         """Return the latest known stable Codex version without making discovery fatal."""
         cache = _read_cache(self._paths.codex_version_store_path)
         if environ.get("TAU_OFFLINE") is not None:
@@ -81,6 +106,9 @@ class CodexClientVersionResolver:
 
 
 def _parse_version(payload: object) -> str:
+    # [FUNCTION DOC]
+    # HELPER: extract the "version" field from registry JSON. Raises ValueError if
+    # the payload is not a mapping or the version is not a strict stable x.y.z.
     if not isinstance(payload, dict):
         raise ValueError("Codex package metadata must be an object")
     version = payload.get("version")
@@ -90,6 +118,10 @@ def _parse_version(payload: object) -> str:
 
 
 def _read_cache(path: Path) -> dict[str, Any] | None:
+    # [FUNCTION DOC]
+    # HELPER: load and validate the cache JSON (matching schema, numeric checked_at,
+    # valid version string, optional string ETag). Returns the mapping or nothing on
+    # any read, parse or validation failure.
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         if (
@@ -107,21 +139,33 @@ def _read_cache(path: Path) -> dict[str, Any] | None:
 
 
 def _cached_version(cache: dict[str, Any] | None) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: return the cached version string or nothing when there is no cache.
     return cache["version"] if cache is not None else None
 
 
 def _latest_known_version(candidate: str | None) -> str:
+    # [FUNCTION DOC]
+    # HELPER: return the newer (by numeric tuple comparison) of the candidate and the
+    # built-in default version; the default when the candidate is missing.
     if candidate is None:
         return DEFAULT_OPENAI_CODEX_CLIENT_VERSION
     return max(candidate, DEFAULT_OPENAI_CODEX_CLIENT_VERSION, key=_version_key)
 
 
 def _version_key(version: str) -> tuple[int, int, int]:
+    # [FUNCTION DOC]
+    # HELPER: split an x.y.z version into a tuple of three integers for ordering.
+    # Raises ValueError for malformed input.
     major, minor, patch = version.split(".")
     return int(major), int(minor), int(patch)
 
 
 def _try_write_cache(path: Path, value: dict[str, Any]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: atomically write the cache as pretty, key-sorted JSON: create parent
+    # dirs, write to a temp file in the same directory, then rename over the target.
+    # On OSError the temp file is removed and the error is swallowed. Returns nothing.
     with suppress(OSError):
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path: Path | None = None

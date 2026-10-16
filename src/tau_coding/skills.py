@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Markdown skill discovery, loading and invocation expansion for the coding
+# app. A skill is a directory containing SKILL.md (Agent Skills spec); bare .md
+# files in a skills directory are reported with an info diagnostic instead
+# (diverges from Pi; see ADR 0003). Provides loading across precedence-ordered
+# resource directories, "/skill:name" command expansion into a tagged prompt
+# block, parsing of that block back, and a skill index for the system prompt.
 """Markdown skill loading and expansion."""
 
 from __future__ import annotations
@@ -18,6 +25,10 @@ from tau_coding.resources import (
 
 @dataclass(frozen=True, slots=True)
 class Skill:
+    # [CLASS DOC]
+    # Immutable skill record: name (directory name), path to SKILL.md, markdown
+    # body content (front matter removed), optional description, and a flag that
+    # hides the skill from the model-facing index.
     """A markdown skill resource."""
 
     name: str
@@ -28,12 +39,18 @@ class Skill:
 
 
 def is_skill_candidate(path: Path) -> bool:
+    # [FUNCTION DOC]
+    # Returns true when the path is named exactly SKILL.md and is a file or a
+    # symlink (possibly dangling). Side effect: filesystem stat.
     """Return whether an entry is a loader-eligible ``*/SKILL.md`` candidate."""
     return path.name == "SKILL.md" and (path.is_file() or path.is_symlink())
 
 
 @dataclass(frozen=True, slots=True)
 class SkillInvocation:
+    # [CLASS DOC]
+    # Immutable parsed form of an expanded skill invocation: skill name, location
+    # (path string), content and optional additional user instructions.
     """Parsed expanded skill invocation message."""
 
     name: str
@@ -43,6 +60,13 @@ class SkillInvocation:
 
 
 def load_skills(paths: TauResourcePaths | None = None) -> list[Skill]:
+    # [FUNCTION DOC]
+    # Loads skills from each skills directory of the resource paths (defaults to
+    # default resource paths) in increasing precedence, later directories
+    # replacing same-named skills silently.
+    # Output: skills sorted by name. Raises ResourceError on any non-info
+    # diagnostic from a directory (for example a read error or duplicate).
+    # Side effects: filesystem reads.
     """Load markdown skills from Tau and `.agents` resource directories.
 
     Resource directories are loaded in increasing precedence order, so project
@@ -62,6 +86,12 @@ def load_skills(paths: TauResourcePaths | None = None) -> list[Skill]:
 def load_skills_with_diagnostics(
     paths: TauResourcePaths | None = None,
 ) -> tuple[list[Skill], list[ResourceDiagnostic]]:
+    # [FUNCTION DOC]
+    # Like load_skills but never raises for per-skill problems: collects every
+    # directory diagnostic and adds an "overrides lower-precedence resource at
+    # <path>" diagnostic whenever a later directory replaces a skill.
+    # Output: a pair of skills sorted by name and the diagnostics list.
+    # Side effects: filesystem reads.
     """Load skills and return non-fatal discovery diagnostics.
 
     Resource directories are loaded in increasing precedence order. Higher
@@ -92,6 +122,12 @@ def load_skills_with_diagnostics(
 
 
 def expand_skill_command(text: str, skills: Sequence[Skill]) -> str | None:
+    # [FUNCTION DOC]
+    # Expands prompt text of the form "/skill:name optional request".
+    # Inputs: the raw text and available skills. Output: none when the stripped
+    # text does not start with "/skill:", else the formatted invocation with the
+    # remaining text (stripped) as additional instructions.
+    # Raises ResourceError when the name is empty or no skill has that name.
     """Expand `/skill:name` prompt text, or return None for non-skill text."""
     stripped = text.strip()
     if not stripped.startswith("/skill:"):
@@ -117,6 +153,11 @@ def format_skill_invocation(
     skill: Skill,
     additional_instructions: str | None = None,
 ) -> str:
+    # [FUNCTION DOC]
+    # Builds the invocation prompt: a skill tag with name and location attributes,
+    # a line stating references are relative to the skill's directory, a blank
+    # line, the stripped skill content and a closing tag; non-blank additional
+    # instructions (stripped) are appended after a blank line. Output: the string.
     """Format a full skill invocation prompt."""
     skill_block = (
         f'<skill name="{skill.name}" location="{skill.path}">\n'
@@ -130,6 +171,10 @@ def format_skill_invocation(
 
 
 def parse_skill_invocation(text: str) -> SkillInvocation | None:
+    # [FUNCTION DOC]
+    # Parses text produced by format_skill_invocation using an anchored pattern.
+    # Output: a SkillInvocation (content includes the "References are relative"
+    # line; additional instructions none when absent) or none if not matching.
     """Parse Tau's expanded skill invocation message format."""
     match = re.match(
         r'^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n</skill>(?:\n\n([\s\S]+))?$',
@@ -147,6 +192,11 @@ def parse_skill_invocation(text: str) -> SkillInvocation | None:
 
 
 def build_skill_index(skills: Sequence[Skill]) -> str:
+    # [FUNCTION DOC]
+    # Builds the "Available skills:" list for the system prompt, one line
+    # "- name: description" per skill sorted by name, excluding skills with model
+    # invocation disabled and using "No description" as fallback. Returns
+    # "Available skills: none" when nothing is visible.
     """Build a concise index of available skills for future system prompt assembly."""
     visible_skills = [skill for skill in skills if not skill.disable_model_invocation]
     if not visible_skills:
@@ -159,6 +209,10 @@ def build_skill_index(skills: Sequence[Skill]) -> str:
 
 
 def _load_skills_from_dir(skills_dir: Path) -> list[Skill]:
+    # [FUNCTION DOC]
+    # HELPER: loads one directory, ignoring info diagnostics and raising
+    # ResourceError with the message of the first other diagnostic.
+    # Output: the loaded skills.
     skills, diagnostics = _load_skills_from_dir_with_diagnostics(skills_dir)
     for diagnostic in diagnostics:
         # Bare-.md migration hints are informational — the file is skipped,
@@ -173,6 +227,18 @@ def _load_skills_from_dir(skills_dir: Path) -> list[Skill]:
 def _load_skills_from_dir_with_diagnostics(
     skills_dir: Path,
 ) -> tuple[list[Skill], list[ResourceDiagnostic]]:
+    # [FUNCTION DOC]
+    # HELPER: scans one directory (missing or non-directory yields nothing) in name
+    # order. Subdirectories containing SKILL.md become skills named after the
+    # directory; subdirectories without it are skipped. Root .md files other than
+    # AGENTS.md produce an info diagnostic with a migration hint. Other entries are
+    # ignored. Duplicate names produce a diagnostic and are skipped; read or decode
+    # errors produce an error diagnostic.
+    # Output: a pair of skills and diagnostics. Side effects: filesystem reads.
+    # KNOWN ISSUE: names come from unique directory entries so the duplicate check
+    # can effectively never fire (except on case-insensitive quirks), and the
+    # existence check differs from is_skill_candidate (a dangling SKILL.md symlink
+    # is a candidate there but skipped here).
     if not skills_dir.exists() or not skills_dir.is_dir():
         return [], []
 
@@ -240,6 +306,12 @@ def _load_skills_from_dir_with_diagnostics(
 
 
 def _load_skill(name: str, path: Path) -> Skill:
+    # [FUNCTION DOC]
+    # HELPER: reads a SKILL.md file as UTF-8, splits front matter from content,
+    # uses the "description" metadata or a description derived from the content,
+    # and sets the disable flag when "disable-model-invocation" equals "true"
+    # (case-insensitive). Output: a Skill. Raises OSError or UnicodeDecodeError on
+    # read failures.
     raw = path.read_text(encoding="utf-8")
     metadata, content = parse_markdown_resource(raw)
     description = metadata.get("description") or derive_description(content)

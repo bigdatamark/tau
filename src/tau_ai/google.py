@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Google Generative Language (Gemini/Gemma) streaming provider for tau_ai.
+# Converts Tau agent messages and tools into a streamGenerateContent request
+# (contents, systemInstruction, generationConfig with token limit and thinking
+# config, functionDeclarations), streams SSE chunks, parses them into
+# provider-neutral events (text, thinking, tool calls, final message), retries on
+# retryable HTTP statuses, transport errors and empty truncated streams, and
+# canonicalizes the result into Pi-compatible assistant message events.
 """Google Generative AI provider."""
 
 from __future__ import annotations
@@ -50,6 +58,10 @@ from tau_ai.tool_call_ids import portable_tool_call_id
 
 
 class GoogleGenerativeAIProvider:
+    # [CLASS DOC]
+    # Provider adapter. Holds the OpenAI-compatible-shaped config (base URL, API
+    # key, headers, retry limits, timeouts, reasoning effort, max tokens, image
+    # support) and an HTTP client, created lazily and owned when not injected.
     """Provider adapter for Google's Generative Language streaming API."""
 
     def __init__(
@@ -58,11 +70,16 @@ class GoogleGenerativeAIProvider:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store the config and optional injected client; remember whether the provider
+        # owns its client (true when none was injected). No I/O.
         self._config = config
         self._client = client
         self._owns_client = client is None
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # Close and drop the HTTP client only when the provider created it. Async I/O.
         """Close the underlying HTTP client if this provider created it."""
         if self._client is not None and self._owns_client:
             await self._client.aclose()
@@ -78,6 +95,11 @@ class GoogleGenerativeAIProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # [FUNCTION DOC]
+        # Public provider entry point. Ignores the session id. Builds the raw provider
+        # event stream and wraps it with the canonicalizer labeled api
+        # "google-generative-ai", provider "google" and the model. Returns an async
+        # iterator of assistant message events; no work happens until iterated.
         """Stream one response as Pi-compatible assistant message events."""
         del session_id
         raw = self._stream_provider_events(
@@ -96,9 +118,27 @@ class GoogleGenerativeAIProvider:
         tools: list[AgentTool],
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: return an async iterator of provider-neutral events for one request.
         """Stream one Gemini response as provider-neutral events."""
 
         async def iterator() -> AsyncIterator[ProviderEvent]:
+            # [FUNCTION DOC]
+            # HELPER: the request loop. Builds the payload and the URL
+            # "<base>/models/<model>:streamGenerateContent?alt=sse&key=<api key>" with
+            # configured headers plus JSON content type. Each attempt uses a fresh parser
+            # and POSTs with streaming. HTTP 400+: if retryable (408, 409, 425, 429, 5xx and
+            # attempts remain) yields a retry event, waits (stopping silently if cancelled)
+            # and retries; otherwise yields an error event with a formatted message and the
+            # status/body. On success yields a response-start event, then parses each SSE
+            # data line, yielding parser events and stopping on a fatal parse error or when
+            # the signal is cancelled. If the stream ended with no finish reason and no
+            # content it retries; otherwise yields the parser's final events. Retryable
+            # transport errors retry if no content was emitted, else yield an error event
+            # with the attempt count. Side effects: network I/O, sleeping between retries.
+            # KNOWN ISSUE: the API key is placed in the URL query string, where it can leak
+            # into logs or exception messages; cancellation mid-stream returns silently
+            # without a terminal event.
             client = self._get_client()
             payload = _build_google_payload(
                 model=model,
@@ -212,18 +252,30 @@ class GoogleGenerativeAIProvider:
         return iterator()
 
     def _get_client(self) -> httpx.AsyncClient:
+        # [FUNCTION DOC]
+        # HELPER: return the HTTP client, lazily creating one with the configured
+        # timeout (mutates provider state).
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
 
     def _should_retry(self, attempt: int, *, status_code: int | None = None) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: false once attempts reach max retries; otherwise true for transport
+        # or stream retries (no status) and for statuses 408, 409, 425, 429 or 5xx.
         if attempt >= self._config.max_retries:
             return False
         return status_code is None or status_code in {408, 409, 425, 429} or status_code >= 500
 
 
 class _GoogleStreamParser:
+    # [CLASS DOC]
+    # HELPER: stateful parser for one Gemini stream attempt. Accumulates text and
+    # thinking parts and tool calls, tracks the last finish reason, and exposes
+    # flags for whether any content was emitted and whether a fatal error occurred.
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: initialize empty accumulators and false flags.
         self.emitted_content = False
         self.fatal = False
         self._content_parts: list[str] = []
@@ -233,9 +285,19 @@ class _GoogleStreamParser:
 
     @property
     def has_finish_reason(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER property: true once any chunk carried a string finishReason.
         return self._finish_reason is not None
 
     def feed(self, event: str) -> list[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: parse one SSE data payload. Invalid JSON or non-object sets fatal and
+        # returns a single error event. Only the first candidate is used; records its
+        # finishReason; for each part, non-empty text becomes a thinking delta when
+        # marked as thought or a text delta otherwise, and a functionCall becomes a tool
+        # call (id defaulting to "tool-call-N", name, args object, optional thought
+        # signature) emitted as a tool call event. Returns the list of events; mutates
+        # parser state.
         chunk = _loads_object(event)
         if chunk is None:
             self.fatal = True
@@ -286,6 +348,11 @@ class _GoogleStreamParser:
         return events
 
     def finalize(self) -> list[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: if no finish reason was seen, return an error event. Otherwise build
+        # the assistant content from joined text and tool calls, prepend a single
+        # joined thinking block if any, and return one response-end event with the
+        # normalized finish reason.
         if self._finish_reason is None:
             return [ProviderErrorEvent(message="Google stream ended without finishReason")]
         content = assistant_content("".join(self._content_parts), self._tool_calls)
@@ -311,6 +378,11 @@ def _build_google_payload(
     max_tokens: int | None,
     supports_images: bool = False,
 ) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: build the request body: converted contents for all messages, a
+    # systemInstruction when the system prompt is non-empty, generationConfig with
+    # maxOutputTokens and thinkingConfig when applicable, and one tools entry with
+    # function declarations when tools exist. Returns the JSON-ready mapping.
     config: dict[str, JSONValue] = {}
     payload: dict[str, JSONValue] = {
         "contents": [
@@ -336,6 +408,12 @@ def _build_google_payload(
 def _google_thinking_config(
     model: str, reasoning_effort: str | None
 ) -> dict[str, JSONValue] | None:
+    # [FUNCTION DOC]
+    # HELPER: map a reasoning effort to Gemini thinking config. No effort gives
+    # nothing. "none" disables thinking: LOW level for Gemini 3 Pro (cannot fully
+    # disable), MINIMAL for Gemini 3 Flash and Gemma 4, else zero budget. Upper-case
+    # level names pass through as thinkingLevel with thoughts included. Otherwise a
+    # model-specific token budget is used when known, else a thinkingLevel.
     if reasoning_effort is None:
         return None
     if reasoning_effort == "none":
@@ -353,6 +431,10 @@ def _google_thinking_config(
 
 
 def _google_budget(model: str, effort: str) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: return a thinking token budget for Gemini 2.5 models by effort
+    # (xhigh treated as high), nothing for unknown efforts or level-based models
+    # (Gemini 3, Gemma 4), and -1 (dynamic budget) for other models.
     normalized = effort.lower()
     if normalized == "xhigh":
         normalized = "high"
@@ -370,6 +452,10 @@ def _google_budget(model: str, effort: str) -> int | None:
 
 
 def _google_level(model: str, effort: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: map effort (xhigh as high) to a thinkingLevel: Gemini 3 Pro supports
+    # only LOW or HIGH, Gemma 4 only MINIMAL or HIGH; others map directly with HIGH
+    # as the fallback.
     normalized = effort.lower()
     if normalized == "xhigh":
         normalized = "high"
@@ -386,20 +472,36 @@ def _google_level(model: str, effort: str) -> str:
 
 
 def _is_gemini3_pro_model(model: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: case-insensitive check that the model name contains "gemini-3" and "pro".
     return "gemini-3" in model.lower() and "pro" in model.lower()
 
 
 def _is_gemini3_flash_model(model: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: case-insensitive check for "gemini-3" and "flash" in the model name.
     return "gemini-3" in model.lower() and "flash" in model.lower()
 
 
 def _is_gemma4_model(model: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: case-insensitive check for "gemma-4" or "gemma4" in the model name.
     return "gemma-4" in model.lower() or "gemma4" in model.lower()
 
 
 def _messages_to_google(
     message: AgentMessage, *, model: str, supports_images: bool
 ) -> list[dict[str, JSONValue]]:
+    # [FUNCTION DOC]
+    # HELPER: convert one agent message into Google content entries. User messages
+    # become a user entry with text and inline images (or placeholders when images
+    # unsupported). Assistant messages become a model entry of text parts, thought
+    # parts (with signature) and functionCall parts (portable id, name, args, thought
+    # signature), using one empty text part when nothing remains. Tool results become
+    # a user functionResponse with "output" or "error" text and portable id; images
+    # are attached inside the response for models that support multimodal function
+    # responses, otherwise sent as a separate user entry prefixed by a label. Other
+    # message kinds are converted to a user message first. Returns a list of entries.
     if isinstance(message, UserMessage):
         text, images = text_and_images(
             message.content,
@@ -464,15 +566,22 @@ def _messages_to_google(
 
 
 def _google_image(image: ImageContent) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: convert image content to an inlineData part with MIME type and base64 data.
     return {"inlineData": {"mimeType": image.mime_type, "data": image.data}}
 
 
 def _supports_multimodal_function_response(model: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true for non-Gemini models and Gemini 3+, false for older "gemini-" models.
     normalized = model.lower()
     return not normalized.startswith("gemini-") or normalized.startswith("gemini-3")
 
 
 def _tool_to_google(tool: AgentTool) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: convert an agent tool to a function declaration with name, description
+    # and a sanitized copy of its input schema.
     return {
         "name": tool.name,
         "description": tool.description,
@@ -484,6 +593,9 @@ _UNSUPPORTED_GOOGLE_SCHEMA_KEYS = frozenset({"additionalProperties", "$schema"})
 
 
 def _sanitize_google_schema(value: JSONValue) -> JSONValue:
+    # [FUNCTION DOC]
+    # HELPER: recursively copy a JSON value, removing "additionalProperties" and
+    # "$schema" keys from every object, since Gemini rejects them.
     """Strip JSON Schema keywords Gemini's OpenAPI-subset parser rejects."""
     if isinstance(value, dict):
         return {
@@ -497,6 +609,9 @@ def _sanitize_google_schema(value: JSONValue) -> JSONValue:
 
 
 def _parse_sse_line(line: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: return the stripped payload of an SSE "data:" line, or nothing for
+    # blank or non-data lines.
     line = line.strip()
     if not line or not line.startswith("data:"):
         return None
@@ -504,6 +619,9 @@ def _parse_sse_line(line: str) -> str | None:
 
 
 def _loads_object(value: str) -> dict[str, JSONValue] | None:
+    # [FUNCTION DOC]
+    # HELPER: parse JSON text and return it only if it is an object; nothing on
+    # decode errors or other JSON types.
     try:
         loaded = loads(value)
     except JSONDecodeError:
@@ -512,14 +630,23 @@ def _loads_object(value: str) -> dict[str, JSONValue] | None:
 
 
 def _string_or_default(value: object, default: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: return the value if it is a non-empty string, else the default.
     return value if isinstance(value, str) and value else default
 
 
 def _object_or_empty(value: object) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: return the value if it is a mapping object, else an empty mapping.
     return value if isinstance(value, dict) else {}
 
 
 def _normalize_finish_reason(reason: str | None, *, has_tool_calls: bool) -> str:
+    # [FUNCTION DOC]
+    # HELPER: "tool_calls" whenever tool calls exist; "length" for MAX_TOKENS,
+    # MODEL_ARMOR or RECITATION; otherwise "stop".
+    # KNOWN ISSUE: MODEL_ARMOR and RECITATION are content-policy stops, not length
+    # limits, and SAFETY/blocked reasons are reported as a normal "stop".
     if has_tool_calls:
         return "tool_calls"
     if reason in {"MAX_TOKENS", "MODEL_ARMOR", "RECITATION"}:

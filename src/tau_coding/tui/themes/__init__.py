@@ -1,3 +1,14 @@
+# [PACKAGE DOC]
+# Package defining JSON-based TUI themes for the Textual frontend. Themes are
+# data: built-in themes (tau-dark, tau-light, high-contrast) ship as JSON
+# files in this package and are parsed at import time by the same strict
+# parser used for user themes (from <Tau home>/themes and <project>/.tau/themes).
+# Provides the theme dataclasses, the transcript role list, a parser that
+# validates fields, vars substitution, colors (Rich and Textual), role
+# styles, darkness inference and syntax themes; a process-global registry of
+# custom themes; lookup; conversion to Textual themes / CSS variables; and a
+# directory loader that reports diagnostics instead of failing.
+# Side effects at import: reads the bundled JSON theme files.
 """JSON-defined TUI themes for Tau.
 
 Themes are data, not code. The built-in themes ship as JSON files next to this
@@ -26,11 +37,17 @@ from tau_coding.resources import ResourceDiagnostic
 
 
 class TuiThemeError(ValueError):
+    # [CLASS DOC]
+    # Exception (ValueError) raised when a theme definition is invalid; the
+    # message aggregates all problems found.
     """Raised when a TUI theme definition is invalid."""
 
 
 @dataclass(frozen=True, slots=True)
 class TuiRoleStyle:
+    # [CLASS DOC]
+    # Frozen dataclass of colors for one transcript role block: a border color
+    # and a body Rich style string.
     """Colors for one transcript role block."""
 
     border: str
@@ -39,6 +56,12 @@ class TuiRoleStyle:
 
 @dataclass(frozen=True, slots=True)
 class TuiTheme:
+    # [CLASS DOC]
+    # Frozen dataclass of a fully resolved theme: name, dark flag, a set of
+    # single-color fields for screen, chrome, sidebar, borders, prompt,
+    # autocomplete, accent/success/error, tool text, highlights and markdown
+    # elements, three completion Rich style fields, a Pygments syntax theme name,
+    # and a mapping from transcript role to role style.
     """Resolved visual theme for Tau's built-in Textual frontend."""
 
     name: str
@@ -155,6 +178,17 @@ _RICH_STYLE_KEYWORDS = frozenset(
 
 
 def parse_tui_theme_json(data: object) -> TuiTheme:
+    # [FUNCTION DOC]
+    # Parse and validate a theme from JSON data, collecting all problems before
+    # failing. Requires an object; flags unknown top-level fields; parses the
+    # name (non-empty, no slash), vars (named single colors usable as tokens),
+    # colors (every theme color field, with vars substituted, validated per field
+    # kind), roles (every transcript role with border and body), dark (explicit
+    # bool or inferred from screen background luminance), and syntax theme
+    # (known Pygments style or ansi default based on darkness).
+    # Output: TuiTheme. Raises TuiThemeError listing every problem (prefixed by
+    # the theme name when known). No side effects beyond a cached Pygments style
+    # lookup.
     """Parse a theme from JSON-compatible data, reporting all problems at once."""
     if not isinstance(data, dict):
         raise TuiThemeError("Theme must be a JSON object")
@@ -183,6 +217,9 @@ def parse_tui_theme_json(data: object) -> TuiTheme:
 
 
 def _parse_name(value: object, problems: list[str]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: validate the theme name is a non-empty string without "/",
+    # appending problems; returns the stripped name or empty string.
     if not isinstance(value, str) or not value.strip():
         problems.append("name must be a non-empty string")
         return ""
@@ -193,6 +230,11 @@ def _parse_name(value: object, problems: list[str]) -> str:
 
 
 def _parse_vars(value: object, problems: list[str]) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: validate the vars object. Each name must be a non-empty string not
+    # equal (case-insensitively) to a Rich style keyword; each value must be a
+    # single whitespace-free token that Rich parses as a color. Invalid entries
+    # are reported and skipped. Returns mapping name -> color.
     if not isinstance(value, dict):
         problems.append("vars must be an object")
         return {}
@@ -214,6 +256,10 @@ def _parse_vars(value: object, problems: list[str]) -> dict[str, str]:
 
 
 def _substitute_vars(value: str, variables: dict[str, str]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: replace whitespace-separated tokens that match a var name with its
+    # color; tokens are re-joined with single spaces. Returns the input unchanged
+    # when there are no vars.
     if not variables:
         return value
     return " ".join(variables.get(token, token) for token in value.split())
@@ -224,6 +270,12 @@ def _parse_colors(
     variables: dict[str, str],
     problems: list[str],
 ) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: validate the colors object: reports missing and unknown fields,
+    # requires non-empty strings, substitutes vars, then validates completion
+    # fields as Rich styles, Rich-only fields as Rich colors, and all others as
+    # colors acceptable to both Rich and Textual. Returns mapping of valid
+    # resolved fields; problems are appended to the list.
     if not isinstance(value, dict):
         problems.append("colors must be an object")
         return {}
@@ -260,6 +312,12 @@ def _parse_roles(
     variables: dict[str, str],
     problems: list[str],
 ) -> dict[str, TuiRoleStyle]:
+    # [FUNCTION DOC]
+    # HELPER: validate the roles object: reports missing/unknown roles; each role
+    # must be an object with exactly border and body strings. Border must parse
+    # as a color in Rich and Textual; body must be a valid Rich style whose
+    # foreground/background colors Textual also accepts. Returns mapping role ->
+    # role style for fully valid roles; problems appended.
     if not isinstance(value, dict):
         problems.append("roles must be an object")
         return {}
@@ -298,6 +356,9 @@ def _parse_roles(
 
 
 def _color_problem(value: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: return an error phrase if Rich cannot parse the value as a color,
+    # else None.
     try:
         Color.parse(value)
     except ColorParseError:
@@ -306,6 +367,9 @@ def _color_problem(value: str) -> str | None:
 
 
 def _textual_color_problem(value: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: return an error phrase if Textual cannot parse the value as a
+    # color, else None.
     try:
         TextualColor.parse(value)
     except TextualColorParseError:
@@ -314,6 +378,10 @@ def _textual_color_problem(value: str) -> str | None:
 
 
 def _textual_style_colors_problem(value: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: parse a Rich style (caller must have validated it already, since
+    # parse errors are not caught here) and check its named foreground and
+    # background colors with Textual; returns the first error phrase or None.
     style = Style.parse(value)
     for color in (style.color, style.bgcolor):
         if color is not None and color.name is not None:
@@ -324,6 +392,9 @@ def _textual_style_colors_problem(value: str) -> str | None:
 
 
 def _style_problem(value: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: return an error phrase if the value is not a valid Rich style
+    # (syntax or color error), else None.
     try:
         Style.parse(value)
     except (StyleSyntaxError, ColorParseError):
@@ -332,6 +403,9 @@ def _style_problem(value: str) -> str | None:
 
 
 def _parse_dark(value: object, colors: dict[str, str], problems: list[str]) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: return an explicit boolean dark flag; a non-null non-bool value is
+    # reported as a problem; otherwise infer darkness from the screen background.
     if isinstance(value, bool):
         return value
     if value is not None:
@@ -340,6 +414,10 @@ def _parse_dark(value: object, colors: dict[str, str], problems: list[str]) -> b
 
 
 def _is_dark_background(value: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: infer darkness from the first token of a color string using
+    # relative luminance (Rec. 709 weights) below 0.5; empty or unparseable
+    # values are treated as dark.
     tokens = value.split()
     if not tokens:
         return True
@@ -353,6 +431,10 @@ def _is_dark_background(value: str) -> bool:
 
 
 def _parse_syntax_theme(value: object, *, dark: bool, problems: list[str]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: return the syntax theme: ansi_dark/ansi_light by darkness when
+    # unset; the value when it is a known Pygments style or ansi theme; otherwise
+    # records a problem and returns ansi_dark.
     if value is None:
         return "ansi_dark" if dark else "ansi_light"
     if not isinstance(value, str) or value not in _known_syntax_themes():
@@ -363,12 +445,18 @@ def _parse_syntax_theme(value: object, *, dark: bool, problems: list[str]) -> st
 
 @cache
 def _known_syntax_themes() -> frozenset[str]:
+    # [FUNCTION DOC]
+    # HELPER: cached set of all Pygments style names plus ansi_dark/ansi_light
+    # (imports Pygments lazily).
     from pygments.styles import get_all_styles
 
     return frozenset(get_all_styles()) | {"ansi_dark", "ansi_light"}
 
 
 def _load_builtin_theme(filename: str) -> TuiTheme:
+    # [FUNCTION DOC]
+    # HELPER: read a bundled theme JSON file from this package's resources and
+    # parse it. Raises on read/parse/validation failure (at import time).
     payload = (files(__package__) / filename).read_text(encoding="utf-8")
     return parse_tui_theme_json(loads(payload))
 
@@ -386,17 +474,26 @@ _custom_themes: dict[str, TuiTheme] = {}
 
 
 def set_custom_tui_themes(themes: Mapping[str, TuiTheme]) -> None:
+    # [FUNCTION DOC]
+    # Replace the process-global custom theme registry with the given mapping
+    # of name -> theme. Side effect: mutates module state.
     """Replace the registered custom themes."""
     _custom_themes.clear()
     _custom_themes.update(themes)
 
 
 def available_tui_theme_names() -> tuple[TuiThemeName, ...]:
+    # [FUNCTION DOC]
+    # Return built-in theme names (in definition order) followed by custom theme
+    # names sorted alphabetically.
     """Return built-in theme names followed by sorted custom theme names."""
     return (*BUILTIN_TUI_THEME_NAMES, *sorted(_custom_themes))
 
 
 def get_tui_theme(name: TuiThemeName = "tau-dark") -> TuiTheme:
+    # [FUNCTION DOC]
+    # Return a theme by name (default tau-dark), checking built-ins first and
+    # then the custom registry. Raises KeyError when unknown.
     """Return a built-in or registered custom theme by name."""
     if name in _BUILTIN_THEMES:
         return _BUILTIN_THEMES[name]
@@ -404,6 +501,12 @@ def get_tui_theme(name: TuiThemeName = "tau-dark") -> TuiTheme:
 
 
 def textual_theme_for_tui_theme(theme_name: TuiThemeName) -> Theme:
+    # [FUNCTION DOC]
+    # Look up a Tau theme by name and build a Textual Theme, mapping accent to
+    # primary/accent, prompt border to secondary, markdown bullet to warning,
+    # error/success, screen text/background to foreground/background, chrome to
+    # surface, sidebar to panel, the dark flag, and the Tau CSS variables.
+    # Raises KeyError for unknown names.
     """Map a Tau theme to Textual's native theme type."""
     theme = get_tui_theme(theme_name)
     return Theme(
@@ -424,6 +527,10 @@ def textual_theme_for_tui_theme(theme_name: TuiThemeName) -> Theme:
 
 
 def theme_css_variables(theme: TuiTheme) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # Return the mapping of Textual CSS variable names (tau-* and footer-*) to
+    # color values from a resolved theme; the tool-running color comes from the
+    # tool role border. Raises KeyError if the tool role is missing.
     """Return Textual CSS variables for a resolved Tau theme."""
     return {
         "tau-screen-background": theme.screen_background,
@@ -462,6 +569,15 @@ def theme_css_variables(theme: TuiTheme) -> dict[str, str]:
 def load_custom_tui_themes(
     theme_dirs: Sequence[Path],
 ) -> tuple[dict[str, TuiTheme], list[ResourceDiagnostic]]:
+    # [FUNCTION DOC]
+    # Load user themes from directories given in increasing precedence order.
+    # Iterates directories from highest precedence, skipping non-directories,
+    # and their *.json files in sorted order. Unreadable or invalid JSON files
+    # and invalid themes produce invalid-theme diagnostics; themes whose names
+    # shadow a built-in, or duplicate an already-loaded (higher-precedence or
+    # earlier) theme, produce collision diagnostics and are skipped.
+    # Output: tuple of (mapping name -> theme, list of diagnostics). Side
+    # effects: filesystem reads only; does not register themes.
     """Load custom themes from directories given in increasing precedence order.
 
     Invalid files are skipped with a diagnostic; on duplicate names the theme

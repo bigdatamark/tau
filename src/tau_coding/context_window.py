@@ -1,3 +1,14 @@
+# [MODULE DOC]
+# Approximate context-size accounting and compaction prompt building for Tau
+# coding sessions. Provides: a character-based token estimator (about 4
+# characters per token, plus fixed per-message and per-tool overheads); a usage
+# estimate that is anchored on the latest provider-reported usage when available;
+# the Pi-style auto-compaction threshold (context window minus a 16,384 token
+# reserve); and the prompts/serializers used to ask a model to summarize older
+# history (initial summary, incremental update of a previous summary, and
+# turn-prefix summary). A compaction summary is stored as a user message whose
+# text starts with "Previous conversation summary:" followed by a newline.
+# All functions are pure; no I/O.
 """Approximate context-size estimation for Tau coding sessions."""
 
 from __future__ import annotations
@@ -108,6 +119,12 @@ TURN_PREFIX_SUMMARIZATION_PROMPT = (
 
 @dataclass(frozen=True, slots=True)
 class ContextUsageEstimate:
+    # [CLASS DOC]
+    # Immutable record of the context-size estimate for one provider request:
+    # total tokens, the estimated system/message/tool components, counts of messages
+    # and tools, provider-reported tokens (0 when the estimate is purely heuristic)
+    # and trailing tokens (the heuristic part added on top of the provider anchor;
+    # in the fallback it equals the whole total).
     """Best available context-size accounting for one provider request."""
 
     total_tokens: int
@@ -121,11 +138,17 @@ class ContextUsageEstimate:
 
     @property
     def uses_provider_usage(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: True when provider-reported tokens anchor the estimate (greater than
+        # zero). No side effects.
         """Return whether a provider-reported usage block anchors this estimate."""
         return self.provider_tokens > 0
 
 
 def estimate_text_tokens(text: str) -> int:
+    # [FUNCTION DOC]
+    # Estimate tokens for a string: 0 for empty text, otherwise the character count
+    # divided by 4 rounded up (at least 1). Pure.
     """Return a deterministic rough token estimate for text."""
     if not text:
         return 0
@@ -133,6 +156,11 @@ def estimate_text_tokens(text: str) -> int:
 
 
 def estimate_message_tokens(message: AgentMessage) -> int:
+    # [FUNCTION DOC]
+    # Estimate tokens for one agent message: a 4-token overhead plus its plain text;
+    # for assistant messages also each thinking block's text and each tool call's
+    # name plus the textual form of its argument mapping; for tool results also the
+    # tool name. Pure; returns an integer.
     """Return a rough token estimate for one provider-neutral message."""
     tokens = MESSAGE_OVERHEAD_TOKENS + estimate_text_tokens(message_text(message))
     if isinstance(message, AssistantMessage):
@@ -151,6 +179,9 @@ def estimate_message_tokens(message: AgentMessage) -> int:
 
 
 def estimate_tool_tokens(tool: AgentTool) -> int:
+    # [FUNCTION DOC]
+    # Estimate tokens for a tool definition: a 16-token overhead plus name,
+    # description and the textual form of its input schema. Pure.
     """Return a rough token estimate for one tool definition."""
     return (
         TOOL_OVERHEAD_TOKENS
@@ -166,11 +197,18 @@ def estimate_context_tokens(
     messages: tuple[AgentMessage, ...],
     tools: tuple[AgentTool, ...],
 ) -> int:
+    # [FUNCTION DOC]
+    # Convenience wrapper returning only the total from estimate_context_usage for
+    # the given system prompt, messages and tools. Pure.
     """Return a rough estimate of the active provider context size."""
     return estimate_context_usage(system=system, messages=messages, tools=tools).total_tokens
 
 
 def auto_compaction_threshold_for_context_window(context_window_tokens: int) -> int | None:
+    # [FUNCTION DOC]
+    # Return the token count at which automatic compaction should trigger: None for
+    # non-positive windows, otherwise the window minus the 16,384 reserve, at least
+    # 1. Pure.
     """Return Pi-style automatic compaction threshold for a model context window."""
     if context_window_tokens <= 0:
         return None
@@ -178,6 +216,10 @@ def auto_compaction_threshold_for_context_window(context_window_tokens: int) -> 
 
 
 def provider_context_tokens(message: AssistantMessage) -> int:
+    # [FUNCTION DOC]
+    # Return the context size reported by the provider for an assistant response:
+    # its usage total if non-zero, else input + output + cache read + cache write.
+    # Pure.
     """Return the provider-reported context represented by an assistant response."""
     usage = message.usage
     return usage.total_tokens or (usage.input + usage.output + usage.cache_read + usage.cache_write)
@@ -186,6 +228,13 @@ def provider_context_tokens(message: AssistantMessage) -> int:
 def _last_applicable_provider_usage(
     messages: tuple[AgentMessage, ...],
 ) -> tuple[int, int] | None:
+    # [FUNCTION DOC]
+    # HELPER: Scan messages in order and return the index and provider token count
+    # of the last assistant message whose usage is still valid for the current
+    # prefix, or None. A message qualifies when its stop reason is not aborted or
+    # error, its reported tokens are positive, and its timestamp is not older than
+    # any earlier message's timestamp (an older timestamp means history was
+    # rewritten, e.g. by compaction, before it). Pure.
     """Find the latest valid usage block that still describes the active prefix.
 
     A newer prefix message can be inserted by compaction or history rewriting. In that
@@ -213,6 +262,13 @@ def estimate_context_usage(
     messages: tuple[AgentMessage, ...],
     tools: tuple[AgentTool, ...],
 ) -> ContextUsageEstimate:
+    # [FUNCTION DOC]
+    # Produce a ContextUsageEstimate. If an applicable provider usage exists, the
+    # total is that provider count plus heuristic estimates of the messages after
+    # that assistant response and of tools whose names were added by tool results
+    # in those trailing messages; system tokens are reported as 0. Otherwise every
+    # component (system text, all messages, all tools) is estimated heuristically.
+    # Message and tool counts always cover all inputs. Pure.
     """Return provider-anchored context accounting with a deterministic fallback.
 
     Provider usage is authoritative for the prefix represented by the latest successful
@@ -263,6 +319,11 @@ def estimate_context_usage(
 
 
 def summarize_messages_for_compaction(messages: tuple[AgentMessage, ...]) -> str:
+    # [FUNCTION DOC]
+    # Build a deterministic, non-model fallback summary: "No prior messages." when
+    # empty, else a header line with the count followed by one numbered line per
+    # message with its role ("tool" for tool results) and a whitespace-collapsed
+    # text truncated to 500 characters. Pure.
     """Build a deterministic compact summary from provider-neutral messages."""
     if not messages:
         return "No prior messages."
@@ -278,6 +339,13 @@ def build_compaction_summary_prompt(
     *,
     custom_instructions: str | None = None,
 ) -> str:
+    # [FUNCTION DOC]
+    # Build the user prompt sent to the summarization model. Splits off a leading
+    # previous compaction summary message, serializes the remaining messages inside
+    # conversation tags, then includes the previous summary in previous-summary tags
+    # and uses the update prompt when one existed, else the initial summarization
+    # prompt. Non-blank custom instructions are appended as "Additional focus: ...".
+    # Output: the prompt string. Pure.
     """Build the model prompt Tau uses to summarize compacted history."""
     previous_summary, new_messages = _split_previous_compaction_summary(messages)
     conversation = serialize_messages_for_compaction(new_messages)
@@ -297,6 +365,12 @@ def build_compaction_summary_prompt(
 
 
 def serialize_messages_for_compaction(messages: tuple[AgentMessage, ...]) -> str:
+    # [FUNCTION DOC]
+    # Serialize messages into pseudo-XML blocks for the summarizer: one message tag
+    # per message with index and role attributes (tool results also get tool name
+    # and a lowercase error flag), the message text if non-empty, and for assistant
+    # tool calls a tool-calls section listing each name and argument mapping.
+    # Returns "(no new messages)" for an empty input. Pure.
     """Serialize provider-neutral messages for the compaction summarizer."""
     if not messages:
         return "(no new messages)"
@@ -320,6 +394,10 @@ def serialize_messages_for_compaction(messages: tuple[AgentMessage, ...]) -> str
 
 
 def _message_text(message: AgentMessage) -> str:
+    # [FUNCTION DOC]
+    # HELPER: One-line summary text of a message for the fallback summary: assistant
+    # text plus a bracketed list of tool call names, or for tool results the tool
+    # name, "ok"/"failed" and the text; then collapsed and truncated. Pure.
     text = message_text(message)
     if isinstance(message, AssistantMessage) and message.tool_calls:
         names = ", ".join(call.name for call in message.tool_calls)
@@ -331,6 +409,9 @@ def _message_text(message: AgentMessage) -> str:
 
 
 def _truncate_summary_text(text: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Collapse all whitespace runs to single spaces and, if longer than 500
+    # characters, cut to 497, strip trailing spaces and append "...". Pure.
     collapsed = " ".join(text.split())
     if len(collapsed) <= SUMMARY_MESSAGE_CHAR_LIMIT:
         return collapsed
@@ -340,6 +421,10 @@ def _truncate_summary_text(text: str) -> str:
 def _split_previous_compaction_summary(
     messages: tuple[AgentMessage, ...],
 ) -> tuple[str | None, tuple[AgentMessage, ...]]:
+    # [FUNCTION DOC]
+    # HELPER: If the first message is a user message whose text starts with the
+    # compaction summary prefix, return the summary text (prefix removed) and the
+    # remaining messages; otherwise return None and the messages unchanged. Pure.
     if not messages:
         return None, messages
 

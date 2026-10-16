@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Lifetime activity and usage totals for the active session branch (shown by stats/footer UI).
+# Walks a branch's session entries (in order, including original messages later replaced by
+# compaction) and accumulates turn counts, tool calls, token usage (prompt = input + cache read
+# + cache write), cache hit rates, output speed, time-to-first-output and an estimated USD cost
+# using a caller-provided pricing resolver (provider, model, prompt tokens) -> per-million-token
+# rates mapping or None. Pure computation; no I/O.
 """Lifetime activity and usage totals for an active session branch."""
 
 from __future__ import annotations
@@ -15,6 +22,12 @@ _TOKENS_PER_MILLION = 1_000_000
 
 @dataclass(frozen=True, slots=True)
 class SessionStats:
+    # [CLASS DOC]
+    # Immutable record of cumulative branch statistics: turn and tool-call counts; cumulative prompt
+    # (input) tokens, output tokens, cache-read and cache-write tokens; the latest response's prompt
+    # and cache-read tokens; timed output tokens and summed response durations (ms) for throughput;
+    # summed time-to-first-output (ms) and its sample count; and an estimated cost (None when unknown).
+    # All fields default to zero/None. Exposes derived read-only rate properties.
     """Cumulative activity and billed usage for one active branch."""
 
     turn_count: int = 0
@@ -33,6 +46,10 @@ class SessionStats:
 
     @property
     def cache_hit_rate(self) -> float | None:
+        # [FUNCTION DOC]
+        # Property: cumulative cache hit rate = cached input tokens / total prompt tokens.
+        # Returns None when no prompt tokens were recorded or when no cache reads and no cache writes
+        # occurred at all (so cache-less backends do not show 0%).
         """Share of prompt tokens served from the provider's cache.
 
         None when no provider in the branch reported any cache activity, so that
@@ -46,6 +63,10 @@ class SessionStats:
 
     @property
     def latest_cache_hit_rate(self) -> float | None:
+        # [FUNCTION DOC]
+        # Property: latest response's cache hit rate = latest cached tokens / latest prompt tokens.
+        # Returns None when the latest prompt is zero, or when the whole branch had no cache reads or
+        # writes (the guard uses cumulative counters, not latest ones, intentionally mirroring the above).
         """Share of the latest request's prompt served from cache."""
         if self.latest_prompt_tokens <= 0:
             return None
@@ -55,6 +76,9 @@ class SessionStats:
 
     @property
     def output_tokens_per_second(self) -> float | None:
+        # [FUNCTION DOC]
+        # Property: effective output tokens per second = timed output tokens * 1000 / response duration ms.
+        # Returns None when either quantity is zero or negative.
         """Token-weighted effective output speed across timed responses."""
         if self.timed_output_tokens <= 0 or self.response_duration_ms <= 0:
             return None
@@ -62,6 +86,8 @@ class SessionStats:
 
     @property
     def average_time_to_first_output_ms(self) -> float | None:
+        # [FUNCTION DOC]
+        # Property: mean time to first output in ms = summed TTFT / sample count; None with no samples.
         """Mean time from request start to the first output event."""
         if self.timed_first_output_count <= 0:
             return None
@@ -73,6 +99,21 @@ def calculate_session_stats(
     *,
     pricing: PricingResolver,
 ) -> SessionStats:
+    # [FUNCTION DOC]
+    # Aggregate statistics over a branch's entries.
+    # Inputs: ordered sequence of session entries; keyword-only pricing resolver.
+    # Behavior: custom-message entries and user/custom message entries each count as a turn.
+    # Model-change entries update the current model (and provider when given). Assistant message
+    # entries update current provider/model, add their tool-call count and contribute usage plus
+    # timing. Compaction and branch-summary entries with usage contribute usage priced against their
+    # own provider/model or the current ones (no timing). Other entries are ignored. For each usage:
+    # prompt tokens = input + cache read + cache write; latest prompt/cached values are overwritten;
+    # cumulative totals are added. Timing: output tokens and duration are added only when output > 0
+    # and duration > 0; TTFT is added whenever present. Usage with zero prompt and zero output is not
+    # billable. For billable usage, the resolver is called; if it returns rates the response cost is
+    # added; if None, the provider-reported cost is added when positive, otherwise pricing is marked
+    # incomplete. Output: a stats record whose estimated cost is None unless there was billable usage
+    # and every billable response could be priced. Exceptions only propagate from the resolver.
     """Aggregate original branch messages, including messages replaced by compaction."""
     turn_count = 0
     tool_call_count = 0
@@ -189,6 +230,13 @@ def _response_cost(
     cache_write_1h_tokens: int,
     rates: Mapping[str, float],
 ) -> float:
+    # [FUNCTION DOC]
+    # HELPER: Compute one response's USD cost from per-million-token rates.
+    # Inputs (keyword-only): input, output, cache-read, total cache-write and 1-hour cache-write token
+    # counts, and a rates mapping with optional keys input, output, cacheRead, cacheWrite,
+    # cacheWrite1h (missing keys price at 0). The 1-hour portion is capped at total cache writes and
+    # priced at cacheWrite1h (falling back to cacheWrite); the remainder at cacheWrite.
+    # Output: total cost divided by one million. No side effects.
     """Calculate one response's estimated USD cost from per-million-token rates.
 
     ``cache_write_tokens`` is the provider-reported total, which already

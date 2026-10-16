@@ -1,3 +1,9 @@
+# [MODULE DOC]
+# Phase 6 hardening regression tests for extension runtime lifecycle: dynamic provider
+# model refresh coalescing and generation retirement, local-backend operation
+# cancellation bounds and replacement staleness, and llama.cpp integration state
+# persistence (stale model references, exact model names, secrets kept out of state
+# files and reprs). All async tests run on the asyncio backend via anyio.
 """Phase 6 lifecycle, race, ownership, and persistence regressions."""
 
 from __future__ import annotations
@@ -48,10 +54,16 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 def anyio_backend() -> str:
+    # [FUNCTION DOC]
+    # HELPER: Fixture selecting the asyncio backend for anyio-marked tests.
     return "asyncio"
 
 
 def _provider(provider_id: str = "second", *, refresh_models=None) -> DynamicProvider:
+    # [FUNCTION DOC]
+    # HELPER: Build a DynamicProvider with the given id (default "second") exposing one
+    # model "model" as default, an OpenAI-compatible transport at a fake base URL with no
+    # auth, and an optional refresh-models callback.
     return DynamicProvider(
         id=provider_id,
         display_name=provider_id,
@@ -66,6 +78,10 @@ def _provider(provider_id: str = "second", *, refresh_models=None) -> DynamicPro
 
 
 def _context(action: str, backend_id: str = "second") -> LocalOperationContext:
+    # [FUNCTION DOC]
+    # HELPER: Build a LocalOperationContext for the given action and backend id with a fresh
+    # cancellation token, fixed generation id "generation", source "test:second", an
+    # always-current predicate and a no-op progress callback.
     return LocalOperationContext(
         signal=SimpleCancellationToken(),
         action=action,  # type: ignore[arg-type]
@@ -78,11 +94,18 @@ def _context(action: str, backend_id: str = "second") -> LocalOperationContext:
 
 
 async def test_refresh_stress_keeps_latest_snapshot_and_closes_generation() -> None:
+    # [FUNCTION DOC]
+    # Twenty concurrent refreshes of one provider coalesce into a single callback call; all
+    # report "published", the effective provider exposes "model-1", and closing the runtime
+    # removes the effective provider.
     calls = 0
     entered = asyncio.Event()
     release = asyncio.Event()
 
     async def refresh(context) -> ProviderModelSnapshot:
+        # [FUNCTION DOC]
+        # HELPER: Refresh callback that counts calls, signals entry, waits for release, and
+        # returns a snapshot with a model named after the call count.
         nonlocal calls
         calls += 1
         entered.set()
@@ -106,10 +129,17 @@ async def test_refresh_stress_keeps_latest_snapshot_and_closes_generation() -> N
 
 
 async def test_refresh_from_retired_generation_cannot_publish() -> None:
+    # [FUNCTION DOC]
+    # Re-registers the provider with a blocking refresh callback, starts a refresh, resets
+    # the runtime for reload while it is blocked, then releases it: the result is
+    # "cancelled" and nothing is published.
     entered = asyncio.Event()
     release = asyncio.Event()
 
     async def refresh(context) -> ProviderModelSnapshot:
+        # [FUNCTION DOC]
+        # HELPER: Refresh callback that signals entry, blocks until released, returns a "stale"
+        # snapshot.
         entered.set()
         await release.wait()
         return ProviderModelSnapshot((ProviderModel("stale"),), "stale")
@@ -142,6 +172,11 @@ async def test_refresh_from_retired_generation_cannot_publish() -> None:
 
 
 async def test_local_retire_bounds_cancellation_resistant_backend() -> None:
+    # [FUNCTION DOC]
+    # A local backend operation that swallows cancellation keeps running; closing the
+    # registry must still finish within roughly the cancellation timeout (under 1 second,
+    # not before half the timeout), leaving the operation pending; once released, its result
+    # is marked stale.
     providers = DynamicProviderRegistry(generation_id="generation")
     providers.register("test:second", _provider())
     registry = LocalBackendRegistry(providers, generation_id="generation")
@@ -149,6 +184,9 @@ async def test_local_retire_bounds_cancellation_resistant_backend() -> None:
     release = asyncio.Event()
 
     async def operation(context: LocalOperationContext) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # HELPER: Backend status/refresh operation that ignores CancelledError and loops until
+        # the release event is set, then returns a ready status.
         entered.set()
         while not release.is_set():
             try:
@@ -188,6 +226,9 @@ async def test_local_retire_bounds_cancellation_resistant_backend() -> None:
 
 
 async def test_local_replacement_discards_late_result_and_new_operation_wins() -> None:
+    # [FUNCTION DOC]
+    # Replacing a backend registration while its old refresh is running makes the old
+    # result stale; a subsequent refresh uses the new backend and reports model "new".
     providers = DynamicProviderRegistry(generation_id="generation")
     providers.register("test:second", _provider())
     registry = LocalBackendRegistry(providers, generation_id="generation")
@@ -195,14 +236,21 @@ async def test_local_replacement_discards_late_result_and_new_operation_wins() -
     old_release = asyncio.Event()
 
     async def old_refresh(context: LocalOperationContext) -> LocalBackendStatus:
+        # [FUNCTION DOC]
+        # HELPER: Blocking refresh returning a ready status with model "old" after release.
         old_started.set()
         await old_release.wait()
         return LocalBackendStatus(state="ready", models=(LocalModel("old"),))
 
     async def new_refresh(context: LocalOperationContext) -> LocalBackendStatus:
+        # [FUNCTION DOC]
+        # HELPER: Immediate refresh returning a ready status with model "new".
         return LocalBackendStatus(state="ready", models=(LocalModel("new"),))
 
     def backend(refresh):
+        # [FUNCTION DOC]
+        # HELPER: Build a LocalBackend "second" whose status and refresh both use the given
+        # callback and whose configure returns an empty result.
         return LocalBackend(
             id="second",
             provider_id="second",
@@ -227,6 +275,11 @@ async def test_local_replacement_discards_late_result_and_new_operation_wins() -
 
 
 async def test_missing_model_reference_survives_refresh_and_restart(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Saves llama.cpp state whose selected model is absent from the server's model list.
+    # With a mock HTTP server (health ok, models list without it), the provider has no
+    # default model, refresh reports stale status while preserving the stored selection, and
+    # a restarted service (fresh state store) still reports stale with no default model.
     endpoint = "http://local.test:8080"
     paths = TauPaths(home=tmp_path / "tau", agents_home=tmp_path / "agents")
     state_store = LlamaCppStateStore(paths=paths)
@@ -275,17 +328,27 @@ async def test_missing_model_reference_survives_refresh_and_restart(tmp_path: Pa
 
 @pytest.mark.parametrize("selected_model", ["", " returning-model"])
 def test_state_rejects_non_exact_stale_model_references(selected_model: str) -> None:
+    # [FUNCTION DOC]
+    # Integration state construction raises LlamaCppStateError ("non-empty exact") for an
+    # empty or whitespace-padded selected model.
     with pytest.raises(LlamaCppStateError, match="non-empty exact"):
         LlamaCppIntegrationState(endpoint="http://local.test", selected_model=selected_model)
 
 
 async def test_secret_state_and_diagnostics_never_contain_key(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Configuring an endpoint with an API key while the server is offline stores the key
+    # only in the credential store under the llama.cpp prefix; the state file, the result
+    # repr and the provider repr never contain it, and the state file references it by
+    # credential ref.
     secret = "phase-six-secret"
     paths = TauPaths(home=tmp_path / "tau", agents_home=tmp_path / "agents")
     state_store = LlamaCppStateStore(paths=paths)
     credentials = FileCredentialStore(paths.home / "credentials.json")
 
     async def dispatch(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock transport handler that always raises a connection error ("offline").
         raise httpx.ConnectError("offline", request=request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(dispatch))

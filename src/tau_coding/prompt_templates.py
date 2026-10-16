@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Markdown prompt templates: discovery from Tau and .agents prompt directories
+# (later directories override earlier ones by name), front-matter parsing for
+# descriptions, Pi-compatible argument parsing and substitution ($1, $@,
+# $ARGUMENTS, defaults like ${1:-x}, slices like ${@:2:3}), legacy double-brace
+# variable rendering, and expansion of "/name args" input into prompt text.
+# Template names that collide with built-in commands (prompts, skills, tools,
+# reload) are reserved and ignored.
 """Markdown prompt template loading and rendering."""
 
 from __future__ import annotations
@@ -24,12 +32,18 @@ _RESERVED_TEMPLATE_NAMES = frozenset({"prompts", "skills", "tools", "reload"})
 
 
 def is_prompt_template_candidate(path: Path) -> bool:
+    # [FUNCTION DOC]
+    # Return true when the path has a .md suffix (case-insensitive) and its stem,
+    # case-folded, is not a reserved built-in command name. Pure.
     """Return whether a directory entry is eligible for prompt loading."""
     return path.suffix.lower() == ".md" and path.stem.casefold() not in _RESERVED_TEMPLATE_NAMES
 
 
 @dataclass(frozen=True, slots=True)
 class PromptTemplate:
+    # [CLASS DOC]
+    # Frozen record of a template: name (file stem), source path, body content
+    # (front matter removed) and optional description.
     """A markdown prompt template resource."""
 
     name: str
@@ -39,6 +53,13 @@ class PromptTemplate:
 
 
 def load_prompt_templates(paths: TauResourcePaths | None = None) -> list[PromptTemplate]:
+    # [FUNCTION DOC]
+    # Strict loader: for each prompt directory in precedence order, load templates
+    # (raising ResourceError with the first diagnostic of any directory), letting
+    # later directories override by name. Returns templates sorted by name.
+    # Side effects: filesystem reads.
+    # KNOWN ISSUE: any diagnostic, including the non-fatal reserved-name or duplicate
+    # warnings, aborts the whole load with ResourceError.
     """Load markdown prompt templates from Tau and `.agents` resource directories."""
     resource_paths = paths or TauResourcePaths()
     templates_by_name: dict[str, PromptTemplate] = {}
@@ -51,6 +72,11 @@ def load_prompt_templates(paths: TauResourcePaths | None = None) -> list[PromptT
 def load_prompt_templates_with_diagnostics(
     paths: TauResourcePaths | None = None,
 ) -> tuple[list[PromptTemplate], list[ResourceDiagnostic]]:
+    # [FUNCTION DOC]
+    # Lenient loader: same precedence/override behavior but collects per-directory
+    # diagnostics and adds an "overrides lower-precedence resource" diagnostic when
+    # a later template replaces an earlier one. Returns the name-sorted templates and
+    # the diagnostics list. Never raises for unreadable files.
     """Load prompt templates and return non-fatal discovery diagnostics."""
     resource_paths = paths or TauResourcePaths()
     templates_by_name: dict[str, PromptTemplate] = {}
@@ -76,6 +102,10 @@ def load_prompt_templates_with_diagnostics(
 
 
 def parse_prompt_template_arguments(text: str) -> list[str]:
+    # [FUNCTION DOC]
+    # Split invocation text into arguments on whitespace, honoring single or double
+    # quotes (quote characters are removed, no escapes, an unterminated quote runs
+    # to the end). Empty quoted strings are dropped. Returns the list of arguments.
     """Parse prompt invocation arguments using Pi's simple quote rules."""
     arguments: list[str] = []
     current: list[str] = []
@@ -102,10 +132,18 @@ def parse_prompt_template_arguments(text: str) -> list[str]:
 
 
 def substitute_prompt_template_args(content: str, arguments: Sequence[str]) -> str:
+    # [FUNCTION DOC]
+    # Replace argument placeholders in content: ${N:-default} / ${@:-default} /
+    # ${ARGUMENTS:-default} use the value or the default when empty; ${@:start} and
+    # ${@:start:length} join a 1-based slice; $N gives the Nth argument (empty if
+    # absent); $@ and $ARGUMENTS give all arguments joined by spaces. Returns text.
     """Substitute Pi-compatible positional and aggregate prompt arguments."""
     all_arguments = " ".join(arguments)
 
     def replace(match: re.Match[str]) -> str:
+        # [FUNCTION DOC]
+        # HELPER: regex callback computing the replacement for one placeholder match
+        # according to which alternative group matched (default, slice, or simple).
         default_target = match.group(1)
         if default_target is not None:
             default_value = match.group(2) or ""
@@ -139,6 +177,10 @@ def render_prompt_template(
     *,
     missing: str | None = None,
 ) -> str:
+    # [FUNCTION DOC]
+    # Replace double-brace identifiers in the template content with values from the
+    # mapping. Missing variables raise ResourceError unless a missing fallback string
+    # is supplied, which is substituted instead. Returns the rendered text.
     """Render a prompt template using `{{ variable }}` placeholders.
 
     By default, missing variables raise `ResourceError`. Callers that treat
@@ -147,6 +189,8 @@ def render_prompt_template(
     """
 
     def replace(match: re.Match[str]) -> str:
+        # [FUNCTION DOC]
+        # HELPER: regex callback looking up one variable, raising or using the fallback.
         name = match.group(1)
         value = variables.get(name)
         if value is None:
@@ -162,6 +206,16 @@ def expand_prompt_template_command(
     text: str,
     templates: Sequence[PromptTemplate],
 ) -> str | None:
+    # [FUNCTION DOC]
+    # If the stripped text is a slash command (not "//" escaped and not /skill:),
+    # parse the name and argument text, find a template by case-insensitive name,
+    # and return its content with argument placeholders substituted, then legacy
+    # arguments/args variables rendered (other unknown variables become empty).
+    # If arguments were given but the template references none, the raw argument
+    # text is appended after a blank line. Returns nothing when not a matching
+    # template command. Pure.
+    # KNOWN ISSUE: substitution happens before variable rendering, so argument values
+    # containing double-brace placeholders are themselves rendered (usually erased).
     """Expand `/name [arguments]` text with a loaded prompt template.
 
     Template names are matched by markdown filename stem. Invocation arguments use
@@ -196,6 +250,9 @@ def expand_prompt_template_command(
 
 
 def _template_references_arguments(content: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true if content contains any Pi argument placeholder or a legacy
+    # arguments/args double-brace variable.
     return bool(_PROMPT_ARGUMENT_RE.search(content)) or any(
         match.group(1) in _ARGUMENT_TEMPLATE_VARIABLES
         for match in _TEMPLATE_VARIABLE_RE.finditer(content)
@@ -206,6 +263,9 @@ def _find_prompt_template(
     name: str,
     templates: Sequence[PromptTemplate],
 ) -> PromptTemplate | None:
+    # [FUNCTION DOC]
+    # HELPER: return the first template whose lowercased name equals the given name
+    # stripped, without a leading slash and lowercased; nothing if none matches.
     normalized_name = name.strip().removeprefix("/").lower()
     for template in templates:
         if template.name.lower() == normalized_name:
@@ -214,6 +274,9 @@ def _find_prompt_template(
 
 
 def _parse_prompt_template_command(text: str) -> tuple[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: split "/name rest" into the lowercased name and the stripped rest;
+    # returns two empty strings when the text does not match.
     match = re.match(r"^/([^\s]+)(?:\s+([\s\S]*))?$", text)
     if match is None:
         return "", ""
@@ -221,6 +284,9 @@ def _parse_prompt_template_command(text: str) -> tuple[str, str]:
 
 
 def _load_prompt_templates_from_dir(prompts_dir: Path) -> list[PromptTemplate]:
+    # [FUNCTION DOC]
+    # HELPER: strict per-directory load; raises ResourceError with the first
+    # diagnostic's message if any diagnostics exist, else returns the templates.
     templates, diagnostics = _load_prompt_templates_from_dir_with_diagnostics(prompts_dir)
     if diagnostics:
         first = diagnostics[0]
@@ -231,6 +297,12 @@ def _load_prompt_templates_from_dir(prompts_dir: Path) -> list[PromptTemplate]:
 def _load_prompt_templates_from_dir_with_diagnostics(
     prompts_dir: Path,
 ) -> tuple[list[PromptTemplate], list[ResourceDiagnostic]]:
+    # [FUNCTION DOC]
+    # HELPER: if the directory is missing or not a directory, return empty lists.
+    # Otherwise iterate top-level .md files sorted by filename: reserved names yield
+    # a diagnostic and are skipped; duplicate stems are skipped with a diagnostic;
+    # readable files are loaded; OSError or decode errors produce error-severity
+    # diagnostics. Returns the templates and diagnostics.
     if not prompts_dir.exists() or not prompts_dir.is_dir():
         return [], []
 
@@ -279,6 +351,10 @@ def _load_prompt_templates_from_dir_with_diagnostics(
 
 
 def _load_prompt_template(name: str, path: Path) -> PromptTemplate:
+    # [FUNCTION DOC]
+    # HELPER: read the file as UTF-8, parse front matter, use the description field
+    # or a description derived from the body, and return the template. Raises
+    # OSError or UnicodeDecodeError on read failure.
     raw = path.read_text(encoding="utf-8")
     metadata, content = parse_markdown_resource(raw)
     description = metadata.get("description") or derive_description(content)

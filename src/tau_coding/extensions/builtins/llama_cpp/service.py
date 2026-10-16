@@ -1,3 +1,17 @@
+# [MODULE DOC]
+# llama.cpp protocol adapter behind the built-in llama.cpp extension. The
+# LlamaCppService owns endpoint resolution (saved state, LLAMA_BASE_URL env,
+# or the localhost default), optional API-key auth (stored credential by
+# opaque reference, or LLAMA_API_KEY), discovery against /health and
+# /v1/models (with a /props fallback for vision input), optional llama.cpp
+# router management (list/load/unload/server-side download with explicit
+# confirmations, polling reconciliation and cancellation handling), Hugging
+# Face GGUF search, doctor probes (streaming and tool calling), backend
+# status reporting, and construction/publication of the dynamic provider and
+# local backend registered with the extension API. Persists only safe
+# metadata via the state store. Side effects: HTTP to the local server and
+# huggingface.co, credential store and state file writes, provider/backend
+# re-registration callbacks.
 """llama.cpp protocol adapter used by the built-in extension."""
 
 from __future__ import annotations
@@ -98,15 +112,24 @@ LLAMA_CPP_ROUTER_DOWNLOAD_TIMEOUT_SECONDS = 4 * 60 * 60.0
 
 
 class LlamaCppError(RuntimeError):
+    # [CLASS DOC]
+    # Exception (RuntimeError) for safe, user-actionable llama.cpp failures;
+    # messages contain no secrets and are shown as diagnostics.
     """Raised for a safe, user-actionable llama.cpp integration failure."""
 
 
 class LlamaCppEndpointError(ValueError):
+    # [CLASS DOC]
+    # Exception (ValueError) raised when an endpoint is not a safe HTTP(S) base
+    # URL (empty, wrong scheme, embedded credentials, query/fragment, no host).
     """Raised when an endpoint is not a safe HTTP base URL."""
 
 
 @dataclass(frozen=True, slots=True)
 class LlamaCppEndpoint:
+    # [CLASS DOC]
+    # Frozen dataclass: normalized server root URL and the OpenAI-compatible
+    # inference base (server root + "/v1").
     """The server root and OpenAI-compatible inference base for one endpoint."""
 
     server_root: str
@@ -115,6 +138,10 @@ class LlamaCppEndpoint:
 
 @dataclass(frozen=True, slots=True)
 class LlamaCppDiscovery:
+    # [CLASS DOC]
+    # Frozen dataclass result of a discovery: the endpoint, selectable provider
+    # models, health state string, the detected router capability (default
+    # standard), and raw router models when a router is present.
     """Defensive result from standard discovery and optional router state."""
 
     endpoint: LlamaCppEndpoint
@@ -126,12 +153,21 @@ class LlamaCppDiscovery:
 
 @dataclass(frozen=True, slots=True)
 class _LlamaCppAuth:
+    # [CLASS DOC]
+    # HELPER: frozen dataclass provider-auth strategy holding only an optional
+    # credential reference and the env var name, so secrets are resolved at
+    # request time and never stored in the provider object.
     """Generation-referenced optional auth; secrets never enter the provider."""
 
     credential_ref: str | None = None
     env_var: str = LLAMA_CPP_API_KEY_ENV
 
     async def resolve(self, context: ProviderAuthContext) -> ResolvedProviderAuth:
+        # [FUNCTION DOC]
+        # HELPER: resolve auth for a request: the stored credential named by the
+        # reference if present and non-empty, else the env var value, else empty
+        # auth (no key). Returns ResolvedProviderAuth with a source label; sends the
+        # Authorization header when a key is found. Reads the credential store.
         if self.credential_ref:
             stored = context.credentials.get(self.credential_ref)
             if stored:
@@ -151,12 +187,23 @@ class _LlamaCppAuth:
 
 
 class _HttpFailure(LlamaCppError):
+    # [CLASS DOC]
+    # HELPER: LlamaCppError subclass that also records the HTTP status code.
     def __init__(self, status_code: int, message: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: store the message (via the base exception) and the status code.
         super().__init__(message)
         self.status_code = status_code
 
 
 class LlamaCppService:
+    # [CLASS DOC]
+    # Stateful service owning the llama.cpp integration for one process: state
+    # store, credential store, environment snapshot, optional shared HTTP
+    # client, probe timeout, registration callbacks, and cached runtime state
+    # (last discovery, router capability/models, known download sizes, last
+    # error, state/endpoint errors, orphaned credentials, a stale selected
+    # model, active saved state and effective endpoint).
     """Own endpoint state, discovery, diagnostics, and provider construction."""
 
     def __init__(
@@ -171,6 +218,15 @@ class LlamaCppService:
         update_provider: Callable[[DynamicProvider], bool] | None = None,
         register_backend: Callable[[LocalBackend], None] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Wire dependencies (default state store, file credential store, and a copy
+        # of os.environ when no environment is given), initialize caches, load the
+        # active saved state (a state error is recorded instead of raised), flag the
+        # selected model as stale if it is missing from the cached models, resolve
+        # the effective endpoint (falling back to the localhost default; invalid
+        # endpoints record an endpoint error), and delete orphaned llama.cpp
+        # credentials. Side effects: reads state file and credential store, may
+        # delete credentials.
         self.state_store = state_store or LlamaCppStateStore()
         self.credential_store: CredentialStore = (
             credential_store
@@ -212,29 +268,50 @@ class LlamaCppService:
 
     @property
     def configured(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: True when saved state exists or LLAMA_BASE_URL is set.
         return self._active_state is not None or bool(self.environment.get(LLAMA_CPP_ENDPOINT_ENV))
 
     @property
     def endpoint(self) -> LlamaCppEndpoint:
+        # [FUNCTION DOC]
+        # Property: the current effective normalized endpoint.
         return self._endpoint
 
     @property
     def endpoint_error(self) -> str | None:
+        # [FUNCTION DOC]
+        # Property: last endpoint validation error message, or None.
         return self._endpoint_error
 
     @property
     def last_discovery(self) -> LlamaCppDiscovery | None:
+        # [FUNCTION DOC]
+        # Property: the most recent successful discovery, or None.
         return self._last_discovery
 
     @property
     def state_error(self) -> str | None:
+        # [FUNCTION DOC]
+        # Property: last state file error message, or None.
         return self._state_error
 
     @property
     def orphaned_credentials(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Property: names of llama.cpp credentials that could not be deleted during
+        # startup cleanup.
         return self._orphaned_credentials
 
     def provider(self) -> DynamicProvider:
+        # [FUNCTION DOC]
+        # Build the DynamicProvider. Models come from saved state when it matches
+        # the current endpoint, else from the last in-process discovery for this
+        # endpoint, else none. Default model is the selected model (none when the
+        # selection is stale). Transport is OpenAI-compatible at the inference base
+        # with reference-only auth, the standard (longer) inference timeout, 2
+        # retries, the shared client, and this service's refresh callback; scoped
+        # references are stable. No I/O.
         active = self._active_state
         if active is not None and active.endpoint == self.endpoint.server_root:
             models = tuple(_provider_model(model) for model in active.models)
@@ -271,6 +348,11 @@ class LlamaCppService:
         self,
         context: ProviderRefreshContext,
     ) -> ProviderModelSnapshot:
+        # [FUNCTION DOC]
+        # Provider-registry refresh callback. Without network permission returns the
+        # cached models (default only if exactly one). Otherwise discovers, records
+        # the discovery, clears the last error, saves the snapshot, and returns the
+        # discovered models with the selected default. Discovery errors propagate.
         """Discovery callback used by the generic provider registry."""
         if not context.allow_network:
             return ProviderModelSnapshot(
@@ -292,6 +374,17 @@ class LlamaCppService:
         *,
         signal: CancellationToken | None = None,
     ) -> LlamaCppDiscovery:
+        # [FUNCTION DOC]
+        # Probe the current endpoint only. Builds auth headers, uses the shared
+        # client or a temporary one (probe timeout, closed afterwards). GETs /health
+        # and fails on loading or unavailable states; detects a router (failures
+        # downgrade to incompatible with a diagnostic). With a compatible router,
+        # lists router models and exposes loaded/sleeping ones as provider models.
+        # Otherwise GETs /v1/models, parses strictly, and for a single model without
+        # reported modalities consults /props. Output: LlamaCppDiscovery.
+        # Raises LlamaCppError (router errors, timeouts and HTTP errors are
+        # converted to friendly messages pointing to the router guide) and records
+        # it as the last error; cancellation propagates. Mutates router caches.
         """Probe only the already-selected endpoint and parse standard models."""
         headers = _auth_headers(auth)
         owned_client = self.client is None
@@ -365,6 +458,19 @@ class LlamaCppService:
         values: Mapping[str, str],
         context: LocalOperationContext,
     ) -> LocalConfigureResult:
+        # [FUNCTION DOC]
+        # Commit endpoint and optional API key as one safe transaction. Validates
+        # and normalizes the endpoint (error diagnostic on failure); reads prior
+        # state for that endpoint (diagnostic on failure); stores a new key under a
+        # fresh random llama.cpp reference; saves state (keeping prior selection,
+        # models and check time for that endpoint, replacing the previously active
+        # different endpoint). On save failure deletes the new credential (flagging
+        # an orphan if that fails) and reports the old config remains. On success
+        # updates caches, deletes the old credential if now unreferenced, publishes
+        # the provider, attempts discovery, and returns a committed result with the
+        # live or cached (stale) status and diagnostics. Never raises for expected
+        # failures. Side effects: credential store, state file, network, provider
+        # registration.
         """Commit endpoint and optional credential as one safe-state transaction."""
         del context
         try:
@@ -480,6 +586,10 @@ class LlamaCppService:
         )
 
     async def status(self, context: LocalOperationContext) -> LocalBackendStatus:
+        # [FUNCTION DOC]
+        # Return backend status without network: from the last discovery if any;
+        # unconfigured info status (or cached status when there are state/endpoint
+        # errors) when not configured; otherwise cached status.
         del context
         if self._last_discovery is not None:
             return self._status_from_discovery(self._last_discovery)
@@ -500,6 +610,14 @@ class LlamaCppService:
         return self._cached_status()
 
     async def refresh(self, context: LocalOperationContext) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # Explicit /local refresh: resolve auth, discover the single effective
+        # endpoint, save and publish, and return the live status. Cancellation
+        # returns a cancelled result; LlamaCppError returns a stale cached status
+        # with an error diagnostic. Does not scan ports or persist env/default
+        # endpoints.
+        # KNOWN ISSUE: ProviderAuthError from auth resolution is not caught here
+        # and would propagate.
         # /local is an explicit opt-in to probe exactly one effective endpoint:
         # saved state, LLAMA_BASE_URL, or the offered localhost default. This
         # is not a process/port/network scan and does not persist the default.
@@ -522,6 +640,12 @@ class LlamaCppService:
             )
 
     async def doctor(self, context: LocalOperationContext) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # Diagnostic action: discover (errors become stale status plus diagnostic),
+        # pick the selected model (or the sole model when the saved selection is
+        # stale), warn if none, then probe streaming and, if that works, tool
+        # calling, returning info/error/warning diagnostics plus live status.
+        # Network I/O; does not change the selection.
         try:
             auth = await _resolve_auth_for_backend(self)
             discovery = await self.discover(auth, signal=context.signal)
@@ -575,6 +699,17 @@ class LlamaCppService:
     async def load_model(
         self, model_id: str, context: LocalOperationContext
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # Load one router model after explicit confirmation and reconcile. Prepares
+        # a router operation (may short-circuit). Lists models; unknown model ->
+        # failure; already loaded/sleeping -> publish and report. Without a
+        # confirmation returns a confirmation request (keep/unload/cancel if other
+        # models are active, else load/cancel). Cancel -> cancelled result; invalid
+        # choice -> failure. With "unload", unloads and waits for each other active
+        # model. Then requests load and polls until loaded/sleeping/failed; success
+        # publishes models, failure reports. Cancellation after the load request
+        # attempts to unload the target, else reconciles; HTTP/router/timeout errors
+        # reconcile and report. Closes a temporary client.
         """Explicitly load one router model and reconcile before claiming success."""
         prepared = await self._prepare_router_operation(context)
         if isinstance(prepared, LocalOperationResult):
@@ -664,6 +799,12 @@ class LlamaCppService:
     async def unload_model(
         self, model_id: str, context: LocalOperationContext
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # Unload a router model after an explicit model-specific confirmation:
+        # returns a confirmation request first, honors cancel, rejects other
+        # choices, then requests unload, polls until unloaded/failed, and publishes
+        # the result. Cancellation and errors are reconciled. Closes a temporary
+        # client.
         """Unload only after a model-specific explicit confirmation."""
         prepared = await self._prepare_router_operation(context)
         if isinstance(prepared, LocalOperationResult):
@@ -710,6 +851,16 @@ class LlamaCppService:
     async def download_model(
         self, model_id: str, context: LocalOperationContext
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # Request a server-side download of one exact repository[:quant] reference.
+        # Validates the reference (diagnostic on failure), prepares the router
+        # operation, asks for confirmation (including the known size from a prior
+        # search, if any), honors cancel, then starts a background progress watcher
+        # reporting through the context, requests the download, and polls (at least
+        # twice, up to 4 hours) until a terminal state. Failure states are reported;
+        # success publishes models. Cancellation after the request unloads the
+        # model and reconciles. Always stops the progress watcher and closes a
+        # temporary client.
         """Request one exact server-side repository download after confirmation."""
         try:
             model_id = validate_repository_reference(model_id)
@@ -798,6 +949,12 @@ class LlamaCppService:
     async def search_models(
         self, query: str, context: LocalOperationContext
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # Search Hugging Face for GGUF repositories using a search-only token from
+        # the environment/token files (never forwarded to the server). Records known
+        # variant sizes for later download confirmations, and returns search results
+        # with one option per quantization (Q4_K_M recommended) and a gated-access
+        # diagnostic where relevant. HTTP/search errors become an error diagnostic.
         """Search Hugging Face with a search-only token and return safe GGUF details."""
         del context
         owned = self.client is None
@@ -852,6 +1009,11 @@ class LlamaCppService:
     async def _prepare_router_operation(
         self, context: LocalOperationContext
     ) -> tuple[httpx.AsyncClient, bool, Mapping[str, str]] | LocalOperationResult:
+        # [FUNCTION DOC]
+        # HELPER: precondition check for router actions: cancelled context ->
+        # cancelled result; no compatible router -> failure result. Otherwise
+        # resolves auth and returns a tuple of client (shared or new), whether it is
+        # owned, and auth headers.
         if context.cancelled:
             return LocalOperationResult(cancelled=True)
         if not self._router_capability.compatible:
@@ -874,6 +1036,12 @@ class LlamaCppService:
         minimum_polls: int = 1,
         timeout_seconds: float = LLAMA_CPP_ROUTER_RECONCILE_TIMEOUT_SECONDS,
     ) -> tuple[RouterModel, ...]:
+        # [FUNCTION DOC]
+        # HELPER: poll router models every 0.1 s, publishing each snapshot and
+        # reporting progress for the target model, until the model reaches one of
+        # the terminal states after at least the minimum number of polls. Raises
+        # CancelledError when the context is cancelled and TimeoutError after the
+        # deadline (default 30 s). Returns the final models.
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         polls = 0
         while True:
@@ -897,6 +1065,10 @@ class LlamaCppService:
         *,
         message: str | None = None,
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # HELPER: cache router models, build and record a discovery with the
+        # loaded/sleeping models, save it, publish the provider, and return a
+        # result with router status; committed when a message is given.
         self._router_models = models
         discovery = LlamaCppDiscovery(
             self.endpoint,
@@ -919,6 +1091,9 @@ class LlamaCppService:
         headers: Mapping[str, str],
         model_id: str,
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # HELPER: on cancellation, best-effort (shielded, errors suppressed) unload
+        # of the model being loaded/downloaded, then reconcile.
         with suppress(Exception):
             await asyncio.shield(
                 mutate_router_model(
@@ -934,6 +1109,10 @@ class LlamaCppService:
     async def _reconcile_cancelled(
         self, client: httpx.AsyncClient, headers: Mapping[str, str]
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # HELPER: after cancellation, re-list router models (shielded) and publish
+        # them, returning a cancelled result; on failure returns a stale cached
+        # status with a warning that the mutation will not be replayed.
         try:
             models = await asyncio.shield(
                 list_router_models(client, self.endpoint.server_root, headers)
@@ -962,6 +1141,10 @@ class LlamaCppService:
         headers: Mapping[str, str],
         error: BaseException,
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # HELPER: after an HTTP/router/timeout error, re-list and publish models and
+        # return a diagnostic (error for router errors, warning otherwise); if that
+        # also fails, return stale cached status with an error diagnostic.
         try:
             models = await list_router_models(client, self.endpoint.server_root, headers)
             await self._publish_router_models(models)
@@ -998,12 +1181,22 @@ class LlamaCppService:
     def _router_failure(
         self, message: str, models: tuple[RouterModel, ...] | None = None
     ) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # HELPER: build a result with a router error diagnostic and, when models are
+        # given, the router status.
         return LocalOperationResult(
             backend_status=self._status_from_router(models) if models is not None else None,
             diagnostics=(LocalDiagnostic(message, "error", "router"),),
         )
 
     async def reset(self, context: LocalOperationContext) -> LocalOperationResult:
+        # [FUNCTION DOC]
+        # Clear saved integration settings (state file errors become a diagnostic),
+        # reset in-memory caches, fall back to the env/default endpoint, publish the
+        # provider, and return a committed result with the fresh status; warns that
+        # stored credentials were retained when any were referenced.
+        # KNOWN ISSUE: the recorded state error and endpoint error are not cleared,
+        # so stale error diagnostics can persist after reset.
         del context
         try:
             refs = self.state_store.clear()
@@ -1037,6 +1230,10 @@ class LlamaCppService:
         )
 
     def backend(self) -> LocalBackend:
+        # [FUNCTION DOC]
+        # Build the LocalBackend descriptor: ids, display name, a configure spec
+        # with a required endpoint text field and optional secret API key field, all
+        # operation callbacks bound to this service, and marked recommended.
         return LocalBackend(
             id=LLAMA_CPP_BACKEND_ID,
             provider_id=LLAMA_CPP_PROVIDER_ID,
@@ -1075,6 +1272,10 @@ class LlamaCppService:
         self,
         active: LlamaCppIntegrationState | None,
     ) -> LlamaCppEndpoint | None:
+        # [FUNCTION DOC]
+        # HELPER: normalize the saved active endpoint if present, else the
+        # LLAMA_BASE_URL env value if set; returns None when neither exists or the
+        # value is invalid (recording the endpoint error).
         if active is not None:
             try:
                 return normalize_llama_cpp_endpoint(active.endpoint)
@@ -1091,10 +1292,16 @@ class LlamaCppService:
             return None
 
     def _endpoint_from_environment_or_default(self) -> LlamaCppEndpoint:
+        # [FUNCTION DOC]
+        # HELPER: endpoint from LLAMA_BASE_URL, else the localhost default.
         endpoint = self._resolve_effective_endpoint(None)
         return endpoint or normalize_llama_cpp_endpoint(LLAMA_CPP_DEFAULT_ENDPOINT)
 
     def _cleanup_orphans(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: delete llama.cpp-prefixed credentials not referenced by any saved
+        # state; names that fail to delete are recorded as orphaned. Any other
+        # failure is swallowed and the orphan list cleared.
         try:
             referenced = self.state_store.referenced_credentials()
             names = self.credential_store.names(prefix=LLAMA_CPP_CREDENTIAL_PREFIX)
@@ -1111,6 +1318,9 @@ class LlamaCppService:
             self._orphaned_credentials = ()
 
     def _delete_unreferenced_credentials(self, old_ref: str | None) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: delete the previous credential reference if no saved state still
+        # references it. Returns a warning message on failure, else None.
         if not old_ref:
             return None
         try:
@@ -1121,6 +1331,10 @@ class LlamaCppService:
         return None
 
     async def _try_discover_current(self) -> LlamaCppDiscovery | None:
+        # [FUNCTION DOC]
+        # HELPER: best-effort discovery after configuring: on success records,
+        # saves and publishes it and returns it; LlamaCppError/ProviderAuthError
+        # yield None.
         try:
             auth = await _resolve_auth_for_backend(self)
             discovery = await self.discover(auth)
@@ -1132,6 +1346,12 @@ class LlamaCppService:
         return discovery
 
     def _save_discovery(self, discovery: LlamaCppDiscovery) -> None:
+        # [FUNCTION DOC]
+        # HELPER: persist a discovery snapshot only when it is for the saved active
+        # endpoint (env/default endpoints are never written). Keeps the previous
+        # explicit selection even if not currently reported (marking it stale),
+        # stores allowlisted model metadata and a UTC "Z" timestamp. State errors
+        # are recorded rather than raised.
         if (
             self._active_state is None
             or self._active_state.endpoint != discovery.endpoint.server_root
@@ -1165,6 +1385,10 @@ class LlamaCppService:
             self._state_error = str(exc)
 
     def _publish_provider(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: rebuild the provider and try the update callback; if not updated,
+        # register the provider and also register the backend (initial setup or
+        # source replacement).
         provider = self.provider()
         updated = self._update_provider(provider) if self._update_provider is not None else False
         if not updated and self._register_provider is not None:
@@ -1176,6 +1400,11 @@ class LlamaCppService:
             self._register_backend(self.backend())
 
     def _status_from_discovery(self, discovery: LlamaCppDiscovery) -> LocalBackendStatus:
+        # [FUNCTION DOC]
+        # HELPER: clear the last error and convert a discovery into backend status:
+        # router status when compatible; otherwise ready/unavailable/stale with
+        # diagnostics for router incompatibility, no models, and a stale selected
+        # model.
         self._last_error = None
         if discovery.router_capability.compatible:
             return self._status_from_router(discovery.router_models)
@@ -1215,6 +1444,11 @@ class LlamaCppService:
         )
 
     def _status_from_router(self, models: tuple[RouterModel, ...]) -> LocalBackendStatus:
+        # [FUNCTION DOC]
+        # HELPER: build a ready status from router models: all models with their
+        # router state, selected model among loaded/sleeping ones, diagnostics for
+        # failed/unknown models and for none loaded, and the full action list (plus
+        # use when a model is selected).
         selectable = _router_provider_models(models)
         selected = _selected_model(self._active_state, selectable)
         diagnostics: list[LocalDiagnostic] = []
@@ -1274,6 +1508,11 @@ class LlamaCppService:
         diagnostics: tuple[LocalDiagnostic, ...] = (),
         stale: bool = False,
     ) -> LocalBackendStatus:
+        # [FUNCTION DOC]
+        # HELPER: status from saved state without network: cached models, extra
+        # diagnostics for state/endpoint errors and a stale selection; state is
+        # stale when requested or selection is stale and models exist, else
+        # unavailable.
         active = self._active_state
         models = tuple(_provider_model(model) for model in active.models) if active else ()
         selected = _selected_model(active, models)
@@ -1312,6 +1551,10 @@ class LlamaCppService:
         cached: bool = False,
         stale: bool = False,
     ) -> LocalBackendStatus:
+        # [FUNCTION DOC]
+        # HELPER: assemble a LocalBackendStatus with base actions (configure,
+        # refresh, doctor, reset, plus use when selected), endpoint display,
+        # authentication source, local models and flags.
         actions: list[LocalAction] = ["configure", "refresh", "doctor", "reset"]
         if selected is not None:
             actions.append("use")
@@ -1337,6 +1580,12 @@ class LlamaCppService:
         model: str,
         signal: SimpleCancellationToken,
     ) -> tuple[bool, str]:
+        # [FUNCTION DOC]
+        # HELPER: send a tiny streaming chat request with a non-retrying
+        # OpenAI-compatible provider; success on the first assistant start event,
+        # failure on an error event or HTTP error, otherwise a not-accepted message.
+        # Returns a success flag and message. Closes the provider if the client was
+        # temporary.
         owned_client = self.client is None
         client = self.client or create_async_client(timeout=self.timeout_seconds)
         provider = OpenAICompatibleProvider(
@@ -1376,12 +1625,18 @@ class LlamaCppService:
         model: str,
         signal: SimpleCancellationToken,
     ) -> tuple[bool, str]:
+        # [FUNCTION DOC]
+        # HELPER: send a request offering a no-op probe tool and report whether the
+        # model emits a tool call (supported), errors, or does not call it (advice to
+        # use a tool-capable GGUF/chat template). Returns flag and message.
         async def executor(
             tool_call_id: str,
             arguments: Mapping[str, JSONValue],
             signal: ToolCancellationToken | None = None,
             on_update: Callable[[AgentToolResult], None] | None = None,
         ) -> AgentToolResult:
+            # [FUNCTION DOC]
+            # HELPER: no-op tool executor returning an "ok" text result; inputs ignored.
             del tool_call_id, arguments, signal, on_update
             return AgentToolResult(content=[TextContent(text="ok")])
 
@@ -1433,6 +1688,9 @@ class LlamaCppService:
         client: httpx.AsyncClient,
         headers: Mapping[str, str],
     ) -> RouterCapability:
+        # [FUNCTION DOC]
+        # HELPER: detect router capability; router errors produce an incompatible
+        # capability with a diagnostic instead of raising.
         try:
             return await detect_router(client, self.endpoint.server_root, headers)
         except LlamaCppRouterError as exc:
@@ -1450,6 +1708,10 @@ class LlamaCppService:
         headers: Mapping[str, str],
         model: ProviderModel,
     ) -> ProviderModel:
+        # [FUNCTION DOC]
+        # HELPER: GET /props and, if it reports input modalities, return a copy of
+        # the model with them; any HTTP error, non-200 or unusable payload returns
+        # the model unchanged. Cancellation propagates.
         """Return ``model`` with the inputs that ``/props`` reports, if it reports any.
 
         llama.cpp builds before October 2026 report vision only in ``/props``.
@@ -1474,6 +1736,11 @@ class LlamaCppService:
         headers: Mapping[str, str],
         signal: CancellationToken | None,
     ) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: guarded GET. Raises CancelledError if the signal is cancelled;
+        # 401/403 -> auth failure; 503 /health reporting loading -> loading error;
+        # 404 /health is tolerated (returned); other >= 400 -> HTTP failure. Timeouts
+        # propagate. Returns the response.
         if signal is not None and signal.is_cancelled():
             raise asyncio.CancelledError
         try:
@@ -1504,6 +1771,11 @@ class LlamaCppService:
 
 
 def normalize_llama_cpp_endpoint(value: str) -> LlamaCppEndpoint:
+    # [FUNCTION DOC]
+    # Normalize a server root or ".../v1" URL. Requires a non-empty http(s) URL
+    # with a host and no credentials, query or fragment. Strips trailing slashes
+    # and a trailing /v1 path segment, lower-cases the scheme. Returns the
+    # endpoint with server root and root + "/v1". Raises LlamaCppEndpointError.
     """Normalize a server root or OpenAI-compatible ``/v1`` URL safely."""
     if not isinstance(value, str) or not value.strip():
         raise LlamaCppEndpointError("llama.cpp endpoint cannot be empty")
@@ -1530,6 +1802,10 @@ def normalize_llama_cpp_endpoint(value: str) -> LlamaCppEndpoint:
 
 
 def _auth_headers(auth: ResolvedProviderAuth) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: copy the resolved auth headers and add a bearer Authorization
+    # header when a key exists and the header is not suppressed (without
+    # overriding an existing one).
     headers = dict(auth.headers)
     if auth.api_key is not None and not auth.omit_authorization_header:
         headers.setdefault("Authorization", f"Bearer {auth.api_key}")
@@ -1537,6 +1813,9 @@ def _auth_headers(auth: ResolvedProviderAuth) -> dict[str, str]:
 
 
 async def _resolve_auth_for_backend(service: LlamaCppService) -> ResolvedProviderAuth:
+    # [FUNCTION DOC]
+    # HELPER: resolve auth for backend operations using the service's active
+    # credential reference, credential store and environment.
     active = service._active_state
     return await _LlamaCppAuth(active.credential_ref if active else None).resolve(
         ProviderAuthContext(
@@ -1547,6 +1826,8 @@ async def _resolve_auth_for_backend(service: LlamaCppService) -> ResolvedProvide
 
 
 def _safe_json(response: httpx.Response) -> object:
+    # [FUNCTION DOC]
+    # HELPER: parse response JSON, returning None on decode errors.
     try:
         return response.json()
     except ValueError:
@@ -1554,6 +1835,9 @@ def _safe_json(response: httpx.Response) -> object:
 
 
 def _json_object(response: httpx.Response, endpoint: str) -> Mapping[str, object]:
+    # [FUNCTION DOC]
+    # HELPER: parse response JSON requiring an object; raises LlamaCppError
+    # naming the endpoint otherwise.
     payload = _safe_json(response)
     if not isinstance(payload, Mapping):
         raise LlamaCppError(f"llama.cpp {endpoint} returned malformed JSON.")
@@ -1561,6 +1845,10 @@ def _json_object(response: httpx.Response, endpoint: str) -> Mapping[str, object
 
 
 def _health_state(payload: object) -> str:
+    # [FUNCTION DOC]
+    # HELPER: classify a /health payload: status text containing
+    # loading/starting/initializing -> "loading"; unavailable/error/failed ->
+    # "unavailable"; anything else (including non-objects) -> "ok".
     if not isinstance(payload, Mapping):
         return "ok"
     status = payload.get("status")
@@ -1574,6 +1862,11 @@ def _health_state(payload: object) -> str:
 
 
 def _parse_models(payload: Mapping[str, object]) -> tuple[ProviderModel, ...]:
+    # [FUNCTION DOC]
+    # HELPER: strictly parse /v1/models: requires a data list of objects with
+    # exact unique non-empty ids; display name from name/display_name or the id;
+    # modalities and context window only when directly reported; API
+    # openai-completions; a tiny safe compat subset. Raises LlamaCppError.
     data = payload.get("data")
     if not isinstance(data, list):
         raise LlamaCppError("llama.cpp /v1/models returned a malformed model list.")
@@ -1607,6 +1900,9 @@ def _parse_models(payload: Mapping[str, object]) -> tuple[ProviderModel, ...]:
 
 
 def _reported_context_window(item: Mapping[str, object]) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: return a positive int from context_window or context_length if
+    # reported, else None (never inferred).
     # These names are accepted only when directly reported by a server. Tau
     # never derives one from a model family, max tokens, or a 128K convention.
     for key in ("context_window", "context_length"):
@@ -1617,6 +1913,9 @@ def _reported_context_window(item: Mapping[str, object]) -> int | None:
 
 
 def _safe_model_compat(item: Mapping[str, object]) -> Mapping[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: read-only mapping containing only non-empty string object and
+    # owned_by fields (diagnostic only, never persisted).
     # Keep a tiny, non-secret diagnostic subset in memory.  It is not copied to
     # the disk snapshot and is never interpreted as capability metadata.
     result: dict[str, JSONValue] = {}
@@ -1628,6 +1927,8 @@ def _safe_model_compat(item: Mapping[str, object]) -> Mapping[str, JSONValue]:
 
 
 def _provider_model(model: LlamaCppStoredModel) -> ProviderModel:
+    # [FUNCTION DOC]
+    # HELPER: convert a stored model into a provider model (openai-completions).
     return ProviderModel(
         id=model.id,
         display_name=model.display_name or model.id,
@@ -1642,6 +1943,8 @@ def _provider_model(model: LlamaCppStoredModel) -> ProviderModel:
 
 
 def _stored_model(model: ProviderModel) -> LlamaCppStoredModel:
+    # [FUNCTION DOC]
+    # HELPER: convert a provider model into an allowlisted stored model.
     return LlamaCppStoredModel(
         id=model.id,
         display_name=model.display_name,
@@ -1651,10 +1954,14 @@ def _stored_model(model: ProviderModel) -> LlamaCppStoredModel:
 
 
 def _local_model(model: ProviderModel) -> LocalModel:
+    # [FUNCTION DOC]
+    # HELPER: convert a provider model into a local backend model entry.
     return LocalModel(model.id, model.display_name or model.id)
 
 
 def _router_provider_models(models: tuple[RouterModel, ...]) -> tuple[ProviderModel, ...]:
+    # [FUNCTION DOC]
+    # HELPER: provider models for router models in loaded or sleeping state.
     return tuple(
         ProviderModel(
             id=model.id,
@@ -1668,10 +1975,16 @@ def _router_provider_models(models: tuple[RouterModel, ...]) -> tuple[ProviderMo
 
 
 def _router_model(models: tuple[RouterModel, ...], model_id: str) -> RouterModel | None:
+    # [FUNCTION DOC]
+    # HELPER: find a router model by id, or None.
     return next((model for model in models if model.id == model_id), None)
 
 
 def _router_progress(model: RouterModel) -> LocalProgress:
+    # [FUNCTION DOC]
+    # HELPER: progress report for a router model: byte progress while
+    # downloading with known sizes, else a state message; done for terminal
+    # states. Raises KeyError for a state outside the known set.
     if (
         model.state == "downloading"
         and model.downloaded_bytes is not None
@@ -1697,6 +2010,11 @@ def _router_progress(model: RouterModel) -> LocalProgress:
 
 
 def _download_progress(model_id: str, downloaded_bytes: int, total_bytes: int) -> LocalProgress:
+    # [FUNCTION DOC]
+    # HELPER: download progress message and fraction (downloaded clamped to the
+    # total), with human-readable sizes and remaining bytes.
+    # KNOWN ISSUE: divides by the total, so a reported total of 0 bytes raises
+    # ZeroDivisionError.
     downloaded = min(downloaded_bytes, total_bytes)
     remaining = total_bytes - downloaded
     return LocalProgress(
@@ -1708,6 +2026,8 @@ def _download_progress(model_id: str, downloaded_bytes: int, total_bytes: int) -
 
 
 def _format_bytes(value: int) -> str:
+    # [FUNCTION DOC]
+    # HELPER: format a byte count as whole bytes or one-decimal KiB/MiB/GiB/TiB.
     size = float(value)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if size < 1024 or unit == "TiB":
@@ -1720,6 +2040,9 @@ def _selected_model(
     state: LlamaCppIntegrationState | None,
     models: tuple[ProviderModel, ...],
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: the usable selected model: the saved explicit selection only if
+    # currently present (never silently replaced), else the sole model, else None.
     ids = {model.id for model in models}
     if state is not None and state.selected_model is not None:
         # Never silently replace an explicitly selected model when the server
@@ -1732,6 +2055,8 @@ def _selected_model(
 
 
 def _cached_default(models: tuple[ProviderModel, ...]) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: the only model's id when exactly one is cached, else None.
     return models[0].id if len(models) == 1 else None
 
 
@@ -1740,6 +2065,11 @@ def _authentication_source(
     environment: Mapping[str, str],
     credentials: CredentialStore | None = None,
 ) -> Literal["none", "environment", "stored credential"]:
+    # [FUNCTION DOC]
+    # HELPER: label the auth source: "stored credential" when the state has a
+    # reference resolving to a value (or when no store is given), else
+    # "environment" when LLAMA_API_KEY is set, else "none". Store errors fall
+    # through.
     if state is not None and state.credential_ref:
         try:
             if credentials is None or credentials.get(state.credential_ref):
@@ -1752,6 +2082,9 @@ def _authentication_source(
 
 
 def _noop_context(action: str) -> LocalOperationContext:
+    # [FUNCTION DOC]
+    # HELPER: build a local operation context for internal status calls with a
+    # fresh token, always-current check and no-op progress.
     signal = SimpleCancellationToken()
     return LocalOperationContext(
         signal=signal,

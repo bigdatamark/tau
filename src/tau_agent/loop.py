@@ -1,3 +1,12 @@
+# [MODULE DOC]
+# The pure, Pi-compatible provider/tool agent loop at the heart of tau_agent.
+# Given a provider, model, system prompt, mutable message history and tools,
+# it repeatedly streams an assistant turn, executes any requested tool calls,
+# appends results, and continues until the model stops calling tools and no
+# steering/follow-up messages are queued. Everything observable is emitted as
+# agent events (agent/turn/message/tool-execution start/update/end), which UI
+# layers consume. Also defines the before/after tool-call hook callable types.
+# No UI, filesystem or session-storage dependencies.
 """Pure Pi-compatible provider/tool agent loop."""
 
 from __future__ import annotations
@@ -66,6 +75,31 @@ async def run_agent_loop(
     before_tool_call: BeforeToolCall | None = None,
     after_tool_call: AfterToolCall | None = None,
 ) -> AsyncIterator[AgentEvent]:
+    # [FUNCTION DOC]
+    # Async generator running the full agent loop and yielding agent events.
+    # Inputs (keyword-only): provider, model id, system prompt, the message history
+    # list (MUTATED in place: prompts, steering, assistant replies and tool results
+    # are appended), tool list, new prompt messages, prelude messages (emitted as
+    # message events but NOT added to history), optional max turns, optional
+    # cancellation token, optional session id, optional callbacks returning queued
+    # steering messages and follow-up messages, and optional before/after tool-call
+    # hooks.
+    # Behavior: appends prompts to history; yields agent start and first turn
+    # start; emits start/end message events for prelude then prompt messages. If
+    # max turns is below 1, appends an error assistant message and ends. Polls
+    # steering messages once up front. Outer loop: inner loop runs while the last
+    # assistant made tool calls or pending messages exist; each iteration (after
+    # the first) yields turn start, appends and emits pending messages, enforces
+    # max turns (error message + turn end + agent end), streams the assistant via
+    # the provider using the replayable context, appends the assistant message,
+    # stops early (turn end + agent end) on error/aborted stop reasons, otherwise
+    # runs each tool call sequentially, appending tool result messages, yields turn
+    # end with tool results, increments the turn count and re-polls steering. When
+    # the inner loop finishes, polls follow-ups; if any, they become pending and
+    # the loop resumes, else it exits. Finally yields agent end with all messages
+    # added during this run (prompts included).
+    # Output: yields agent events. Exceptions from the provider stream or hooks
+    # (other than tool execution errors, which are captured) propagate.
     """Run the provider/tool loop and emit Pi-compatible agent events."""
     new_messages = list(prompts)
     if prompts:
@@ -183,6 +217,12 @@ async def run_agent_loop(
 
 
 def _provider_context(messages: list[AgentMessage]) -> list[AgentMessage]:
+    # [FUNCTION DOC]
+    # HELPER: build the message list sent to the provider. Drops assistant
+    # messages that failed (stop reason error/aborted) and have no content, since
+    # providers reject empty assistant turns, then runs tool-history repair (e.g.
+    # fixing orphaned tool calls/results). Input: history list. Output: a new list
+    # of messages. Durable history is not modified.
     """Return replayable messages while retaining failures in durable history.
 
     Providers cannot consistently accept an assistant turn with no content. Tau
@@ -211,6 +251,19 @@ async def _assistant_events(
     signal: CancellationToken | None,
     session_id: str | None,
 ) -> AsyncIterator[AgentEvent]:
+    # [FUNCTION DOC]
+    # HELPER: async generator that streams one assistant response from the
+    # provider and translates provider events into agent message events.
+    # Inputs: provider, model, system, context messages, tools, cancellation
+    # token, session id. Measures time spent awaiting the provider (monotonic
+    # clock) and the elapsed time to the first output-bearing event (text/thinking
+    # delta or tool call start/delta/end). Mapping: assistant start -> message
+    # start (partial); done -> stamps response timing on the final message, emits
+    # message start if none was emitted, then message end; error -> same with the
+    # error message; any other event -> message update carrying the partial
+    # message and the raw provider event.
+    # Side effects: mutates the timing field of the final/error message.
+    # Provider exceptions propagate.
     source: AsyncIterator[AssistantMessageEvent] = provider.stream_response(
         model=model,
         system=system,
@@ -271,6 +324,10 @@ def _response_timing(
     first_output_elapsed_ns: int | None,
     total_elapsed_ns: int,
 ) -> ResponseTiming:
+    # [FUNCTION DOC]
+    # HELPER: convert nanosecond durations into a response timing record with
+    # time-to-first-output (ms, or None if no output) and total duration (ms),
+    # both via integer division. No side effects.
     """Build persistable durations from time spent awaiting provider events."""
     return ResponseTiming(
         time_to_first_output_ms=(
@@ -287,6 +344,19 @@ async def _execute_tool_call(
     before_tool_call: BeforeToolCall | None,
     after_tool_call: AfterToolCall | None,
 ) -> AsyncIterator[AgentEvent]:
+    # [FUNCTION DOC]
+    # HELPER: async generator executing one tool call and yielding its events.
+    # Inputs: the tool call, mapping of tool name to tool, cancellation token, and
+    # optional before/after hooks. Yields tool execution start; awaits the before
+    # hook (which may block with a reason). Result selection: blocked -> error
+    # result with the reason (default "Tool execution was blocked"); cancelled ->
+    # "Operation aborted" error; unknown tool -> "Tool <name> not found" error;
+    # otherwise runs the tool and yields one execution update event per collected
+    # partial update (updates are buffered and emitted only after the tool
+    # finishes, not live). Then the after hook may replace the result and error
+    # flag. Yields tool execution end, then message start/end for a tool result
+    # message (content, details, added tool names, error flag).
+    # Exceptions from hooks propagate; tool exceptions are captured.
     yield ToolExecutionStartEvent(
         tool_call_id=call.id,
         tool_name=call.name,
@@ -345,10 +415,21 @@ async def _run_tool(
     call: ToolCall,
     signal: CancellationToken | None,
 ) -> tuple[AgentToolResult, bool, list[AgentToolResult]]:
+    # [FUNCTION DOC]
+    # HELPER: execute a tool with an update callback, isolating failures.
+    # Inputs: tool, call, cancellation token. Passes a nested callback that
+    # deep-copies partial results into a list while still accepting. Output: a
+    # tuple of (result, is-error flag, list of partial updates). Any ordinary
+    # exception becomes an error result with the exception text; task
+    # cancellation is re-raised. After completion further updates are ignored.
     updates: list[AgentToolResult] = []
     accepting = True
 
     def on_update(partial: AgentToolResult) -> None:
+        # [FUNCTION DOC]
+        # HELPER: progress callback handed to the tool; appends a deep copy of the
+        # partial result to the enclosing updates list while the run is still
+        # accepting updates; otherwise ignores it. Returns nothing.
         if accepting:
             updates.append(partial.model_copy(deep=True))
 
@@ -364,10 +445,16 @@ async def _run_tool(
 
 
 def _error_result(message: str) -> AgentToolResult:
+    # [FUNCTION DOC]
+    # HELPER: build a tool result containing a single text block with the given
+    # message and empty details.
     return AgentToolResult(content=[TextContent(text=message)], details={})
 
 
 def _error_message(model: str, message: str) -> AssistantMessage:
+    # [FUNCTION DOC]
+    # HELPER: build an assistant message for the model with no content, stop
+    # reason "error", and the given error message.
     return AssistantMessage(
         model=model,
         content=[],

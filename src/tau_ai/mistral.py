@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Mistral provider adapter (tau_ai layer) for Mistral's streaming chat
+# completions API (the "mistral-conversations" API id). Converts Tau agent
+# messages and tools into Mistral's JSON request format, streams the SSE
+# response with retries, parses chunks into provider-neutral events and hands
+# them to canonicalize_provider_stream, which produces Pi-compatible assistant
+# message events.
+# Side effects: network I/O only when streaming.
 """Mistral Conversations provider."""
 
 from __future__ import annotations
@@ -50,6 +58,12 @@ from tau_ai.tool_call_ids import portable_tool_call_id
 
 
 class MistralConversationsProvider:
+    # [CLASS DOC]
+    # ModelProvider implementation for Mistral. Holds an OpenAI-compatible style
+    # config (base URL, API key, extra headers, reasoning effort, max tokens, image
+    # support, timeouts, retry limits, provider display name) and an optional
+    # injected HTTP client; it owns (and will close) a lazily created client when
+    # none was injected.
     """Provider adapter for Mistral's streaming chat API."""
 
     def __init__(
@@ -58,11 +72,16 @@ class MistralConversationsProvider:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Stores config and optional client; records ownership when no client given.
         self._config = config
         self._client = client
         self._owns_client = client is None
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # Closes and forgets the HTTP client only if this provider created it.
+        # Side effects: network client shutdown. Injected clients are left open.
         """Close the underlying HTTP client if this provider created it."""
         if self._client is not None and self._owns_client:
             await self._client.aclose()
@@ -78,6 +97,13 @@ class MistralConversationsProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # [FUNCTION DOC]
+        # Public provider entry point: streams one model response.
+        # Inputs: model id, system prompt, message list, tools, optional cancellation
+        # token, session id (ignored).
+        # Outputs: async iterator of canonical AssistantMessageEvents (start, deltas,
+        # tool calls, done/error) tagged with api "mistral-conversations", provider
+        # "mistral" and the model. Lazy: no request until iterated.
         """Stream one response as Pi-compatible assistant message events."""
         del session_id
         raw = self._stream_provider_events(
@@ -96,6 +122,10 @@ class MistralConversationsProvider:
         tools: list[AgentTool],
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Builds the request payload from config (reasoning effort, max
+        # tokens, image support) and returns the raw provider event stream for POST
+        # <base>/v1/chat/completions.
         """Stream one Mistral response as provider-neutral events."""
         payload = _build_mistral_payload(
             model=model,
@@ -121,7 +151,29 @@ class MistralConversationsProvider:
         payload: Mapping[str, JSONValue],
         signal: CancellationToken | None,
     ) -> AsyncIterator[ProviderEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Returns an async iterator performing the HTTP streaming request with
+        # retry logic (see the nested iterator).
         async def iterator() -> AsyncIterator[ProviderEvent]:
+            # [FUNCTION DOC]
+            # HELPER: Async generator doing the request loop. Headers = configured extra
+            # headers plus a Bearer Authorization with the API key. For each attempt it
+            # creates a fresh stream parser and POSTs the JSON payload.
+            # On HTTP status >= 400: reads the body; if retryable (408, 409, 425, 429 or
+            # >= 500, under max retries) yields a provider retry event with computed
+            # backoff delay, waits (returns silently if cancelled during the wait) and
+            # retries; otherwise yields a ProviderErrorEvent with a friendly HTTP message
+            # and status/body data, then stops.
+            # On success: yields a response start event, then for each SSE "data:" line
+            # (stopping silently if cancelled) feeds the parser, yielding its events until
+            # "[DONE]"; finally yields the parser's finalize events (tool calls and the
+            # response end event).
+            # On retryable transport errors: retries with a retry event only if no content
+            # was emitted yet and attempts remain; otherwise yields an error event with the
+            # message and attempt count.
+            # Side effects: network I/O, sleeping between retries.
+            # KNOWN ISSUE: when cancelled mid-stream it returns without any end or error
+            # event; downstream canonicalization must handle the truncated stream.
             client = self._get_client()
             headers = {
                 **dict(self._config.headers or {}),
@@ -202,26 +254,47 @@ class MistralConversationsProvider:
         return iterator()
 
     def _get_client(self) -> httpx.AsyncClient:
+        # [FUNCTION DOC]
+        # HELPER: Returns the existing client or creates (and caches) one with the
+        # configured timeout.
         if self._client is None:
             self._client = create_async_client(timeout=self._config.timeout_seconds)
         return self._client
 
     def _should_retry(self, attempt: int, *, status_code: int | None = None) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: False once attempt reaches max retries; otherwise true for transport
+        # errors (no status) and statuses 408, 409, 425, 429 or >= 500.
         if attempt >= self._config.max_retries:
             return False
         return status_code is None or status_code in {408, 409, 425, 429} or status_code >= 500
 
 
 class _StreamParser(Protocol):
+    # [CLASS DOC]
+    # HELPER: Structural protocol for a stream parser: an emitted_content flag, a
+    # feed method taking one SSE data payload and returning events plus a stop
+    # flag, and a finalize method returning closing events.
     emitted_content: bool
 
+    # [FUNCTION DOC]
+    # Protocol signature: consume one SSE data string; return events and whether
+    # the stream is done.
     def feed(self, event: str) -> tuple[list[ProviderEvent], bool]: ...
 
+    # [FUNCTION DOC]
+    # Protocol signature: return the closing events after the stream ends.
     def finalize(self) -> list[ProviderEvent]: ...
 
 
 class _MistralStreamParser:
+    # [CLASS DOC]
+    # HELPER: Incremental parser for Mistral streaming chunks. Accumulates text
+    # parts, thinking parts, per-index tool call builders, the latest finish
+    # reason and whether any content has been emitted (used to decide retries).
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # Initialises empty accumulators and flags.
         self.emitted_content = False
         self._content_parts: list[str] = []
         self._thinking_parts: list[str] = []
@@ -229,6 +302,15 @@ class _MistralStreamParser:
         self._finish_reason: str | None = None
 
     def feed(self, event: str) -> tuple[list[ProviderEvent], bool]:
+        # [FUNCTION DOC]
+        # Consumes one SSE data payload. "[DONE]" returns no events and stop=true.
+        # Invalid JSON, non-object chunks, missing choices or non-mapping delta yield
+        # no events. Otherwise records finish reason (snake or camel case, keeping the
+        # previous one when absent), emits a text delta event per text fragment and a
+        # thinking delta event per thinking fragment, and merges tool call deltas into
+        # builders keyed by their index (default 0). Marks emitted_content when any
+        # text, thinking or tool call delta appears. Returns events and stop=false.
+        # Raises ValueError if a tool call index is not int-convertible.
         if event == "[DONE]":
             return [], True
         chunk = _loads_object(event)
@@ -260,6 +342,12 @@ class _MistralStreamParser:
         return events, False
 
     def finalize(self) -> list[ProviderEvent]:
+        # [FUNCTION DOC]
+        # Builds tool calls from builders in index order, emits one tool call event per
+        # call, then a response end event with an AssistantMessage whose content is
+        # the joined text plus tool calls, with a joined thinking block prepended when
+        # any thinking was seen. Finish reason is the recorded one, else "tool_calls"
+        # when tool calls exist, else "stop".
         tool_calls = [
             builder.build(index) for index, builder in sorted(self._tool_call_builders.items())
         ]
@@ -279,12 +367,21 @@ class _MistralStreamParser:
 
 
 class _ToolCallBuilder:
+    # [CLASS DOC]
+    # HELPER: Accumulates one streamed tool call: id, function name and argument
+    # text fragments.
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # Initialises empty id, name and argument parts.
         self.id = ""
         self.name = ""
         self.arguments_parts: list[str] = []
 
     def add_delta(self, delta: Mapping[str, Any]) -> None:
+        # [FUNCTION DOC]
+        # Merges one tool call delta: adopts a string id unless it is the literal
+        # "null"; if a function mapping is present adopts its name and appends string
+        # arguments, or JSON-encodes object arguments and appends them.
         call_id = delta.get("id")
         if isinstance(call_id, str) and call_id != "null":
             self.id = call_id
@@ -301,6 +398,10 @@ class _ToolCallBuilder:
             self.arguments_parts.append(dumps(arguments))
 
     def build(self, index: int) -> ToolCall:
+        # [FUNCTION DOC]
+        # Creates a ToolCall: id falls back to "tool-call-<index>"; arguments are the
+        # parsed joined JSON object, an empty mapping when no text, or a mapping with
+        # "_raw_arguments" holding the raw text when it is not a JSON object.
         arguments_text = "".join(self.arguments_parts)
         arguments = _loads_object(arguments_text) if arguments_text else {}
         if arguments is None:
@@ -322,6 +423,13 @@ def _build_mistral_payload(
     max_tokens: int | None,
     supports_images: bool = False,
 ) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Builds the request JSON: model, stream true, system message (if any)
+    # followed by converted messages; max_tokens when set; tools when any. If a
+    # reasoning effort other than "none" is configured, sets reasoning_effort to
+    # "high" for models known to accept it, otherwise prompt_mode "reasoning".
+    # KNOWN ISSUE: the configured effort level is ignored; any non-"none" effort
+    # is sent as "high".
     payload: dict[str, JSONValue] = {
         "model": model,
         "stream": True,
@@ -343,12 +451,24 @@ def _build_mistral_payload(
 
 
 def _system_messages(system: str) -> list[dict[str, JSONValue]]:
+    # [FUNCTION DOC]
+    # HELPER: Returns a single system-role message list for a non-empty prompt,
+    # else an empty list.
     return [{"role": "system", "content": system}] if system else []
 
 
 def _messages_to_mistral(
     messages: list[AgentMessage], *, supports_images: bool
 ) -> list[dict[str, JSONValue]]:
+    # [FUNCTION DOC]
+    # HELPER: Converts agent messages to Mistral messages. User messages become
+    # plain text, or a content list of text plus data-URL image parts when images
+    # are supported/present (unsupported images become a placeholder in text).
+    # Tool results become tool-role messages with portable call id, tool name and
+    # text (or "(see attached image)" / "(no tool output)"); their images are
+    # collected and emitted as one follow-up user message once a non-tool-result
+    # message (or the end) is reached, since tool messages cannot carry images.
+    # Other messages go through _message_to_mistral.
     converted: list[dict[str, JSONValue]] = []
     pending_tool_images: list[ImageContent] = []
     for message in messages:
@@ -399,6 +519,9 @@ def _messages_to_mistral(
 
 
 def _mistral_tool_image_message(images: list[ImageContent]) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Builds a user message containing the text "Attached image(s) from
+    # tool result:" followed by data-URL image parts for each image.
     content: list[JSONValue] = [{"type": "text", "text": "Attached image(s) from tool result:"}]
     content.extend(
         {
@@ -411,6 +534,11 @@ def _mistral_tool_image_message(images: list[ImageContent]) -> dict[str, JSONVal
 
 
 def _message_to_mistral(message: AgentMessage) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Converts one message: user -> user text; assistant -> assistant text
+    # plus reasoning_content when thinking exists and tool_calls when present; tool
+    # result -> tool message; any other message kind is first converted to a user
+    # message and then converted recursively.
     if isinstance(message, UserMessage):
         return {"role": "user", "content": message.text}
     if isinstance(message, AssistantMessage):
@@ -433,6 +561,9 @@ def _message_to_mistral(message: AgentMessage) -> dict[str, JSONValue]:
 
 
 def _tool_to_mistral(tool: AgentTool) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Converts an AgentTool to a non-strict function tool definition with
+    # name, description and a copy of its input JSON schema.
     return {
         "type": "function",
         "function": {
@@ -445,6 +576,9 @@ def _tool_to_mistral(tool: AgentTool) -> dict[str, JSONValue]:
 
 
 def _tool_call_to_mistral(tool_call: ToolCall) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: Converts a ToolCall to Mistral's function call format with portable
+    # id and JSON-encoded arguments.
     return {
         "id": portable_tool_call_id(tool_call.id),
         "type": "function",
@@ -453,6 +587,8 @@ def _tool_call_to_mistral(tool_call: ToolCall) -> dict[str, JSONValue]:
 
 
 def _mistral_base_url(base_url: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Strips trailing slashes and appends "/v1" unless already present.
     normalized = base_url.rstrip("/")
     if normalized.endswith("/v1"):
         return normalized
@@ -460,10 +596,16 @@ def _mistral_base_url(base_url: str) -> str:
 
 
 def _uses_reasoning_effort(model: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True for the model ids that accept a reasoning_effort parameter
+    # (mistral-small-2603, mistral-small-latest, mistral-medium-3.5).
     return model in {"mistral-small-2603", "mistral-small-latest", "mistral-medium-3.5"}
 
 
 def _parse_sse_line(line: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Returns the stripped payload after "data:" for SSE data lines, else
+    # none (blank lines, comments, other fields).
     line = line.strip()
     if not line or not line.startswith("data:"):
         return None
@@ -471,6 +613,9 @@ def _parse_sse_line(line: str) -> str | None:
 
 
 def _loads_object(value: str) -> dict[str, JSONValue] | None:
+    # [FUNCTION DOC]
+    # HELPER: Parses JSON text and returns it only if it is an object; none on
+    # decode errors or other JSON types.
     try:
         loaded = loads(value)
     except JSONDecodeError:
@@ -479,6 +624,9 @@ def _loads_object(value: str) -> dict[str, JSONValue] | None:
 
 
 def _first_choice(chunk: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    # [FUNCTION DOC]
+    # HELPER: Returns the first element of a chunk's non-empty choices list when it
+    # is a mapping, else none.
     choices = chunk.get("choices")
     if not isinstance(choices, list) or not choices:
         return None
@@ -487,6 +635,9 @@ def _first_choice(chunk: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 
 def _content_deltas(delta: Mapping[str, Any]) -> list[str]:
+    # [FUNCTION DOC]
+    # HELPER: Extracts text fragments from a delta's content: a non-empty string,
+    # or from a list the non-empty strings and "text" typed items' text.
     content = delta.get("content")
     if isinstance(content, str) and content:
         return [content]
@@ -504,6 +655,10 @@ def _content_deltas(delta: Mapping[str, Any]) -> list[str]:
 
 
 def _thinking_deltas(delta: Mapping[str, Any]) -> list[str]:
+    # [FUNCTION DOC]
+    # HELPER: Extracts thinking fragments from "thinking" typed items in a delta's
+    # content list; their thinking value may be a string or a list of parts with
+    # text fields. Empty strings are skipped.
     content = delta.get("content")
     if not isinstance(content, list):
         return []
@@ -524,6 +679,9 @@ def _thinking_deltas(delta: Mapping[str, Any]) -> list[str]:
 
 
 def _tool_call_deltas(delta: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    # [FUNCTION DOC]
+    # HELPER: Returns mapping entries of the delta's tool_calls (or toolCalls) list,
+    # or an empty list.
     tool_calls = delta.get("tool_calls") or delta.get("toolCalls")
     if not isinstance(tool_calls, list):
         return []

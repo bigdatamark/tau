@@ -1,3 +1,9 @@
+# [MODULE DOC]
+# Tests for session usage analytics (tau_coding.session_usage): aggregating
+# token usage, cache hit rate, tool call counts, compactions, notable events and
+# cost estimates from session entries, and rendering the HTML usage dashboard
+# (charts, tables, event markers, compact output for large sessions).
+# Pure in-memory tests.
 from tau_agent import (
     AssistantMessage,
     BranchSummaryEntry,
@@ -20,6 +26,10 @@ def _assistant(
     usage: Usage | None = None,
     tools: list[ToolCall] | None = None,
 ) -> MessageEntry:
+    # [FUNCTION DOC]
+    # HELPER: Test fixture building a MessageEntry with the given id wrapping an
+    # AssistantMessage with text "ok", optional tool calls, provider (default
+    # anthropic), model (default claude-sonnet-4-5) and usage (default empty).
     return MessageEntry(
         id=entry_id,
         message=AssistantMessage(
@@ -32,6 +42,10 @@ def _assistant(
 
 
 def test_collect_session_usage_aggregates_requests_tools_and_compactions() -> None:
+    # [FUNCTION DOC]
+    # Verifies requests are numbered, prompt totals include input plus cache
+    # read/write, cached and output totals, reasoning tokens, tool call counts per
+    # name, compaction count and hit rate = cached / prompt.
     entries = [
         MessageEntry(id="user", message=UserMessage(content="hi")),
         _assistant(
@@ -60,6 +74,10 @@ def test_collect_session_usage_aggregates_requests_tools_and_compactions() -> No
 
 
 def test_collect_session_usage_includes_labeled_summary_requests() -> None:
+    # [FUNCTION DOC]
+    # Verifies compaction and branch summary entries with usage count as labelled
+    # requests; provider/model come from the entry or fall back to the last model
+    # change; the routed response provider is kept; totals and cost include them.
     entries = [
         ModelChangeEntry(
             id="model",
@@ -108,6 +126,10 @@ def test_collect_session_usage_includes_labeled_summary_requests() -> None:
 
 
 def test_collect_session_usage_positions_notable_events_at_next_request() -> None:
+    # [FUNCTION DOC]
+    # Verifies model, compaction, thinking level and branch events are attached to
+    # the next request number with "before" position, and trailing events use
+    # "after" the last request.
     entries = [
         ModelChangeEntry(id="model", timestamp=1, model="claude-sonnet-4-5"),
         _assistant("a1", usage=Usage(input=10)),
@@ -135,6 +157,9 @@ def test_collect_session_usage_positions_notable_events_at_next_request() -> Non
 
 
 def test_collect_session_usage_estimates_cost_from_catalog() -> None:
+    # [FUNCTION DOC]
+    # Verifies known models get a catalog-estimated positive cost while unknown
+    # models have no estimated cost and no total.
     known = collect_session_usage([_assistant("a1", usage=Usage(input=1_000_000, output=0))])
     unknown = collect_session_usage(
         [_assistant("a1", provider="mystery", model="x", usage=Usage(input=1_000_000))]
@@ -146,6 +171,9 @@ def test_collect_session_usage_estimates_cost_from_catalog() -> None:
 
 
 def test_collect_session_usage_falls_back_to_reported_cost_and_keeps_partial_total() -> None:
+    # [FUNCTION DOC]
+    # Verifies a provider-reported cost is used when the catalog has no price, and
+    # the total sums only priced requests.
     usage = collect_session_usage(
         [
             _assistant(
@@ -164,6 +192,9 @@ def test_collect_session_usage_falls_back_to_reported_cost_and_keeps_partial_tot
 
 
 def test_render_usage_dashboard_renders_charts_and_table() -> None:
+    # [FUNCTION DOC]
+    # Verifies the dashboard has three charts with PNG buttons, titles, the model
+    # name and request kind.
     usage = collect_session_usage(
         [_assistant("a1", usage=Usage(input=10, output=5, cache_read=90, cache_write=0))]
     )
@@ -179,6 +210,10 @@ def test_render_usage_dashboard_renders_charts_and_table() -> None:
 
 
 def test_render_usage_dashboard_marks_events_on_prompt_input_chart() -> None:
+    # [FUNCTION DOC]
+    # Verifies event markers, labels, data attributes and event lines are rendered
+    # for model change and compaction events, and the tooltip script mentions
+    # event info.
     usage = collect_session_usage(
         [
             ModelChangeEntry(id="model", timestamp=1, model="claude-sonnet-4-5"),
@@ -207,6 +242,8 @@ def test_render_usage_dashboard_marks_events_on_prompt_input_chart() -> None:
 
 
 def test_render_usage_dashboard_without_cache_activity_shows_na() -> None:
+    # [FUNCTION DOC]
+    # Verifies hit rate is none, shown as N/A, and the cache chart is omitted.
     usage = collect_session_usage([_assistant("a1", usage=Usage(input=10, output=5))])
 
     markup = render_usage_dashboard(usage)
@@ -218,6 +255,9 @@ def test_render_usage_dashboard_without_cache_activity_shows_na() -> None:
 
 
 def test_render_usage_dashboard_keeps_large_sessions_compact() -> None:
+    # [FUNCTION DOC]
+    # Verifies 399 requests render without per-point markers, with only five hover
+    # points, and under 200 KB.
     usage = collect_session_usage(
         [_assistant(f"a{index}", usage=Usage(input=index, output=1)) for index in range(1, 400)]
     )
@@ -230,6 +270,8 @@ def test_render_usage_dashboard_keeps_large_sessions_compact() -> None:
 
 
 def test_render_usage_dashboard_without_requests() -> None:
+    # [FUNCTION DOC]
+    # Verifies an empty session renders a "No assistant responses" message.
     markup = render_usage_dashboard(collect_session_usage([]))
 
     assert "No assistant responses" in markup

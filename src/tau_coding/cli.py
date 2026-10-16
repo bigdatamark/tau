@@ -1,3 +1,14 @@
+# [MODULE DOC]
+# Command-line entry point for Tau (the "tau" Typer app), the outermost tau_coding layer.
+# On import it forces stdout/stderr to UTF-8 (for Windows consoles) and defines the
+# Typer app. The single callback "main" parses all options and dispatches to:
+# the interactive Textual TUI (default), non-interactive print mode (--print or --mode
+# text/json/transcript), Pi-compatible JSONL RPC mode (--mode rpc), or the built-in
+# subcommands passed positionally: update [--models], install, sessions, export,
+# providers, setup. Also contains helpers for prompt/system-prompt file resolution,
+# stdin merging, session export, provider listing, and the print-mode runner which
+# stages a CodingSession, handles slash and terminal commands, streams events to a
+# renderer and reports success. Maps to Pi's CLI main/print-mode/RPC-mode entry points.
 """Command-line entry point for Tau."""
 
 from __future__ import annotations
@@ -79,6 +90,9 @@ from tau_coding.version import current_version as _current_version
 
 
 def _is_utf8_encoding(encoding: str | None) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: Return True if an encoding name is UTF-8 ignoring case, hyphens and
+    # underscores; False for None or other names.
     """Return whether a stream encoding name represents UTF-8."""
     if encoding is None:
         return False
@@ -86,6 +100,11 @@ def _is_utf8_encoding(encoding: str | None) -> bool:
 
 
 def _force_utf8_streams() -> None:
+    # [FUNCTION DOC]
+    # HELPER: For stdout and stderr, if the stream's encoding is not UTF-8, reconfigure it
+    # to UTF-8 with replacement for unencodable characters. Streams without reconfigure or
+    # that reject it (AttributeError/ValueError) are left unchanged. Called once at import.
+    # Side effects: mutates the global standard streams.
     """Reconfigure stdout/stderr to UTF-8 when they are not already UTF-8.
 
     Windows consoles default these streams to the system codepage (e.g.
@@ -124,11 +143,21 @@ app = typer.Typer(
 
 
 def providers_command() -> None:
+    # [FUNCTION DOC]
+    # Implement "tau providers": load provider settings and print one tab-separated line per
+    # provider, checking credential status against the file credential store.
     """List configured model providers."""
     render_provider_settings(load_provider_settings(), credential_reader=FileCredentialStore())
 
 
 def install_command(args: list[str]) -> None:
+    # [FUNCTION DOC]
+    # Implement "tau install SOURCE [--force]".
+    # Input: remaining positional arguments. Accepts exactly one source plus an optional
+    # --force flag; unknown options, extra or missing sources raise typer.BadParameter.
+    # Prints a warning to stderr that extensions run arbitrary code, then installs into the
+    # user extension directory. On ExtensionInstallError prints the error and exits with
+    # code 1; on success prints the source and destination. Side effects: filesystem/git.
     """Install an extension into Tau's user extension directory."""
     source: str | None = None
     force = False
@@ -168,6 +197,13 @@ def setup_command(
     max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
     set_default: bool = True,
 ) -> None:
+    # [FUNCTION DOC]
+    # Implement "tau setup": create or update an OpenAI-compatible provider entry.
+    # Keyword inputs: provider name, base URL (trailing slashes stripped), API-key env var,
+    # model (used as sole model and default), timeout, max retries, max retry delay and
+    # whether to make it the default. Loads settings, upserts the provider, saves settings,
+    # and prints where the catalog and preferences were saved. Warns on stderr if the API
+    # key env var is not set. Side effects: writes settings files.
     """Create or update an OpenAI-compatible provider entry."""
     settings = load_provider_settings()
     provider = OpenAICompatibleProviderConfig(
@@ -382,6 +418,33 @@ def main(
         typer.Option("--models", help="With `tau update`, refresh model catalogs only."),
     ] = False,
 ) -> None:
+    # [FUNCTION DOC]
+    # Typer callback implementing the whole CLI; invoked even without a subcommand.
+    # Order of behavior:
+    # 1) --version prints "tau <version>" and exits. Validates TauPaths (bad TAU_HOME ->
+    # BadParameter). Returns early if a registered Typer subcommand was invoked.
+    # 2) Rejects conflicting/removed options with BadParameter: --approve with --no-approve,
+    # --resume (renamed --session), --session with --new-session or --session-id,
+    # --prompt (removed), --output (renamed --mode), -x (renamed -e). Trust override is
+    # "approve", "decline" or none. Normalises --thinking (invalid -> BadParameter).
+    # 3) Mode: rpc if --mode rpc; print if --print or any other --mode; output defaults to
+    # text. --session-id requires print mode and must be a valid id.
+    # 4) The first positional argument may be a built-in command when not in rpc/print/export
+    # mode: "update" (optionally "--models" or the --models flag; models refresh vs package
+    # upgrade), "install", "sessions" (lists sessions), "export". --models elsewhere is an
+    # error. --export (not with print/mode) exports using the positionals. "providers" and
+    # "setup" (alone) run their commands. These paths exit after running.
+    # 5) Resolves --system-prompt and repeated --append-system-prompt values (file contents
+    # if they name existing files, else literal text).
+    # 6) RPC mode: rejects a positional prompt, runs the RPC server; RuntimeError/ValueError
+    # become BadParameter.
+    # 7) TUI mode (default): computes the startup update notice, runs the TUI with all
+    # options and, if it returns a session id, prints how to resume it.
+    # 8) Print mode: merges piped stdin into the prompt (empty -> BadParameter usage),
+    # prints the update notice to stderr for text output, runs print mode (resuming when
+    # --session is given), and exits with code 1 if the run failed.
+    # Always ends by raising typer.Exit or returning. Side effects: terminal I/O, network,
+    # filesystem (settings, sessions).
     """Run the Tau CLI."""
     current_version = _current_version()
     if version:
@@ -647,6 +710,12 @@ async def run_openai_tui(
     *,
     thinking_level_override: ThinkingLevel | None = None,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # Run the Textual TUI with the given startup options and return its resumable session
+    # id (or None). Computes release-notes startup notices for the current version and
+    # forwards model, cwd, session selection, provider, auto-compaction threshold, initial
+    # prompt, update notice text, extension options, system prompt overrides, trust
+    # override and thinking override to the TUI runner.
     """Run the Textual TUI and return its resumable session id, if any."""
     release_notes_notice = startup_release_notes_notice(_current_version())
     startup_notices = (release_notes_notice.message,) if release_notes_notice is not None else ()
@@ -671,13 +740,23 @@ async def run_openai_tui(
 
 
 def _startup_update_notice() -> UpdateNotice | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the startup update notice (if a newer release is known) for the
+    # current version; may consult a cached update check.
     return startup_update_notice(_current_version())
 
 
 def update_models_command() -> None:
+    # [FUNCTION DOC]
+    # Implement "tau update --models": force-refresh the models.dev runtime model catalog
+    # and print whether it was refreshed or unchanged, the model count and cache path.
+    # On ModelsDevRefreshError prints the error to stderr and exits with code 1.
+    # Side effects: network fetch and cache file write.
     """Force-refresh and persist the runtime model catalog."""
 
     async def refresh() -> ModelsDevRefreshResult:
+        # [FUNCTION DOC]
+        # HELPER: Async wrapper that force-refreshes the models.dev catalog.
         return await refresh_models_dev_catalog(force=True)
 
     try:
@@ -692,6 +771,11 @@ def update_models_command() -> None:
 
 
 def update_command() -> None:
+    # [FUNCTION DOC]
+    # Implement "tau update": upgrade Tau using the installer managing the environment.
+    # On failure prints each failure reason to stderr and exits with code 1. Otherwise
+    # echoes captured installer stdout/stderr and reports whether the update completed or
+    # was handed off (deferred), including the command used. Side effects: runs an installer.
     """Upgrade Tau using the installer that manages the current environment."""
     result = update_tau()
     if not result.succeeded:
@@ -710,6 +794,9 @@ def update_command() -> None:
 
 
 def render_session_list(records: list[CodingSessionRecord]) -> None:
+    # [FUNCTION DOC]
+    # Print indexed sessions: "No sessions found." if empty, otherwise one tab-separated
+    # line per record with id, title (or "Untitled"), model and cwd.
     """Render indexed sessions for the CLI."""
     if not records:
         typer.echo("No sessions found.")
@@ -726,6 +813,14 @@ async def export_session_command(
     export_format: str | None = None,
     session_manager: SessionManager | None = None,
 ) -> Path:
+    # [FUNCTION DOC]
+    # Export a session given an indexed session id or a JSONL file path.
+    # Inputs: session reference, optional output path, optional format, optional session
+    # manager. Resolves the source path and title, reads all JSONL entries, determines the
+    # format (explicit, else the output path's extension, else html; normalised/validated),
+    # resolves the destination (see _resolve_export_destination), writes the artifact and
+    # returns its path. Raises RuntimeError for unknown sources or directories and
+    # ValueError for invalid formats; I/O errors propagate.
     """Export an indexed session id or JSONL file path."""
     session_path, title = _resolve_export_source(session_ref, session_manager)
     entries = await JsonlSessionStorage(session_path).read_all()
@@ -747,6 +842,10 @@ async def export_session_command(
 
 
 def _run_export_cli(args: list[str]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Run "tau export" / "tau --export": parse arguments, run the export, print the
+    # exported path and exit. Parse errors and RuntimeError/ValueError during export become
+    # typer.BadParameter. Always raises typer.Exit on success.
     """Run `tau export`/`tau --export` and exit."""
     try:
         session_ref, output_path, export_format = _parse_export_cli_args(args)
@@ -766,6 +865,11 @@ def _run_export_cli(args: list[str]) -> None:
 
 
 def _resolve_prompt_input(value: str, *, option: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Resolve a prompt option value: if it names an existing path (after home
+    # expansion), return the file's UTF-8 contents; otherwise return the literal value.
+    # Home expansion failure returns the literal value. Raises typer.BadParameter (with the
+    # option as hint) if the path cannot be inspected or read/decoded.
     """Resolve an existing UTF-8 file, otherwise preserve literal prompt text."""
     try:
         path = Path(value).expanduser()
@@ -790,6 +894,9 @@ def _resolve_prompt_input(value: str, *, option: str) -> str:
 
 
 def _resolve_append_system_prompts(values: tuple[str, ...] | list[str]) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Resolve each append value via _resolve_prompt_input, in order, and join them
+    # with one blank line. Returns None when no values were given.
     """Resolve repeated append inputs in order and separate them by one blank line."""
     if not values:
         return None
@@ -799,6 +906,11 @@ def _resolve_append_system_prompts(values: tuple[str, ...] | list[str]) -> str |
 
 
 def _merge_stdin_prompt(prompt: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Merge piped stdin into the print-mode prompt (Pi behavior). If stdin is
+    # missing, is a TTY, or cannot be checked/read, returns the prompt unchanged. Otherwise
+    # reads all of stdin; empty input leaves the prompt; with no prompt returns the piped
+    # text; else returns piped text, a blank line, then the prompt. Consumes stdin.
     """Merge piped stdin content into a print-mode prompt, mirroring Pi.
 
     When stdin is not a terminal (e.g. `cat file | tau -p "..."`), its
@@ -824,6 +936,12 @@ def _merge_stdin_prompt(prompt: str) -> str:
 
 
 def _parse_export_cli_args(args: list[str]) -> tuple[str, Path | None, str | None]:
+    # [FUNCTION DOC]
+    # HELPER: Parse export arguments: first is the session reference, then optional
+    # "--format X" or "--format=X" and at most one output path (home-expanded).
+    # Returns (reference, output path or None, format or None). Raises RuntimeError with a
+    # usage message for missing reference, missing format value, unknown options or extra
+    # positional arguments.
     if not args:
         raise RuntimeError("Usage: tau export <session-id-or-jsonl> [--format html|jsonl] [output]")
     session_ref = args[0]
@@ -859,6 +977,10 @@ def _resolve_export_destination(
     session_path: Path,
     format: str,
 ) -> Path:
+    # [FUNCTION DOC]
+    # HELPER: Choose the export file path. No output path -> default artifact name in the
+    # current directory; an output path with a file extension -> used as-is; otherwise it is
+    # treated as a directory and the default artifact name is placed inside it.
     if output_path is None:
         return default_session_export_artifact_path(
             session_path,
@@ -878,6 +1000,11 @@ def _resolve_export_source(
     session_ref: str,
     session_manager: SessionManager | None = None,
 ) -> tuple[Path, str]:
+    # [FUNCTION DOC]
+    # HELPER: Resolve an export source to (path, title). An existing path is used directly
+    # (RuntimeError if it is a directory) with title "Tau session <file stem>". Otherwise
+    # looks up the id in the session manager (default instance); unknown -> RuntimeError.
+    # Title is the record title or "Tau session <id>".
     candidate_path = Path(session_ref).expanduser()
     if candidate_path.exists():
         if candidate_path.is_dir():
@@ -898,6 +1025,10 @@ def render_provider_settings(
     *,
     credential_reader: CredentialReader | None = None,
 ) -> None:
+    # [FUNCTION DOC]
+    # Print configured providers, one tab-separated line each: "*" marker for the default,
+    # name, kind, default model, comma-joined models, API-key env var, credential status,
+    # base URL, timeout in seconds, retries and retry delay.
     """Render configured providers for the CLI."""
     for provider in settings.providers:
         marker = "*" if provider.name == settings.default_provider else " "
@@ -917,6 +1048,11 @@ def _provider_credential_status(
     *,
     credential_reader: CredentialReader | None,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Describe where a provider's credential comes from: "stored:<name>" when a
+    # credential name is configured and the reader has it (OAuth lookup for openai-codex,
+    # plain secret otherwise), else "env:<VAR>" when the API-key env var is set and
+    # non-empty, else "missing".
     if provider.credential_name and credential_reader is not None:
         if provider_kind(provider) == "openai-codex":
             get_oauth = getattr(credential_reader, "get_oauth", None)
@@ -943,6 +1079,20 @@ async def run_openai_rpc_mode(
     *,
     thinking_level_override: ThinkingLevel | None = None,
 ) -> None:
+    # [FUNCTION DOC]
+    # Run a persistent Pi-compatible JSONL RPC session over stdin/stdout.
+    # Loads provider and shell settings and resolves the session record (resumed by id, or
+    # newly created exclusively). Provider/model come from explicit options, else from the
+    # resumed record. Resolves the provider selection; if that fails and the provider is
+    # "openai-codex", bootstraps with the codex default (the staged loader later validates
+    # live-only models), else re-raises ProviderConfigError. Determines the Hugging Face
+    # inference-provider pin and mode (reused from a resumed record when provider and model
+    # match, else from settings as "fixed", or "automatic"). Creates the runtime provider
+    # with the startup thinking level, loads the CodingSession with all options, attaches a
+    # stderr UI bridge for extensions and runs the RPC server until it finishes, always
+    # closing the provider afterwards.
+    # KNOWN ISSUE: the loaded CodingSession itself is never closed (only the provider is),
+    # unlike print mode which closes the session in a finally block.
     """Run a persistent Pi-compatible JSONL RPC session."""
     settings = load_provider_settings()
     shell_settings = load_shell_settings()
@@ -1052,6 +1202,15 @@ async def run_openai_print_mode(
     *,
     thinking_level_override: ThinkingLevel | None = None,
 ) -> bool:
+    # [FUNCTION DOC]
+    # Run one print-mode turn (new or resumed session) using configured providers.
+    # Loads settings, resolves or creates the session record, and determines the provider
+    # and model: explicit options win, else the record's provider/model, else defaults.
+    # For durable (settings-backed) providers resolves a static selection, computes the
+    # Hugging Face inference pin/mode as in RPC mode and constructs the initial provider;
+    # dynamic (extension) providers leave it None so the staged session resolves them.
+    # Delegates to run_print_mode with all options and returns its success flag; always
+    # closes the provider it constructed.
     """Run a new or resumed print-mode turn using the configured provider."""
     settings = load_provider_settings()
     shell_settings = load_shell_settings()
@@ -1192,6 +1351,13 @@ def _print_session_record(
     model: str | None,
     session_id: str | None,
 ) -> CodingSessionRecord:
+    # [FUNCTION DOC]
+    # HELPER: Resolve the session record for print/RPC mode. With a resume id returns the
+    # existing record (ValueError if unknown). Otherwise resolves the provider selection
+    # and exclusively creates a new session with the selected model, provider and Hugging
+    # Face inference pin. If selection fails but both provider and model were given
+    # explicitly (e.g. a dynamic provider), creates the session with them as given;
+    # otherwise the ProviderConfigError propagates. Side effects: writes session index/files.
     """Resolve a resumed transcript or exclusively create a new one."""
     if resume_session_id is not None:
         record = manager.get_session(resume_session_id)
@@ -1236,6 +1402,9 @@ def _create_print_session(
     inference_provider: str | None = None,
     session_id: str | None = None,
 ) -> CodingSessionRecord:
+    # [FUNCTION DOC]
+    # HELPER: Exclusively create a new session record via the manager (refusing to reuse an
+    # existing transcript/id) with cwd, model, provider, inference pin and optional id.
     """Create an isolated print-mode session, refusing transcript collisions."""
     return manager.create_session_exclusive(
         cwd=cwd,
@@ -1276,6 +1445,27 @@ async def run_print_mode(
     startup_model_override: bool = False,
     thinking_level_override: ThinkingLevel | None = None,
 ) -> bool:
+    # [FUNCTION DOC]
+    # Run one non-interactive prompt and print streamed events.
+    # Keyword inputs: prompt, model, cwd, optional initial provider, output mode, resource
+    # paths, storage (defaults to in-memory), session id/manager, provider name and
+    # inference settings, provider settings and runtime config, requested provider/model,
+    # session provider name, shell command prefix, extension options, system prompt
+    # overrides, trust override/default, startup model override flag, thinking override.
+    # Behavior: prepares a staged CodingSession. If the prompt is "/system" (optionally with
+    # arguments), handles it, aborts the candidate (nothing persisted), prints the message
+    # and returns True. Otherwise adopts the session, optionally applies the startup model
+    # override, attaches a stderr UI bridge, prints project-trust diagnostics to stderr,
+    # emits the pending session-start event and creates the renderer for the output mode.
+    # Then: a terminal command ("!" style) runs and prints its formatted result, returning
+    # its ok flag; a handled slash command prints its message (interactive-only commands
+    # /local and /sidebar print an explanation; /reload reports the reload summary or error;
+    # a rename reports the new name or error) and returns True; otherwise streams the
+    # prompt's events to the renderer and returns renderer.finish(). The session is always
+    # closed after adoption once the main block starts.
+    # Output: False only when the agent ended in a non-recoverable error.
+    # KNOWN ISSUE: if an exception occurs after adoption but before the try block (e.g.
+    # while applying the model override or emitting session start), the session is not closed.
     """Run one non-interactive prompt and print streamed events.
 
     Returns False when the agent emits a non-recoverable error so CLI callers
@@ -1374,21 +1564,35 @@ async def run_print_mode(
 
 
 class _MemorySessionStorage:
+    # [CLASS DOC]
+    # HELPER: Append-only in-memory session storage used when print mode is called directly
+    # (e.g. tests) without a file. Holds a public list of session entries.
     """Append-only in-memory storage for direct print-mode tests."""
 
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Start with an empty entry list.
         self.entries: list[SessionEntry] = []
 
     async def append(self, entry: SessionEntry) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Append one entry to the list.
         self.entries.append(entry)
 
     async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Extend the list with a sequence of entries.
         self.entries.extend(entries)
 
     async def read_all(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # HELPER: Return a shallow copy of all stored entries.
         return list(self.entries)
 
 
 def _format_terminal_command_result(result: TerminalCommandResult) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Format a terminal command result as "$ <command>", a bracketed note on whether
+    # the output was added to context, and the command output, on separate lines.
     context_status = "added to context" if result.added_to_context else "not added to context"
     return f"$ {result.command}\n[{context_status}]\n{result.output}"

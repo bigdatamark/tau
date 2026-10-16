@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Shared HTTP helpers for Tau network integrations built on httpx. Main concern: proxy environment
+# variables using the generic "socks://" scheme, which httpx rejects; these are rewritten to
+# "socks5://" while clients are constructed. Covers the upper- and lower-case HTTP_PROXY,
+# HTTPS_PROXY and ALL_PROXY variables.
 """HTTP client helpers shared by Tau network integrations."""
 
 from __future__ import annotations
@@ -20,6 +25,11 @@ _PROXY_ENV_VARS = (
 
 
 def normalize_proxy_url(proxy_url: str) -> str:
+    # [FUNCTION DOC]
+    # Convert a proxy URL into an httpx-acceptable form. If the URL starts with "socks://" (case-
+    # insensitive) the scheme is replaced with "socks5://" keeping the rest unchanged; otherwise
+    # the input is returned as-is.
+    # Input: proxy URL string. Output: normalized string. No exceptions, no side effects.
     """Return an httpx-compatible proxy URL.
 
     Some environments use ``socks://`` as a generic SOCKS proxy scheme. httpx
@@ -36,6 +46,15 @@ def normalize_proxy_url(proxy_url: str) -> str:
 
 @contextmanager
 def normalized_proxy_environment() -> Iterator[None]:
+    # [FUNCTION DOC]
+    # Context manager that temporarily rewrites proxy environment variables. On entry, for each
+    # known proxy variable that is set and whose normalized value differs, remembers the original
+    # value and writes the normalized value into the process environment. Yields nothing. On exit
+    # (even on exception), restores every changed variable to its original value.
+    # Inputs: none. Side effects: mutates the process environment for the duration of the block
+    # (not thread-safe). Exceptions from the body propagate after restoration.
+    # KNOWN ISSUE: the branch that removes a variable when its saved original is absent can never
+    # run, since only variables that were set are recorded.
     """Temporarily normalize proxy environment variables for httpx construction."""
 
     original: dict[str, str | None] = {}
@@ -63,6 +82,12 @@ def normalized_proxy_environment() -> Iterator[None]:
 
 
 def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
+    # [FUNCTION DOC]
+    # Construct an httpx asynchronous client inside the normalized proxy environment so httpx
+    # reads usable proxy settings at construction time.
+    # Input: arbitrary keyword arguments forwarded to the client constructor. Output: the new
+    # client (caller must close it). Side effects: temporary environment mutation. Raises whatever
+    # the client constructor raises.
     """Create an ``httpx.AsyncClient`` with Tau's proxy normalization applied."""
 
     with normalized_proxy_environment():
@@ -70,6 +95,15 @@ def create_async_client(**kwargs: Any) -> httpx.AsyncClient:
 
 
 def get_json(url: str, *, timeout: float, follow_redirects: bool = False) -> dict[str, object]:
+    # [FUNCTION DOC]
+    # Perform a synchronous GET of the URL (with given timeout and optional redirect following)
+    # under the normalized proxy environment, then require a 2xx status and parse the body as
+    # JSON.
+    # Inputs: URL, timeout seconds (keyword-only), follow-redirects flag (default false). Output:
+    # the decoded JSON object as a mapping.
+    # Raises: httpx status error for non-2xx responses, httpx transport errors, JSON decode
+    # errors, and a value error if the JSON top level is not an object. Side effects: network I/O,
+    # temporary environment mutation.
     """Fetch a JSON object with Tau's proxy normalization applied."""
 
     with normalized_proxy_environment():

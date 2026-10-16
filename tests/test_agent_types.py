@@ -1,3 +1,7 @@
+# [MODULE DOC]
+# Tests for the core tau_agent data types: message models and their Pi-compatible
+# wire serialization (camelCase aliases), strict field validation, AgentTool
+# execution, and agent event type names. Pure in-memory tests.
 from collections.abc import Mapping
 
 import pytest
@@ -24,12 +28,18 @@ from tau_agent.types import JSONValue
 
 
 def test_user_message_serializes_with_pi_wire_shape() -> None:
+    # [FUNCTION DOC]
+    # Test that a user message dumps to role, content and timestamp only.
     message = UserMessage(content="hello", timestamp=123)
 
     assert message.model_dump() == {"role": "user", "content": "hello", "timestamp": 123}
 
 
 def test_assistant_message_keeps_ordered_content_blocks() -> None:
+    # [FUNCTION DOC]
+    # Test that an assistant message keeps text and tool-call blocks in order,
+    # exposes text and tool calls, and serializes a tool call with type "toolCall"
+    # and a null "thoughtSignature".
     tool_call = ToolCall(id="call-1", name="read", arguments={"path": "README.md"})
     message = AssistantMessage(
         content=[TextContent(text="I'll read that."), tool_call],
@@ -50,6 +60,9 @@ def test_assistant_message_keeps_ordered_content_blocks() -> None:
 
 
 def test_assistant_message_serializes_resolved_response_provider() -> None:
+    # [FUNCTION DOC]
+    # Test that provider and the resolved response provider serialize, the latter
+    # under "responseProvider".
     message = AssistantMessage(
         provider="huggingface",
         model="test-model",
@@ -64,6 +77,9 @@ def test_assistant_message_serializes_resolved_response_provider() -> None:
 
 
 def test_assistant_message_serializes_response_timing() -> None:
+    # [FUNCTION DOC]
+    # Test that response timing serializes with camelCase keys timeToFirstOutputMs
+    # and totalDurationMs.
     message = AssistantMessage(
         content="done",
         timing=ResponseTiming(time_to_first_output_ms=1200, total_duration_ms=5000),
@@ -80,6 +96,9 @@ def test_assistant_message_serializes_response_timing() -> None:
 
 
 def test_assistant_message_persists_thinking_blocks_and_signatures() -> None:
+    # [FUNCTION DOC]
+    # Test that thinking blocks are exposed as thinking text and serialize with
+    # their signature and a false "redacted" flag.
     message = AssistantMessage(
         content=[
             ThinkingContent(thinking="plan", thinking_signature="reasoning_content"),
@@ -100,6 +119,9 @@ def test_assistant_message_persists_thinking_blocks_and_signatures() -> None:
 
 
 def test_tool_result_message_records_canonical_tool_output() -> None:
+    # [FUNCTION DOC]
+    # Test tool-result message role "toolResult", text, details and the
+    # "toolCallId" alias in serialization.
     message = ToolResultMessage(
         tool_call_id="call-1",
         tool_name="read",
@@ -117,6 +139,8 @@ def test_tool_result_message_records_canonical_tool_output() -> None:
 
 
 def test_tool_result_message_accepts_pi_camel_case_wire_keys() -> None:
+    # [FUNCTION DOC]
+    # Test that tool-result messages validate from camelCase wire keys.
     message = ToolResultMessage.model_validate(
         {
             "role": "toolResult",
@@ -135,14 +159,23 @@ def test_tool_result_message_accepts_pi_camel_case_wire_keys() -> None:
 
 
 def test_models_reject_unknown_fields() -> None:
+    # [FUNCTION DOC]
+    # Test that constructing a message with an unknown field raises ValidationError.
     with pytest.raises(ValidationError):
         UserMessage(content="hello", unexpected=True)  # type: ignore[call-arg]
 
 
 @pytest.mark.anyio
 async def test_agent_tool_executes_with_pi_arguments() -> None:
+    # [FUNCTION DOC]
+    # Test that AgentTool.execute forwards the call ID, argument mapping and
+    # cancellation signal to its execute function and returns its result.
     class FakeCancellationToken:
+        # [CLASS DOC]
+        # HELPER: Minimal cancellation token stub that is never cancelled.
         def is_cancelled(self) -> bool:
+            # [FUNCTION DOC]
+            # HELPER: Always return False.
             return False
 
     observed: list[tuple[str, Mapping[str, JSONValue], object | None]] = []
@@ -153,6 +186,10 @@ async def test_agent_tool_executes_with_pi_arguments() -> None:
         signal: object | None = None,
         on_update: object | None = None,
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake tool execute function; records the call ID, arguments and signal
+        # in the test's observation list and returns a text result echoing the "text"
+        # argument. Raises a lookup error if "text" is missing.
         del on_update
         observed.append((tool_call_id, arguments, signal))
         return AgentToolResult(content=[TextContent(text=str(arguments["text"]))])
@@ -173,6 +210,10 @@ async def test_agent_tool_executes_with_pi_arguments() -> None:
 
 
 def test_agent_events_have_stable_pi_type_names() -> None:
+    # [FUNCTION DOC]
+    # Test that message and tool-execution events report the Pi type strings
+    # message_start, message_update, message_end, tool_execution_start and
+    # tool_execution_end.
     partial = AssistantMessage(content="hello")
     nested = TextDeltaEvent(content_index=0, delta="hello", partial=partial)
     result = AgentToolResult(content=[TextContent(text="contents")])

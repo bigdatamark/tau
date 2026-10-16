@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Hugging Face GGUF discovery used by the llama.cpp backend so users can pick
+# models for llama.cpp's server-side downloads. Validates exact
+# owner/repository[:quantization] references, discovers a search-only HF
+# token (env var or standard token files), searches the HF models API for GGUF
+# repositories, and summarizes each repository's quantization variants with
+# total sizes. Errors are surfaced as secret-free HuggingFaceSearchError.
+# Side effects: HTTP requests to huggingface.co and token file reads.
 """Hugging Face GGUF discovery for llama.cpp server-side downloads."""
 
 from __future__ import annotations
@@ -20,23 +28,36 @@ _EXACT_REPOSITORY = re.compile(r"^[^\s/:]+/[^\s/:]+(?::[^\s:]+)?$")
 
 
 class HuggingFaceSearchError(RuntimeError):
+    # [CLASS DOC]
+    # Exception (RuntimeError) for Hugging Face search/details failures; messages
+    # are written to never contain tokens or other secrets.
     """A secret-free Hugging Face search/details failure."""
 
 
 @dataclass(frozen=True, slots=True)
 class GgufVariant:
+    # [CLASS DOC]
+    # Frozen dataclass: one quantization label (upper-case, e.g. Q4_K_M) and its
+    # total size in bytes across matching shard files, or None when unknown.
     quantization: str
     size_bytes: int | None
 
 
 @dataclass(frozen=True, slots=True)
 class GgufRepository:
+    # [CLASS DOC]
+    # Frozen dataclass: exact repository id (owner/name), whether access is gated,
+    # and its GGUF variants sorted by quantization label.
     id: str
     gated: bool
     variants: tuple[GgufVariant, ...]
 
 
 def validate_repository_reference(value: str) -> str:
+    # [FUNCTION DOC]
+    # Strip whitespace and check the value is exactly owner/repository with an
+    # optional ":quantization" suffix (no spaces, no extra slashes/colons).
+    # Output: the normalized reference. Raises HuggingFaceSearchError otherwise.
     """Return one exact owner/repository[:quantization] download reference."""
     normalized = value.strip()
     if not _EXACT_REPOSITORY.fullmatch(normalized):
@@ -51,6 +72,13 @@ def discover_hf_token(
     *,
     token_paths: Sequence[Path] | None = None,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # Find a Hugging Face token for search. Inputs: environment mapping and
+    # optional explicit token file paths. Returns the stripped HF_TOKEN env value
+    # if non-empty; else reads each candidate file (explicit paths or the
+    # standard locations) and returns the first non-empty stripped content;
+    # unreadable/undecodable files are skipped. Returns None if nothing found.
+    # Side effects: file reads.
     """Read a search-only token from environment or standard HF token files."""
     token = environment.get(HF_TOKEN_ENV, "").strip()
     if token:
@@ -73,6 +101,15 @@ async def search_gguf_repositories(
     token: str | None,
     limit: int = 10,
 ) -> tuple[GgufRepository, ...]:
+    # [FUNCTION DOC]
+    # Search GGUF repositories. Inputs: async HTTP client, query, token (may be
+    # None), result limit (default 10). If the stripped query is an exact
+    # repository reference, any ":quantization" suffix is dropped and a single
+    # details lookup is returned. Otherwise GETs the models API filtered to gguf,
+    # sorted by downloads descending, then fetches details for each result whose
+    # id (or model id) has exactly one slash, sequentially.
+    # Output: tuple of GgufRepository. Raises HuggingFaceSearchError for HTTP
+    # errors, malformed JSON, or a non-list payload. Network I/O.
     """Search repositories, or inspect one exact owner/repository reference."""
     normalized = query.strip()
     exact = normalized.rsplit(":", 1)[0] if _EXACT_REPOSITORY.fullmatch(normalized) else None
@@ -110,6 +147,17 @@ async def repository_details(
     *,
     token: str | None,
 ) -> GgufRepository:
+    # [FUNCTION DOC]
+    # Fetch one repository's metadata and summarize GGUF variants.
+    # Inputs: client, repository id, token. Validates the payload is an object
+    # with an exact id (falls back to the requested id). Gated is true when the
+    # field is literally true or a string other than empty/"false"/"none"
+    # (case-insensitive). For each sibling file ending in .gguf (excluding
+    # mmproj projector files) whose name contains a recognized quantization label
+    # (Q/IQ k-quants, BF16/F16/F32, MXFP, optional UD- prefix), sums file sizes
+    # per upper-cased label; if any shard size is unknown the total becomes None.
+    # Output: GgufRepository with variants sorted by label.
+    # Raises HuggingFaceSearchError on HTTP errors or malformed data. Network I/O.
     response = await client.get(
         f"{HF_API_ROOT}/models/{repository}",
         headers=_headers(token),
@@ -156,6 +204,9 @@ async def repository_details(
 
 
 def _file_size(raw: Mapping[str, object]) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: return a sibling's size from its size field or, failing that, its
+    # LFS size; only non-negative non-bool ints count, else None.
     size = raw.get("size")
     lfs = raw.get("lfs")
     if not isinstance(size, int) and isinstance(lfs, Mapping):
@@ -164,10 +215,16 @@ def _file_size(raw: Mapping[str, object]) -> int | None:
 
 
 def _headers(token: str | None) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: return a bearer Authorization header mapping when a token is
+    # given, else an empty mapping.
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _json(response: httpx.Response) -> object:
+    # [FUNCTION DOC]
+    # HELPER: parse a response's JSON; raise HuggingFaceSearchError on decode
+    # failure.
     try:
         return response.json()
     except ValueError as exc:
@@ -175,6 +232,11 @@ def _json(response: httpx.Response) -> object:
 
 
 def _raise_http(response: httpx.Response, operation: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: map HTTP failures to HuggingFaceSearchError: 401/403 -> access
+    # denied guidance about accepting terms and HF_TOKEN; 429 -> rate limited;
+    # other >= 400 -> generic message naming the status and operation. Returns
+    # nothing on success.
     if response.status_code in {401, 403}:
         raise HuggingFaceSearchError(
             "Hugging Face denied access. Accept the repository terms and provide HF_TOKEN "
@@ -190,6 +252,11 @@ def _raise_http(response: httpx.Response, operation: str) -> None:
 
 
 def _standard_token_paths(environment: Mapping[str, str]) -> tuple[Path, ...]:
+    # [FUNCTION DOC]
+    # HELPER: list candidate HF token files in priority order, de-duplicated:
+    # HF_TOKEN_PATH, HF_HOME/token, XDG_CACHE_HOME/huggingface/token,
+    # HOME/.cache/huggingface/token, HOME/.huggingface/token (HOME from the
+    # mapping, else the real home directory). Empty env values are skipped.
     home = Path(environment.get("HOME") or Path.home())
     explicit = environment.get("HF_TOKEN_PATH", "").strip()
     hf_home = environment.get("HF_HOME", "").strip()

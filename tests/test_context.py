@@ -1,3 +1,7 @@
+# [MODULE DOC]
+# Tests for project context-file discovery (AGENTS.md files) in tau_coding.
+# Verifies discovery order across user Tau home, user agents home, project
+# root, nested cwd and the cwd's .tau and .agents directories.
 from pathlib import Path
 
 from tau_coding.context import discover_project_context
@@ -6,6 +10,13 @@ from tau_coding.resources import TauResourcePaths
 
 
 def test_discovers_user_project_and_agents_context_files(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Builds a temporary layout: a Tau home and agents home each with AGENTS.md, a
+    # project root (marked by pyproject.toml) with AGENTS.md, a nested package dir
+    # with AGENTS.md plus .tau/AGENTS.md and .agents/AGENTS.md. Calls discovery
+    # with the nested dir as cwd and asserts the six files are returned in order:
+    # user Tau, user agents, project root, nested, nested .tau, nested .agents,
+    # with matching contents. Side effects: writes files under the pytest tmp dir.
     tau_home = tmp_path / "home" / ".tau"
     agents_home = tmp_path / "home" / ".agents"
     project = tmp_path / "project"

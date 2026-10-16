@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Tests for the built-in coding tools (read, write, edit, bash): schemas and
+# prompt metadata, text reading with offset/limit, image handling (detection by
+# content, resizing, BMP conversion, unsupported variants, size limits, text-only
+# models), pluggable read operations, file creation, atomic multi-edit, and bash
+# execution (stdin disconnected, shell command prefixes, timeouts and
+# cancellation killing child processes). Uses temporary directories, real shell
+# subprocesses and Pillow-generated images.
 import asyncio
 import base64
 import shlex
@@ -25,12 +33,18 @@ from tau_coding.image_processing import DEFAULT_MAX_SOURCE_IMAGE_BYTES
 
 
 def image_bytes(format_name: str = "PNG", *, size: tuple[int, int] = (8, 6)) -> bytes:
+    # [FUNCTION DOC]
+    # HELPER: Encode a solid navy RGB image of the given size (default 8x6) in the
+    # given Pillow format (default PNG) and return the bytes.
     output = BytesIO()
     Image.new("RGB", size, "navy").save(output, format=format_name)
     return output.getvalue()
 
 
 def animated_png_bytes() -> bytes:
+    # [FUNCTION DOC]
+    # HELPER: Return PNG bytes with an "acTL" animation-control chunk inserted
+    # before the first IDAT chunk so the file is detected as an animated PNG.
     png = image_bytes()
     idat_offset = png.index(b"IDAT") - 4
     animated_chunk = b"\x00\x00\x00\x08acTL\x00\x00\x00\x02\x00\x00\x00\x00" + b"\x00" * 4
@@ -38,18 +52,29 @@ def animated_png_bytes() -> bytes:
 
 
 class FakeCancellationToken:
+    # [CLASS DOC]
+    # HELPER: Test cancellation token with a mutable cancelled flag.
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Start in the not-cancelled state.
         self.cancelled = False
 
     def cancel(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Set the cancelled flag.
         self.cancelled = True
 
     def is_cancelled(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Return the cancelled flag.
         return self.cancelled
 
 
 @pytest.mark.anyio
 async def test_create_coding_tools_returns_initial_tool_set(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test the default tool set order (read, write, edit, bash) and that edit and
+    # bash carry expected prompt snippet/guideline text.
     tools = create_coding_tools(cwd=tmp_path)
 
     assert [tool.name for tool in tools] == ["read", "write", "edit", "bash"]
@@ -60,6 +85,9 @@ async def test_create_coding_tools_returns_initial_tool_set(tmp_path: Path) -> N
 
 
 def test_bash_tool_schema_requires_display_description(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that the bash schema has a string "description" property and requires
+    # both command and description.
     definition = create_bash_tool_definition(cwd=tmp_path)
     properties = definition.input_schema["properties"]
 
@@ -70,6 +98,8 @@ def test_bash_tool_schema_requires_display_description(tmp_path: Path) -> None:
 
 
 def test_tool_definitions_expose_pi_style_prompt_metadata(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test the edit definition's prompt snippet prefix and its four guidelines.
     definition = create_edit_tool_definition(cwd=tmp_path)
 
     assert definition.prompt_snippet.startswith("Make precise file edits")
@@ -77,6 +107,8 @@ def test_tool_definitions_expose_pi_style_prompt_metadata(tmp_path: Path) -> Non
 
 
 def test_read_tool_schema_defines_line_controls_as_integers(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that read's offset and limit schema properties are integers.
     definition = create_read_tool_definition(cwd=tmp_path)
     properties = definition.input_schema["properties"]
 
@@ -87,6 +119,9 @@ def test_read_tool_schema_defines_line_controls_as_integers(tmp_path: Path) -> N
 
 @pytest.mark.anyio
 async def test_read_tool_reads_file_with_offset_and_limit(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test 1-based offset/limit reading, the continuation notice, and details
+    # containing the absolute path and a truncation mapping.
     path = tmp_path / "notes.txt"
     path.write_text("one\ntwo\nthree\n")
     tool = create_read_tool(cwd=tmp_path)
@@ -102,6 +137,9 @@ async def test_read_tool_reads_file_with_offset_and_limit(tmp_path: Path) -> Non
 
 @pytest.mark.anyio
 async def test_read_tool_returns_images_as_model_content(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that reading a PNG returns a summary text plus base64 image content and
+    # details with path, MIME types, byte sizes and dimensions.
     image_data = image_bytes()
     path = tmp_path / "diagram.png"
     path.write_bytes(image_data)
@@ -126,6 +164,8 @@ async def test_read_tool_returns_images_as_model_content(tmp_path: Path) -> None
 
 @pytest.mark.anyio
 async def test_read_tool_detects_images_by_content_not_extension(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that image bytes in a ".txt" file are still returned as an image.
     path = tmp_path / "diagram.txt"
     path.write_bytes(image_bytes())
     tool = create_read_tool(cwd=tmp_path)
@@ -137,6 +177,9 @@ async def test_read_tool_detects_images_by_content_not_extension(tmp_path: Path)
 
 @pytest.mark.anyio
 async def test_read_tool_resizes_over_dimension_images(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that an image wider than 2000 pixels is resized proportionally and the
+    # text notes the resize.
     path = tmp_path / "large.png"
     path.write_bytes(image_bytes(size=(2_500, 100)))
     tool = create_read_tool(cwd=tmp_path)
@@ -151,6 +194,9 @@ async def test_read_tool_resizes_over_dimension_images(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_read_tool_explicitly_omits_images_for_text_only_model(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that when the shared image support state says unsupported, the image is
+    # omitted with explanatory text, and toggling the state later re-enables images.
     path = tmp_path / "galaxy.png"
     path.write_bytes(image_bytes())
     image_support = ImageSupportState(supported=False)
@@ -171,6 +217,8 @@ async def test_read_tool_explicitly_omits_images_for_text_only_model(tmp_path: P
 
 @pytest.mark.anyio
 async def test_read_tool_converts_bmp_to_png(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that BMP images are converted to PNG and the source MIME type recorded.
     path = tmp_path / "legacy.bmp"
     path.write_bytes(image_bytes("BMP"))
     tool = create_read_tool(cwd=tmp_path)
@@ -188,6 +236,8 @@ async def test_read_tool_converts_bmp_to_png(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_read_tool_reports_decode_failure_without_attachment(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that a malformed PNG yields an "Image omitted" message and no image.
     malformed = (
         b"\x89PNG\r\n\x1a\n"
         b"\x00\x00\x00\x0dIHDR" + b"\x00" * 17 + b"\x00\x00\x00\x00IDAT" + b"\x00" * 4
@@ -212,6 +262,9 @@ async def test_read_tool_reports_decode_failure_without_attachment(tmp_path: Pat
 async def test_read_tool_reports_known_unsupported_image_variants(
     tmp_path: Path, filename: str, data: bytes, reason: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized test that animated PNG and JPEG XL inputs are rejected with
+    # specific reasons and no image attachment.
     (tmp_path / filename).write_bytes(data)
     tool = create_read_tool(cwd=tmp_path)
 
@@ -225,7 +278,12 @@ async def test_read_tool_reports_known_unsupported_image_variants(
 async def test_read_tool_rejects_oversized_image_from_prefix_before_full_read(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test that an image whose size exceeds the source limit is rejected using only
+    # a prefix read (a full read would fail the test), with details recording size.
     def unexpected_full_read(path: Path) -> bytes:
+        # [FUNCTION DOC]
+        # HELPER: Fake full-read operation that always raises AssertionError.
         raise AssertionError(f"unexpected full read: {path}")
 
     source_size = DEFAULT_MAX_SOURCE_IMAGE_BYTES + 1
@@ -247,6 +305,8 @@ async def test_read_tool_rejects_oversized_image_from_prefix_before_full_read(
 
 @pytest.mark.anyio
 async def test_read_tool_still_reads_large_text_files(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that the image size limit does not apply to non-image (text) files.
     operations = ReadOperations(
         validate_path=lambda path: None,
         read_bytes=lambda path: b"large text",
@@ -262,6 +322,9 @@ async def test_read_tool_still_reads_large_text_files(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_read_tool_uses_pluggable_read_operations(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that custom read operations are used for reading, receiving the path
+    # resolved against the working directory.
     reads: list[Path] = []
     operations = ReadOperations(
         validate_path=lambda path: None,
@@ -277,6 +340,8 @@ async def test_read_tool_uses_pluggable_read_operations(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_read_tool_treats_zero_offset_as_start_of_file(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that offset 0 is treated like offset 1.
     path = tmp_path / "notes.txt"
     path.write_text("one\ntwo\nthree\n")
     tool = create_read_tool(cwd=tmp_path)
@@ -289,6 +354,8 @@ async def test_read_tool_treats_zero_offset_as_start_of_file(tmp_path: Path) -> 
 
 @pytest.mark.anyio
 async def test_write_tool_creates_parent_directories(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that write creates missing parent directories and writes the content.
     tool = create_write_tool(cwd=tmp_path)
 
     result = await tool.execute("test-call", {"path": "nested/file.txt", "content": "hello"})
@@ -299,6 +366,8 @@ async def test_write_tool_creates_parent_directories(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_edit_tool_applies_multiple_exact_replacements(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that several exact replacements are applied in one call.
     path = tmp_path / "file.txt"
     path.write_text("alpha\nbeta\ngamma\n")
     tool = create_edit_tool(cwd=tmp_path)
@@ -320,6 +389,9 @@ async def test_edit_tool_applies_multiple_exact_replacements(tmp_path: Path) -> 
 
 @pytest.mark.anyio
 async def test_edit_tool_rolls_back_when_any_edit_fails(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that if any edit's text is not found a ValueError naming the edit index
+    # is raised and the file remains unchanged.
     path = tmp_path / "file.txt"
     original = "alpha\nbeta\ngamma\n"
     path.write_text(original)
@@ -342,6 +414,8 @@ async def test_edit_tool_rolls_back_when_any_edit_fails(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_edit_tool_requires_unique_matches(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that an old text occurring more than once raises ValueError.
     path = tmp_path / "file.txt"
     path.write_text("repeat\nrepeat\n")
     tool = create_edit_tool(cwd=tmp_path)
@@ -358,6 +432,9 @@ async def test_edit_tool_requires_unique_matches(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_bash_tool_tolerates_missing_required_display_description(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that bash runs without the schema-required description and reports exit
+    # code 0 and no timeout.
     tool = create_bash_tool(cwd=tmp_path)
 
     result = await tool.execute("test-call", {"command": "printf hello"})
@@ -374,18 +451,28 @@ async def test_bash_tool_disconnects_stdin_from_commands(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test (by monkeypatching subprocess creation) that commands are started with
+    # stdin connected to the null device.
     subprocess_options: dict[str, object] = {}
 
     class FakeProcess:
+        # [CLASS DOC]
+        # HELPER: Fake subprocess with exit code 0.
         returncode = 0
 
         async def communicate(self) -> tuple[bytes, None]:
+            # [FUNCTION DOC]
+            # HELPER: Return empty stdout and no stderr.
             return b"", None
 
     async def fake_create_subprocess_shell(
         command: str,
         **options: object,
     ) -> FakeProcess:
+        # [FUNCTION DOC]
+        # HELPER: Record the keyword options passed to subprocess creation and return a
+        # fake process.
         del command
         subprocess_options.update(options)
         return FakeProcess()
@@ -402,6 +489,9 @@ async def test_bash_tool_disconnects_stdin_from_commands(
 async def test_create_coding_tools_applies_shell_command_prefix(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Test that a shell prefix passed to create_coding_tools reaches the bash tool
+    # (an alias defined in the prefix works) and details flag the prefix as applied.
     tools = create_coding_tools(
         cwd=tmp_path,
         shell_command_prefix="shopt -s expand_aliases\nalias greet='printf coding-tool-alias'",
@@ -418,6 +508,9 @@ async def test_create_coding_tools_applies_shell_command_prefix(
 
 @pytest.mark.anyio
 async def test_bash_tool_applies_opt_in_shell_command_prefix(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test a prefix that imports only alias lines from an rc file: the alias works
+    # and other rc commands (touching a marker file) do not run.
     rc_path = tmp_path / ".zshrc"
     marker = tmp_path / "sourced"
     rc_path.write_text(
@@ -438,6 +531,8 @@ async def test_bash_tool_applies_opt_in_shell_command_prefix(tmp_path: Path) -> 
 
 @pytest.mark.anyio
 async def test_bash_tool_reports_timeout(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that exceeding the timeout sets timed_out in details and mentions it.
     tool = create_bash_tool(cwd=tmp_path)
 
     result = await tool.execute("test-call", {"command": "sleep 1", "timeout": 0.01})
@@ -450,6 +545,9 @@ async def test_bash_tool_reports_timeout(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_bash_tool_timeout_kills_shell_children(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that a timeout returns quickly and kills background children so a
+    # delayed marker file is never created.
     tool = create_bash_tool(cwd=tmp_path)
     marker = tmp_path / "marker"
 
@@ -469,6 +567,9 @@ async def test_bash_tool_timeout_kills_shell_children(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_bash_tool_cancellation_kills_shell_children(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test that cancelling via the token stops the command quickly with cancelled
+    # set in details and text.
     tool = create_bash_tool(cwd=tmp_path)
     token = FakeCancellationToken()
 

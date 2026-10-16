@@ -1,3 +1,9 @@
+# [MODULE DOC]
+# Textual lifecycle tests for the provider-neutral local-backend TUI screens (backend
+# picker, backend management screen, confirmation and choice dialogs, search results,
+# configuration form). Uses a minimal host App and a LocalBackendRegistry wired to a
+# fake OpenAI-compatible dynamic provider; operations are fake async callbacks
+# coordinated with asyncio events. All tests run on asyncio via anyio.
 """Textual lifecycle tests for the provider-neutral local-backend host."""
 
 import asyncio
@@ -43,11 +49,17 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 def anyio_backend() -> str:
+    # [FUNCTION DOC]
+    # HELPER: Fixture selecting the asyncio backend for anyio-marked tests.
     return "asyncio"
 
 
 class _Host(App[None]):
+    # [CLASS DOC]
+    # HELPER: Minimal Textual app used as a host for pushing the screens under test.
     def compose(self):
+        # [FUNCTION DOC]
+        # HELPER: Yield a single static "host" widget.
         yield Static("host")
 
 
@@ -60,6 +72,13 @@ def _registry(
     download_model=None,
     recommended: bool = False,
 ) -> LocalBackendRegistry:
+    # [FUNCTION DOC]
+    # HELPER: Build a local-backend registry for tests. Registers a dynamic provider
+    # "provider" (one model "model", fake base URL, no auth) under source "source", then a
+    # LocalBackend "backend" bound to it whose status reports ready with model "model"
+    # selected and actions refresh/use/reset. Optional keyword callbacks override refresh,
+    # reset, load/unload/download model; configure always commits; recommended flag passes
+    # through. Returns the registry (caller must close it).
     providers = DynamicProviderRegistry(generation_id="generation")
     providers.register(
         "source",
@@ -77,6 +96,8 @@ def _registry(
     registry = LocalBackendRegistry(providers, generation_id="generation")
 
     async def status(context):
+        # [FUNCTION DOC]
+        # HELPER: Default status/refresh callback returning the ready status described above.
         del context
         return LocalBackendStatus(
             state="ready",
@@ -106,6 +127,10 @@ def _registry(
 
 
 async def test_single_backend_is_preselected_but_requires_explicit_confirmation() -> None:
+    # [FUNCTION DOC]
+    # With one recommended backend, the picker preselects it and labels it Recommended with
+    # an "Enter selects" footer, but the dismissal callback receives "backend" only after
+    # the user presses Enter.
     registry = _registry(recommended=True)
     selected: list[str | None] = []
     app = _Host()
@@ -133,9 +158,16 @@ async def test_single_backend_is_preselected_but_requires_explicit_confirmation(
 
 
 async def test_backend_open_auto_refreshes_and_renders_clickable_models() -> None:
+    # [FUNCTION DOC]
+    # Opening the backend screen triggers a refresh; status shows the endpoint, progress is
+    # hidden, models and actions are separate lists, the model list is focused (section
+    # title marked focused) and tab/shift+tab move focus between lists. Selecting an
+    # unloaded model calls load_model with its id and the label updates to loaded.
     refreshed = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh callback that signals and returns one unloaded model with endpoint.
         del context
         refreshed.set()
         return LocalBackendStatus(
@@ -148,6 +180,8 @@ async def test_backend_open_auto_refreshes_and_renders_clickable_models() -> Non
     loaded: list[str] = []
 
     async def load_model(model_id, context):
+        # [FUNCTION DOC]
+        # HELPER: Records the loaded id and returns a committed result with the model loaded.
         del context
         loaded.append(model_id)
         return LocalOperationResult(
@@ -200,10 +234,17 @@ async def test_backend_open_auto_refreshes_and_renders_clickable_models() -> Non
 
 
 async def test_download_progress_renders_fraction_and_remaining_detail() -> None:
+    # [FUNCTION DOC]
+    # A running download reporting a determinate progress (fraction 0.25 with remaining
+    # detail) followed by a state-only progress keeps the determinate text and bar: progress
+    # text and bar visible, bar at 0.25, full content width, rendering filled and empty
+    # segments. After completion the bar is hidden.
     started = asyncio.Event()
     release = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh returning ready status with refresh and download actions.
         del context
         return LocalBackendStatus(
             state="ready",
@@ -211,6 +252,9 @@ async def test_download_progress_renders_fraction_and_remaining_detail() -> None
         )
 
     async def download_model(model_id, context):
+        # [FUNCTION DOC]
+        # HELPER: Asserts the model id, reports determinate then indeterminate progress, signals
+        # start, waits for release and returns a committed "Download complete." result.
         assert model_id == "owner/repo:Q4_K_M"
         context.report_progress(
             LocalProgress(
@@ -265,7 +309,12 @@ async def test_download_progress_renders_fraction_and_remaining_detail() -> None
 
 
 async def test_clicking_loaded_model_uses_exact_model_id() -> None:
+    # [FUNCTION DOC]
+    # Selecting the second (sleeping) model opens a choice confirmation with the first
+    # option preselected; confirming calls on_use with the provider id and that exact model id.
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh returning two models, loaded "first" and sleeping "second".
         del context
         return LocalBackendStatus(
             state="ready",
@@ -281,6 +330,8 @@ async def test_clicking_loaded_model_uses_exact_model_id() -> None:
     app = _Host()
 
     async def use(provider_id: str, model_id: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: on_use callback recording (provider id, model id).
         used.append((provider_id, model_id))
 
     async with app.run_test() as pilot:
@@ -307,6 +358,9 @@ async def test_clicking_loaded_model_uses_exact_model_id() -> None:
 
 
 async def test_confirmation_preselects_cancel_without_recommending_it() -> None:
+    # [FUNCTION DOC]
+    # A choice confirmation with a "cancel" choice preselects it (index 1) and no option is
+    # labelled recommended.
     request = LocalConfirmationRequest(
         "Download a large model?",
         (
@@ -328,6 +382,9 @@ async def test_confirmation_preselects_cancel_without_recommending_it() -> None:
 
 
 async def test_search_results_preselect_recommended_download_variant() -> None:
+    # [FUNCTION DOC]
+    # Search results preselect the recommended artifact option (Q4_K_M), label it
+    # recommended, and selecting it dismisses with its artifact id.
     selected: list[str | None] = []
     app = _Host()
     results = (
@@ -363,6 +420,9 @@ async def test_search_results_preselect_recommended_download_variant() -> None:
 
 
 async def test_configuration_screen_renders_text_secret_and_choice_fields() -> None:
+    # [FUNCTION DOC]
+    # The configure screen renders text and secret fields as inputs (secret is a password
+    # input) and a choice field as a select widget.
     spec = LocalConfigureSpec(
         (
             LocalConfigField("endpoint", "Endpoint", "text"),
@@ -382,14 +442,24 @@ async def test_configuration_screen_renders_text_secret_and_choice_fields() -> N
 
 
 async def test_closing_download_modal_detaches_and_reopen_offers_explicit_cancel() -> None:
+    # [FUNCTION DOC]
+    # Closing the backend screen during a download detaches without cancelling it (worker
+    # still running, registry reports the operation running). Reopening shows a "Cancel
+    # active download…" action, the last known ready state, and the preserved determinate
+    # progress (0.25, 3.0 GiB remaining). Cancelling via the action cancels the operation.
     entered = asyncio.Event()
     cancelled = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh returning ready status with refresh and download actions.
         del context
         return LocalBackendStatus(state="ready", actions=("refresh", "download_model"))
 
     async def download_model(model_id, context):
+        # [FUNCTION DOC]
+        # HELPER: Reports determinate then state-only progress, signals entry, waits forever and
+        # sets the cancelled event when cancelled.
         del model_id
         context.report_progress(
             LocalProgress("Downloading owner/repo:Q4_K_M… 3.0 GiB remaining", fraction=0.25)
@@ -452,11 +522,19 @@ async def test_closing_download_modal_detaches_and_reopen_offers_explicit_cancel
 
 
 async def test_detached_download_completion_immediately_shows_model_available() -> None:
+    # [FUNCTION DOC]
+    # After detaching from and reopening during a download, the reopened screen shows the
+    # model as downloading; once the detached download completes, the reopened screen picks
+    # up the result (polled up to about one second) and shows "available to load"; a late
+    # observed progress update does not revert the label or reshow progress.
     entered = asyncio.Event()
     release = asyncio.Event()
     completed = False
 
     def status() -> LocalBackendStatus:
+        # [FUNCTION DOC]
+        # HELPER: Build a ready status whose single model is "downloading" until the enclosing
+        # completed flag is set, then "unloaded".
         return LocalBackendStatus(
             state="ready",
             models=(
@@ -469,10 +547,15 @@ async def test_detached_download_completion_immediately_shows_model_available() 
         )
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh returning the current status.
         del context
         return status()
 
     async def download_model(model_id, context):
+        # [FUNCTION DOC]
+        # HELPER: Reports 0.75 progress, signals entry, waits for release, marks completed and
+        # returns a committed result carrying the new status.
         nonlocal completed
         del model_id
         context.report_progress(LocalProgress("Downloading owner/repo:Q4_K_M…", fraction=0.75))
@@ -551,10 +634,15 @@ async def test_detached_download_completion_immediately_shows_model_available() 
 
 
 async def test_unmount_cancels_backend_work_without_late_updates() -> None:
+    # [FUNCTION DOC]
+    # Without mounting, a refresh operation task started on the screen is cancelled by
+    # on_unmount; the operation sees cancellation and the screen is marked closing.
     entered = asyncio.Event()
     cancelled = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh that signals entry, blocks forever and sets cancelled on exit.
         del context
         entered.set()
         try:
@@ -576,12 +664,18 @@ async def test_unmount_cancels_backend_work_without_late_updates() -> None:
 
 
 async def test_reset_and_use_are_rechecked_after_the_host_becomes_idle() -> None:
+    # [FUNCTION DOC]
+    # While the host reports not idle, reset confirmation is not shown and use does
+    # nothing; after it becomes idle, reset shows a confirm dialog with the second option
+    # preselected, and use calls on_use with ("provider", "model").
     registry = _registry(reset=lambda context: LocalBackendStatus(state="ready"))
     idle = False
     used: list[tuple[str, str]] = []
     app = _Host()
 
     async def use(provider_id: str, model_id: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: on_use callback recording (provider id, model id).
         used.append((provider_id, model_id))
 
     async with app.run_test() as pilot:

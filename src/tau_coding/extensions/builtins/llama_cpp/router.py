@@ -1,3 +1,13 @@
+# [MODULE DOC]
+# Pinned protocol adapter for the llama.cpp server "router" mode (multi-model management)
+# used by the built-in llama.cpp extension. Detects router identity and build via the
+# props endpoint, gating mutating operations to tested builds b9688..b10595; unknown
+# builds fall back to standard OpenAI-compatible discovery in the owning service.
+# Also lists router models (state, display name, input modalities, download progress),
+# reports modalities from model entries or standard props, streams download progress
+# from the router SSE endpoint, and issues load/unload/download requests.
+# All network I/O goes through a caller-supplied httpx async client; failures surface as
+# LlamaCppRouterError with user-facing messages.
 """Pinned llama.cpp router protocol adapter.
 
 The mutating API is used only after ``/props`` proves both router identity and
@@ -32,22 +42,36 @@ RouterState = Literal[
 
 
 class LlamaCppRouterError(RuntimeError):
+    # [CLASS DOC]
+    # Runtime error for malformed responses or failed requests to a llama.cpp router,
+    # including HTTP errors, auth rejection and malformed JSON. Message is user-facing.
     """A malformed or failed request to a confirmed compatible router."""
 
 
 @dataclass(frozen=True, slots=True)
 class RouterCapability:
+    # [CLASS DOC]
+    # Immutable result of router detection. role is "standard" (not a router), "compatible"
+    # (router with a tested build) or "incompatible" (router with unknown/out-of-range build);
+    # optional parsed build number and optional user-facing diagnostic.
     role: Literal["standard", "compatible", "incompatible"]
     build: int | None = None
     diagnostic: str | None = None
 
     @property
     def compatible(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: True only when role is "compatible".
         return self.role == "compatible"
 
 
 @dataclass(frozen=True, slots=True)
 class RouterModel:
+    # [CLASS DOC]
+    # Immutable description of one model listed by the router: exact id, state ("loaded",
+    # "sleeping", "unloaded", "loading", "downloading", "failed" or "unknown"), display name,
+    # supported input modalities sent by Tau (text/image) or None if unknown, failed flag,
+    # and optional aggregate downloaded and total byte counts.
     id: str
     state: RouterState
     display_name: str | None = None
@@ -62,6 +86,16 @@ async def detect_router(
     server_root: str,
     headers: Mapping[str, str],
 ) -> RouterCapability:
+    # [FUNCTION DOC]
+    # Identify a llama.cpp router and gate it to tested builds.
+    # Inputs: async HTTP client, server root URL (no trailing slash expected; "/props" is
+    # appended), request headers mapping.
+    # Behavior: GET props; 404 -> standard. Other HTTP errors raise via the HTTP check.
+    # Parses the JSON object (malformed -> LlamaCppRouterError). If role is not "router" ->
+    # standard. Parses build_info of form "b<digits>" optionally followed by "-..." ; missing
+    # or unparsable -> incompatible with an "unknown build" diagnostic; build outside the
+    # tested range -> incompatible with build and a range diagnostic; else compatible with build.
+    # Output: RouterCapability. Raises LlamaCppRouterError, or httpx transport errors.
     """Identify only the documented router and gate it to the tested builds."""
     response = await client.get(server_root + "/props", headers=dict(headers))
     if response.status_code == 404:
@@ -101,6 +135,16 @@ async def list_router_models(
     *,
     reload: bool = False,
 ) -> tuple[RouterModel, ...]:
+    # [FUNCTION DOC]
+    # List models from the router models endpoint.
+    # Inputs: client, server root, headers; keyword reload flag adds query reload=1.
+    # Raises LlamaCppRouterError for HTTP errors, non-object JSON, a non-list "data" field,
+    # non-mapping entries, ids that are not non-empty strings without surrounding whitespace,
+    # or duplicate ids. For each entry: status.failed truthy -> state "failed"; else
+    # status.value among the known states is used; otherwise "unknown". Display name is
+    # "name" (falling back to "display_name") if a non-blank string, else the id. Input
+    # modalities come from reported_input_modalities; download progress from the status.
+    # Output: tuple of RouterModel in server order. Network I/O only.
     response = await client.get(
         server_root + "/models",
         params={"reload": "1"} if reload else None,
@@ -152,6 +196,13 @@ async def list_router_models(
 
 
 def reported_input_modalities(model: Mapping[str, object]) -> InputModalities | None:
+    # [FUNCTION DOC]
+    # Return the text/image input modalities a model entry reports.
+    # Input: a model mapping. Looks at architecture.input_modalities first (llama.cpp),
+    # otherwise top-level input_modalities, otherwise modalities.
+    # Returns None if the value is not a non-empty list, contains anything other than the
+    # known strings text/image/audio/video, or yields no text/image entries; otherwise a
+    # tuple of the reported entries among text and image, in the order text, image.
     """Return the text and image inputs that a llama.cpp ``/models`` entry reports.
 
     llama.cpp reports them as ``architecture.input_modalities``. Other servers may
@@ -171,6 +222,10 @@ def reported_input_modalities(model: Mapping[str, object]) -> InputModalities | 
 
 
 def props_input_modalities(props: object) -> InputModalities | None:
+    # [FUNCTION DOC]
+    # Derive input modalities from a standard server's props payload: if modalities.vision
+    # is a boolean, returns text+image when true or text only when false; otherwise None.
+    # Accepts any object; non-mappings yield None.
     """Return the inputs that ``modalities.vision`` in a standard server's ``/props`` reports."""
     modalities = props.get("modalities") if isinstance(props, Mapping) else None
     vision = modalities.get("vision") if isinstance(modalities, Mapping) else None
@@ -180,6 +235,12 @@ def props_input_modalities(props: object) -> InputModalities | None:
 
 
 def _download_progress(status: object) -> tuple[int | None, int | None]:
+    # [FUNCTION DOC]
+    # HELPER: Aggregate download progress from a status mapping's "progress" mapping, whose
+    # values are per-file mappings with "done" and "total" numbers. Skips entries whose
+    # done/total are not finite non-negative non-boolean numbers. Returns the integer sums
+    # (downloaded, total), or (None, None) if status/progress is not a mapping, no valid
+    # entries were found, or the total is not positive. Pure function.
     if not isinstance(status, Mapping):
         return None, None
     progress = status.get("progress")
@@ -204,6 +265,9 @@ def _download_progress(status: object) -> tuple[int | None, int | None]:
 
 
 def _is_non_negative_number(value: object) -> TypeGuard[int | float]:
+    # [FUNCTION DOC]
+    # HELPER: Type guard: True for finite int/float values greater than or equal to zero,
+    # excluding booleans.
     return (
         isinstance(value, int | float)
         and not isinstance(value, bool)
@@ -219,6 +283,18 @@ async def watch_router_download_progress(
     model_id: str,
     callback: Callable[[int, int], None],
 ) -> None:
+    # [FUNCTION DOC]
+    # Stream the router's models SSE endpoint and forward download progress for one model.
+    # Inputs: client, server root, headers, model id, and a callback taking (downloaded
+    # bytes, total bytes). Opens a GET stream with no timeout; HTTP errors raise via the
+    # HTTP check. Accumulates "data:" lines (leading whitespace after the prefix removed)
+    # until a blank line ends the event, then forwards the joined data; events whose data
+    # exceeds about 1,000,000 characters are dropped. A final unterminated event is also
+    # forwarded. Other SSE fields are ignored. Runs until the server closes the stream or
+    # the caller cancels. Returns nothing; callback invocations are the side effect.
+    # KNOWN ISSUE: on an HTTP error the error-detail helper reads the JSON body of a
+    # streamed response that was never read, which in httpx raises a not-read error rather
+    # than ValueError, so the caller may get that error instead of LlamaCppRouterError.
     """Forward bounded aggregate download progress from the router SSE stream."""
     async with client.stream(
         "GET",
@@ -250,6 +326,11 @@ def _forward_download_progress(
     model_id: str,
     callback: Callable[[int, int], None],
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Parse one SSE data payload as JSON; silently ignore invalid JSON, non-object
+    # payloads, events for other models, or event types other than "download_progress".
+    # Otherwise aggregates its "data" progress and calls the callback with (downloaded,
+    # total) when both are available.
     try:
         event = json.loads(data)
     except (json.JSONDecodeError, ValueError):
@@ -271,6 +352,12 @@ async def mutate_router_model(
     action: Literal["load", "unload", "download"],
     model_id: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Request a router model action. Keyword inputs: action "load", "unload" or "download"
+    # and the exact model id. POSTs JSON with the model id to the models endpoint for
+    # download, or to models/<action> otherwise. Raises LlamaCppRouterError on HTTP errors,
+    # malformed JSON, or when the response's "success" field is not exactly true.
+    # Returns nothing.
     endpoint = "/models" if action == "download" else f"/models/{action}"
     response = await client.post(
         server_root + endpoint,
@@ -284,6 +371,9 @@ async def mutate_router_model(
 
 
 def _object(response: httpx.Response, endpoint: str) -> Mapping[str, object]:
+    # [FUNCTION DOC]
+    # HELPER: Decode a response body as a JSON object. Raises LlamaCppRouterError naming
+    # the endpoint when the body is not valid JSON or not a mapping; returns the mapping.
     try:
         payload = response.json()
     except ValueError as exc:
@@ -294,6 +384,10 @@ def _object(response: httpx.Response, endpoint: str) -> Mapping[str, object]:
 
 
 def _raise_http(response: httpx.Response, operation: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Raise LlamaCppRouterError for HTTP 401/403 (advising to check the API key or
+    # LLAMA_API_KEY) or any status at or above 400 (message includes status, the operation
+    # description and, if available, the server's error detail). Returns nothing otherwise.
     if response.status_code in {401, 403}:
         raise LlamaCppRouterError(
             "llama.cpp rejected the router request. Check the optional API key or LLAMA_API_KEY."
@@ -307,6 +401,10 @@ def _raise_http(response: httpx.Response, operation: str) -> None:
 
 
 def _server_error_detail(response: httpx.Response) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Extract error.message from a JSON error body, collapse whitespace and cap it
+    # to 300 characters. Returns None if the body is not JSON, not an object, has no string
+    # message, or the message is blank.
     """Extract one bounded, user-actionable message from a router error."""
     try:
         payload = response.json()

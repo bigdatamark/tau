@@ -1,3 +1,20 @@
+# [MODULE DOC]
+# Project trust for tau_coding: decides whether ambient project inputs found in the
+# working directory (project context AGENTS.md files, .tau/.agents skills and
+# prompts, themes, system prompt overrides, project extensions) may be loaded.
+# It is an input-loading guard only, not a sandbox for files, processes, network,
+# tools or prompt injection.
+# Components:
+# - canonicalization of the cwd (resolved, existing directory; case-normalized on
+#   Windows and case-preserving on macOS) so decisions key on one path;
+# - a metadata-only detector that counts protected candidates by category;
+# - a versioned JSON trust store at <Tau home>/trust.json with an exclusive lock
+#   file, atomic fsynced replacement, and a fail-closed undo journal
+#   (trust.json.pending) that makes reads refuse an incomplete update;
+# - a coordinator that resolves trust per cwd in priority order: CLI override,
+#   empty project, pre-trust extensions, nearest saved decision (cwd or ancestor),
+#   configured default, interactive prompt, and caches results per invocation;
+# - a content-free diagnostic formatter.
 """Project-input trust policy, detection, persistence, and coordination.
 
 Project trust controls ambient project resources. It is deliberately not a
@@ -39,11 +56,17 @@ _RESOURCE_CATEGORIES = (
 
 
 class ProjectTrustError(RuntimeError):
+    # [CLASS DOC]
+    # Error raised when a trust path cannot be canonicalized or the trust store cannot
+    # be locked, read, validated, or written. Callers treat it as fail-closed.
     """A trust path, store, or persistence operation failed safely."""
 
 
 @dataclass(frozen=True, slots=True)
 class CanonicalProjectPath:
+    # [CLASS DOC]
+    # Immutable wrapper marking a path as an existing, canonical project directory (the
+    # key used for trust decisions).
     """An existing, canonical project working directory."""
 
     value: Path
@@ -51,6 +74,10 @@ class CanonicalProjectPath:
 
 @dataclass(frozen=True, slots=True)
 class ProtectedResourceSummary:
+    # [CLASS DOC]
+    # Immutable metadata-only summary of detected protected inputs: the cwd, the
+    # non-empty categories in fixed order, a count per category, and up to a bounded
+    # number of sample paths.
     """Bounded metadata-only summary of protected project inputs."""
 
     cwd: CanonicalProjectPath
@@ -60,11 +87,16 @@ class ProtectedResourceSummary:
 
     @property
     def total(self) -> int:
+        # [FUNCTION DOC]
+        # Property: total number of detected candidates across all categories.
         return sum(self.counts.values())
 
 
 @dataclass(frozen=True, slots=True)
 class SavedTrustEntry:
+    # [CLASS DOC]
+    # Immutable saved decision ("trusted" or "untrusted") for an exact path, possibly
+    # inherited by descendant directories.
     """A validated saved exact or inherited decision."""
 
     path: CanonicalProjectPath
@@ -73,6 +105,10 @@ class SavedTrustEntry:
 
 @dataclass(frozen=True, slots=True)
 class ProjectTrustRequest:
+    # [CLASS DOC]
+    # Immutable, frontend-neutral request for an interactive decision: the cwd, the
+    # resource summary, any inherited saved entry, and the offered choices (trust
+    # exact/parent/run, decline exact/run).
     """Frontend-neutral request for an interactive trust decision."""
 
     cwd: CanonicalProjectPath
@@ -89,6 +125,11 @@ class ProjectTrustRequest:
 
 @dataclass(frozen=True, slots=True)
 class ProjectTrustResolution:
+    # [CLASS DOC]
+    # Immutable outcome for one cwd: whether trusted, the deciding source (override,
+    # empty, extension, saved, default, ui), the saved path the decision is stored at
+    # (if any), diagnostics, whether candidates existed, whether the prompt was
+    # cancelled, and whether a durable store write was deferred for a later commit.
     """Completed decision for one canonical cwd."""
 
     trusted: bool
@@ -103,6 +144,9 @@ class ProjectTrustResolution:
 
 @dataclass(frozen=True, slots=True)
 class ExtensionTrustResult:
+    # [CLASS DOC]
+    # Immutable answer from a pre-trust extension: "approve", "decline" or "defer"
+    # (default), and whether to remember the decision for the exact cwd.
     """Result returned by an eligible pre-trust extension."""
 
     decision: Literal["approve", "decline", "defer"] = "defer"
@@ -111,6 +155,10 @@ class ExtensionTrustResult:
 
 @dataclass(frozen=True, slots=True)
 class ProjectTrustEvent:
+    # [CLASS DOC]
+    # Immutable, content-free event payload given to pre-trust extensions: cwd, mode
+    # (interactive or headless), whether a UI prompt is available, categories, counts,
+    # and the type tag "project_trust".
     """Content-free payload sent to eligible pre-trust extensions."""
 
     cwd: Path
@@ -126,6 +174,11 @@ ExtensionDecider = Callable[[ProjectTrustEvent], Awaitable[ExtensionTrustResult 
 
 
 def _darwin_filesystem_path(path: Path) -> Path:
+    # [FUNCTION DOC]
+    # HELPER: On macOS, open the path read-only and ask the filesystem (F_GETPATH via
+    # fcntl) for its case-preserving spelling. Returns that path.
+    # Raises OSError if the path cannot be opened or the result is empty.
+    # Side effects: opens and closes a file descriptor.
     """Return macOS's case-preserving path for an existing filesystem object."""
     import fcntl
 
@@ -141,6 +194,13 @@ def _darwin_filesystem_path(path: Path) -> Path:
 
 
 def canonicalize_project_path(path: Path, *, base: Path | None = None) -> CanonicalProjectPath:
+    # [FUNCTION DOC]
+    # Strictly canonicalize a project cwd. Expands ~; relative paths are joined to the
+    # keyword base directory (required for relative input); resolves symlinks strictly
+    # (must exist); must be a directory; on Windows the path is case-normalized, on
+    # macOS replaced by the filesystem's case-preserving spelling.
+    # Output: CanonicalProjectPath. Raises ProjectTrustError on any failure.
+    # Side effects: filesystem metadata reads.
     """Strictly canonicalize an existing destination cwd."""
     expanded = path.expanduser()
     if not expanded.is_absolute():
@@ -170,12 +230,25 @@ def canonicalize_project_path(path: Path, *, base: Path | None = None) -> Canoni
 
 
 class ProtectedResourceDetector:
+    # [CLASS DOC]
+    # Detects protected project inputs using only names and file metadata (never reads
+    # contents), producing a ProtectedResourceSummary.
     """Detect protected candidates using names and file metadata only."""
 
     def __init__(self, *, max_sample_paths: int = 12) -> None:
+        # [FUNCTION DOC]
+        # Store the maximum number of sample paths to include in summaries (default 12).
         self.max_sample_paths = max_sample_paths
 
     def detect(self, cwd: CanonicalProjectPath) -> ProtectedResourceSummary:
+        # [FUNCTION DOC]
+        # Scan the cwd for candidates: skills (<ns>/skills/*/SKILL.md) and prompt templates
+        # (<ns>/prompts/*.md) for both .tau and .agents namespaces (filtered by the same
+        # candidate predicates the loaders use), .tau/themes/*.json, .tau/SYSTEM.md and
+        # .tau/APPEND_SYSTEM.md, AGENTS.md context files, and .tau/extensions entries.
+        # Project settings are intentionally not detected. Returns counts only for
+        # non-empty categories (in fixed category order) and the first N sample paths.
+        # Raises nothing for unreadable directories (they count as candidates).
         root = cwd.value
         found: dict[str, list[Path]] = {category: [] for category in _RESOURCE_CATEGORIES}
         # Project settings are not supported by a Tau loader, so they cannot
@@ -215,12 +288,17 @@ class ProtectedResourceDetector:
 
     @staticmethod
     def _is_candidate(path: Path) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Return True if the path is a file or a symlink (even dangling), and also
+        # True when the metadata check itself fails (fail-closed).
         try:
             return path.is_file() or path.is_symlink()
         except OSError:
             return True
 
     def _file(self, found: dict[str, list[Path]], category: str, path: Path) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Append the path to the category list if it is a candidate. Mutates found.
         if self._is_candidate(path):
             found[category].append(path)
 
@@ -233,6 +311,10 @@ class ProtectedResourceDetector:
         *,
         predicate: Callable[[Path], bool] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Glob a directory for a pattern and append candidates that pass the
+        # optional predicate to the category list; a missing directory adds nothing, and an
+        # OSError while listing adds the directory itself as a candidate. Mutates found.
         try:
             entries = tuple(directory.glob(pattern)) if directory.is_dir() else ()
         except OSError:
@@ -248,6 +330,12 @@ class ProtectedResourceDetector:
     def _context(self, found: dict[str, list[Path]], cwd: Path) -> None:
         # Match current Tau discovery: nearest project marker through cwd, then
         # cwd-local namespace context files.
+        # [FUNCTION DOC]
+        # HELPER: Mirror Tau's context discovery: find the nearest ancestor (including cwd)
+        # containing a project marker (.git, pyproject.toml, uv.lock, setup.py,
+        # package.json), defaulting to cwd; then record AGENTS.md at that root and at each
+        # directory down to cwd, plus cwd/.tau/AGENTS.md and cwd/.agents/AGENTS.md.
+        # Mutates found.
         markers = (".git", "pyproject.toml", "uv.lock", "setup.py", "package.json")
         project_root = cwd
         for candidate in (cwd, *cwd.parents):
@@ -267,6 +355,10 @@ class ProtectedResourceDetector:
         self._file(found, "context", cwd / ".agents" / "AGENTS.md")
 
     def _extensions(self, found: dict[str, list[Path]], directory: Path) -> None:
+        # [FUNCTION DOC]
+        # HELPER: List the project extensions directory (OSError adds the directory as a
+        # candidate). Skips names starting with "." or "_"; records .py candidates; for
+        # subdirectories records extension.py and pyproject.toml if present. Mutates found.
         try:
             entries = tuple(directory.iterdir()) if directory.is_dir() else ()
         except OSError:
@@ -283,15 +375,26 @@ class ProtectedResourceDetector:
 
 
 class ProjectTrustStore:
+    # [CLASS DOC]
+    # Persistent trust decisions in <Tau home>/trust.json (schema: version 1 and a list
+    # of path/decision objects), guarded by an exclusive lock file and written
+    # atomically with a fail-closed pending journal.
     """Versioned, locked, atomically replaced trust decision store."""
 
     def __init__(self, paths: TauPaths | None = None) -> None:
+        # [FUNCTION DOC]
+        # Remember the Tau paths (default instance) and derive the store, lock, and pending
+        # journal file paths under Tau home. No I/O.
         self.paths = paths or TauPaths()
         self.path = self.paths.home / "trust.json"
         self.lock_path = self.paths.home / "trust.json.lock"
         self.pending_path = self.paths.home / "trust.json.pending"
 
     def nearest(self, cwd: CanonicalProjectPath) -> SavedTrustEntry | None:
+        # [FUNCTION DOC]
+        # Return the saved entry for the cwd or its nearest ancestor that has one, walking
+        # up to the filesystem root; None if none. Raises ProjectTrustError if the store
+        # cannot be read. Side effects: locks and reads the store.
         decisions = self.read()
         current = cwd.value
         while True:
@@ -303,16 +406,26 @@ class ProjectTrustStore:
             current = current.parent
 
     def read(self) -> dict[Path, TrustDecision]:
+        # [FUNCTION DOC]
+        # Return all saved decisions as a mapping from path to decision, under the lock.
+        # Raises ProjectTrustError on lock/read/validation failure.
         with self._locked():
             return self._read_unlocked()
 
     def set(self, path: CanonicalProjectPath, decision: TrustDecision) -> None:
+        # [FUNCTION DOC]
+        # Record a decision for an exact path (read-modify-write under the lock).
+        # Raises ProjectTrustError. Side effects: rewrites the store file.
         with self._locked():
             decisions = self._read_unlocked()
             decisions[path.value] = decision
             self._write_unlocked(decisions)
 
     def trust_parent(self, cwd: CanonicalProjectPath) -> CanonicalProjectPath:
+        # [FUNCTION DOC]
+        # Under the lock, remove any exact entry for the cwd, mark the cwd's parent as
+        # trusted, and write the store. Returns the parent as a canonical path.
+        # Raises ProjectTrustError. Side effects: rewrites the store file.
         parent = CanonicalProjectPath(cwd.value.parent)
         with self._locked():
             decisions = self._read_unlocked()
@@ -322,6 +435,9 @@ class ProjectTrustStore:
         return parent
 
     def remove(self, path: CanonicalProjectPath) -> None:
+        # [FUNCTION DOC]
+        # Remove any decision for an exact path and rewrite the store under the lock.
+        # Raises ProjectTrustError.
         with self._locked():
             decisions = self._read_unlocked()
             decisions.pop(path.value, None)
@@ -329,6 +445,10 @@ class ProjectTrustStore:
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
+        # [FUNCTION DOC]
+        # HELPER: Context manager that creates Tau home (mode 0700), opens/creates the lock
+        # file (mode 0600), takes an exclusive OS lock for the duration, and releases it
+        # afterwards. OSErrors become ProjectTrustError; ProjectTrustError propagates.
         try:
             self.paths.home.mkdir(mode=0o700, parents=True, exist_ok=True)
             with self.lock_path.open("a+b") as handle:
@@ -351,6 +471,14 @@ class ProjectTrustStore:
         # a grant or a revocation: either direction could resurrect trust.
         # Recovery is attempted only by the writer that observed its own
         # failure; a journal left by a crash remains visibly fail-closed.
+        # [FUNCTION DOC]
+        # HELPER: Read and strictly validate the store without locking. Refuses to read if a
+        # pending journal exists (incomplete update, fail-closed). Missing file means no
+        # decisions. Requires exactly the keys version and decisions, version 1, a list of
+        # objects with exactly path and decision ("trusted"/"untrusted"), absolute
+        # normalized paths, no duplicates (Windows paths case-normalized; on macOS existing
+        # paths must already match the filesystem's casing). Returns a mapping from path to
+        # decision. Raises ProjectTrustError on any problem.
         if self.pending_path.exists():
             raise ProjectTrustError(
                 f"Project trust store {self.path} has an incomplete update; "
@@ -397,6 +525,13 @@ class ProjectTrustStore:
         return result
 
     def _write_unlocked(self, decisions: Mapping[Path, TrustDecision]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Persist decisions (sorted by path, indented JSON) without locking.
+        # First atomically writes the pending journal containing either "present" plus the
+        # prior file bytes or "absent", then atomically replaces trust.json, then deletes
+        # the journal and fsyncs the directory (that last fsync is best-effort). If writing
+        # or journal deletion fails, attempts rollback from the journal and raises
+        # ProjectTrustError (mentioning any recovery failure).
         payload = {
             "version": 1,
             "decisions": [
@@ -438,6 +573,10 @@ class ProjectTrustStore:
             _fsync_directory(self.paths.home)
 
     def _atomic_replace(self, destination: Path, data: bytes, *, prefix: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Write bytes to a temporary file (mode 0600) in Tau home, fsync it, rename
+        # it over the destination, and fsync the directory. Removes the temporary file on
+        # failure. Raises OSError.
         fd = -1
         temporary: Path | None = None
         try:
@@ -460,6 +599,12 @@ class ProjectTrustStore:
                     temporary.unlink(missing_ok=True)
 
     def _recover_unlocked(self) -> OSError | None:
+        # [FUNCTION DOC]
+        # Restore trust.json from the pending journal: rewrite the prior bytes if marked
+        # "present" or delete the store if "absent", then delete the journal (directory
+        # fsync best-effort). Returns None on success or when there is no journal; returns
+        # the OSError on failure (a malformed journal counts), leaving the journal in place
+        # so reads stay fail-closed.
         """Restore the journaled state; retain the marker on every failure."""
         if not self.pending_path.exists():
             return None
@@ -482,11 +627,17 @@ class ProjectTrustStore:
 
 
 class ProjectTrustCoordinator:
+    # [CLASS DOC]
+    # Resolves and caches trust outcomes per canonical cwd for one Tau invocation, using
+    # a store and a detector.
     """Resolve and cache trust outcomes per canonical cwd for one invocation."""
 
     def __init__(
         self, store: ProjectTrustStore, detector: ProtectedResourceDetector | None = None
     ) -> None:
+        # [FUNCTION DOC]
+        # Store the trust store, the detector (default instance), and an empty per-path
+        # result cache.
         self.store = store
         self.detector = detector or ProtectedResourceDetector()
         self._cache: dict[Path, ProjectTrustResolution] = {}
@@ -504,10 +655,35 @@ class ProjectTrustCoordinator:
         cache_result: bool = True,
         persist: bool = True,
     ) -> tuple[ProtectedResourceSummary, ProjectTrustResolution]:
+        # [FUNCTION DOC]
+        # Resolve trust for a cwd and return the pair (resource summary, resolution).
+        # Inputs: cwd (relative paths resolved against the process cwd); keyword override
+        # ("approve"/"decline"), default policy ("ask"/"always"/"never"), interactive flag,
+        # async prompt callback, async extension deciders, refresh flag, whether to cache
+        # the result, and whether to persist decisions now (false stages them, setting
+        # needs_persistence for a later commit).
+        # Order: canonicalize and detect; reuse a cached result if it had candidates, or if
+        # it was an empty-project result and refresh is off and the project is still empty;
+        # override wins; no candidates means trusted ("empty"); each extension decider in
+        # turn gets a content-free event (exceptions become diagnostics and defer; first
+        # approve/decline wins, optionally remembered for the exact cwd); then the nearest
+        # saved decision; then a non-ask default ("always" trusts only if the store was
+        # readable, "never" declines); headless or no prompt means untrusted; otherwise the
+        # prompt choice: trust/decline exact save the cwd, trust parent saves the parent
+        # (removing the cwd's own entry), run-only choices save nothing, None is a cancelled
+        # untrusted result. Store failures add diagnostics and force untrusted.
+        # Raises ProjectTrustError if the cwd cannot be canonicalized.
+        # Side effects: filesystem scans, store reads/writes, calling extensions and UI,
+        # cache mutation.
+        # KNOWN ISSUE: a cached result with candidates is returned even when refresh is
+        # true, so refresh only affects cached empty-project results.
         canonical = canonicalize_project_path(cwd, base=Path.cwd())
         summary = self.detector.detect(canonical)
 
         def finish(result: ProjectTrustResolution) -> ProjectTrustResolution:
+            # [FUNCTION DOC]
+            # HELPER: Store the result in the cache for the canonical cwd when caching is
+            # enabled, and return it unchanged.
             if cache_result:
                 self._cache[canonical.value] = result
             return result
@@ -633,6 +809,13 @@ class ProjectTrustCoordinator:
         return summary, finish(result)
 
     def commit(self, cwd: CanonicalProjectPath, result: ProjectTrustResolution) -> None:
+        # [FUNCTION DOC]
+        # Publish a staged resolution: if it needs persistence and has a saved path, write
+        # its decision for that path (store errors are silently ignored, so the next run
+        # asks again), then cache the resolution for the cwd.
+        # KNOWN ISSUE: a staged "trust parent" choice is committed via a plain set on the
+        # parent and does not remove an exact entry for the cwd as the immediate
+        # trust-parent path does.
         """Publish a staged resolution after its candidate is adopted."""
         if result.needs_persistence and result.saved_path is not None:
             # A store failure cannot undo an already adopted run.  The write is
@@ -649,6 +832,10 @@ class ProjectTrustCoordinator:
 def format_trust_diagnostic(
     summary: ProtectedResourceSummary, resolution: ProjectTrustResolution
 ) -> str:
+    # [FUNCTION DOC]
+    # Return a single-line, content-free diagnostic: the cwd, trusted/untrusted, the
+    # source and saved path (if any), category counts (or "none"), and a reminder that
+    # trust is not a sandbox. Pure.
     """Return one bounded, content-free decision diagnostic."""
     categories = (
         ", ".join(f"{category}={summary.counts[category]}" for category in summary.categories)
@@ -664,6 +851,9 @@ def format_trust_diagnostic(
 
 
 def _lock(handle: IO[bytes]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Take an exclusive blocking lock on the open lock file (msvcrt byte lock on
+    # Windows, flock elsewhere). Raises ProjectTrustError on failure.
     try:
         if os.name == "nt":
             import msvcrt
@@ -679,6 +869,8 @@ def _lock(handle: IO[bytes]) -> None:
 
 
 def _unlock(handle: IO[bytes]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Release the lock taken by the lock helper; errors are ignored.
     try:
         if os.name == "nt":
             import msvcrt
@@ -694,6 +886,8 @@ def _unlock(handle: IO[bytes]) -> None:
 
 
 def _fsync_directory(directory: Path) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Fsync a directory so renames are durable; no-op on Windows. Raises OSError.
     if os.name == "nt":
         return
     descriptor = os.open(directory, os.O_RDONLY)

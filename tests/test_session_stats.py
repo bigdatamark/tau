@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Tests for session statistics: cache hit rates (overall and latest request),
+# output speed and time-to-first-output aggregation, token totals, turn and
+# tool-call counts, and cost estimation from per-million-token pricing
+# (including one-hour cache-write pricing and compaction usage). In-memory only.
 from tau_agent.messages import (
     AssistantMessage,
     ResponseTiming,
@@ -12,6 +17,9 @@ from tau_coding.session_stats import SessionStats, calculate_session_stats
 
 
 def test_cache_hit_rate_is_hidden_when_no_provider_reported_cache_usage() -> None:
+    # [FUNCTION DOC]
+    # Test that the cache hit rate is None when no cache reads or writes were
+    # reported, so non-caching backends do not show 0%.
     """Backends without prompt caching must not show a permanent 0%."""
     stats = SessionStats(input_tokens=5_000, output_tokens=100)
 
@@ -19,6 +27,8 @@ def test_cache_hit_rate_is_hidden_when_no_provider_reported_cache_usage() -> Non
 
 
 def test_cache_hit_rate_is_zero_when_a_write_happened_but_nothing_was_read() -> None:
+    # [FUNCTION DOC]
+    # Test that a cache write without reads yields a 0.0 hit rate.
     """A cold first turn genuinely is 0% cached, and saying so is useful."""
     stats = SessionStats(input_tokens=5_000, cache_write_tokens=4_000)
 
@@ -26,6 +36,9 @@ def test_cache_hit_rate_is_zero_when_a_write_happened_but_nothing_was_read() -> 
 
 
 def test_cache_hit_rate_is_none_without_billed_input() -> None:
+    # [FUNCTION DOC]
+    # Test that empty stats have no cache hit rate and no average time to first
+    # output.
     stats = SessionStats()
 
     assert stats.cache_hit_rate is None
@@ -33,12 +46,18 @@ def test_cache_hit_rate_is_none_without_billed_input() -> None:
 
 
 def test_cache_hit_rate_divides_reads_by_total_prompt_tokens() -> None:
+    # [FUNCTION DOC]
+    # Test that the hit rate is cached reads divided by total prompt tokens (950 of
+    # 1,000 gives 0.95).
     stats = SessionStats(input_tokens=1_000, cached_input_tokens=950, cache_write_tokens=50)
 
     assert stats.cache_hit_rate == 0.95
 
 
 def test_latest_cache_hit_rate_uses_latest_request_tokens() -> None:
+    # [FUNCTION DOC]
+    # Test that the latest hit rate uses only the latest request's prompt and cached
+    # token counts.
     stats = SessionStats(
         input_tokens=2_000,
         cached_input_tokens=1_400,
@@ -50,6 +69,9 @@ def test_latest_cache_hit_rate_uses_latest_request_tokens() -> None:
 
 
 def test_latest_cache_hit_rate_is_hidden_without_reported_cache_activity() -> None:
+    # [FUNCTION DOC]
+    # Test that the latest hit rate is None when the latest request reported no
+    # cache activity.
     stats = SessionStats(
         input_tokens=1_000,
         latest_prompt_tokens=1_000,
@@ -59,6 +81,10 @@ def test_latest_cache_hit_rate_is_hidden_without_reported_cache_activity() -> No
 
 
 def test_calculate_session_stats_uses_latest_tool_continuation_cache_rate() -> None:
+    # [FUNCTION DOC]
+    # Test that across a tool call and its continuation, the overall rate is 190 of
+    # 400 prompt tokens (0.475) while the latest rate reflects only the
+    # continuation (0.95).
     user = MessageEntry(message=UserMessage(content="Inspect it"))
     tool_request = MessageEntry(
         parent_id=user.id,
@@ -96,6 +122,9 @@ def test_calculate_session_stats_uses_latest_tool_continuation_cache_rate() -> N
 
 
 def test_latest_cache_hit_rate_reports_miss_after_earlier_cache_activity() -> None:
+    # [FUNCTION DOC]
+    # Test that a latest request with no cache reads reports 0.0 when earlier
+    # requests had cache activity.
     first = MessageEntry(
         message=AssistantMessage(
             provider="anthropic",
@@ -121,6 +150,10 @@ def test_latest_cache_hit_rate_reports_miss_after_earlier_cache_activity() -> No
 
 
 def test_calculate_session_stats_aggregates_effective_output_speed() -> None:
+    # [FUNCTION DOC]
+    # Test that output speed is total output tokens over total response duration
+    # (400 tokens in 5 s gives 80 per second) and time to first output is averaged
+    # (750 ms).
     first = MessageEntry(
         message=AssistantMessage(
             usage=Usage(output=100),
@@ -145,6 +178,9 @@ def test_calculate_session_stats_aggregates_effective_output_speed() -> None:
 
 
 def test_calculate_session_stats_ignores_untimed_history_for_speed() -> None:
+    # [FUNCTION DOC]
+    # Test that assistant messages without timing are excluded from speed and
+    # time-to-first-output averages.
     timed = MessageEntry(
         message=AssistantMessage(
             usage=Usage(output=100),
@@ -166,6 +202,11 @@ def test_calculate_session_stats_ignores_untimed_history_for_speed() -> None:
 
 
 def test_calculate_session_stats_keeps_compacted_active_branch_usage() -> None:
+    # [FUNCTION DOC]
+    # Test that usage from both assistant messages and compaction entries on the
+    # active branch is counted and priced, with pricing looked up per request using
+    # total prompt tokens (input plus cache read); also checks turn count, tool call
+    # count, token totals, latest hit rate and the estimated cost of 3.58.
     user = MessageEntry(message=UserMessage(content="Fix it"))
     assistant = MessageEntry(
         parent_id=user.id,
@@ -196,6 +237,10 @@ def test_calculate_session_stats_keeps_compacted_active_branch_usage() -> None:
     priced_requests: list[tuple[str, str, int]] = []
 
     def pricing(provider: str, model: str, input_tokens: int) -> dict[str, float]:
+        # [FUNCTION DOC]
+        # HELPER: Fake pricing lookup recording each (provider, model, prompt tokens)
+        # request and returning fixed per-million rates for input, output, cache read
+        # and cache write.
         priced_requests.append((provider, model, input_tokens))
         return {
             "input": 2.0,
@@ -222,6 +267,9 @@ def test_calculate_session_stats_keeps_compacted_active_branch_usage() -> None:
 
 
 def test_calculate_session_stats_marks_cost_unavailable_when_pricing_is_missing() -> None:
+    # [FUNCTION DOC]
+    # Test that tokens are still totaled but estimated cost is None when pricing
+    # returns nothing.
     entry = MessageEntry(
         message=AssistantMessage(
             provider="custom",
@@ -238,6 +286,9 @@ def test_calculate_session_stats_marks_cost_unavailable_when_pricing_is_missing(
 
 
 def test_calculate_session_stats_prices_one_hour_cache_writes() -> None:
+    # [FUNCTION DOC]
+    # Test that one-hour cache writes (a subset of total cache writes) are billed at
+    # the one-hour rate and the remainder at the normal cache-write rate.
     """Anthropic's cache_write total includes 1h writes, billed at cacheWrite1h."""
     entry = MessageEntry(
         message=AssistantMessage(
@@ -264,6 +315,8 @@ def test_calculate_session_stats_prices_one_hour_cache_writes() -> None:
 
 
 def test_calculate_session_stats_falls_back_to_cache_write_rate_without_1h_rate() -> None:
+    # [FUNCTION DOC]
+    # Test that without a one-hour rate all cache writes use the normal rate.
     """Catalogs without cacheWrite1h keep billing all writes at the 5m rate."""
     entry = MessageEntry(
         message=AssistantMessage(

@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Deterministic contract tests for the extension-facing local backend registry
+# (LocalBackendRegistry) paired with the dynamic provider registry: structured
+# configure fields and validation, secret redaction, transactional commits,
+# cancellation and stale results, source shadowing/precedence, optional
+# capabilities (doctor, reset, search, model management with confirmations) and
+# generation consistency. Runs on the asyncio anyio backend; all in-memory.
 """Deterministic provider-neutral local-backend contract tests."""
 
 import asyncio
@@ -28,10 +35,16 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 def anyio_backend() -> str:
+    # [FUNCTION DOC]
+    # HELPER: Fixture selecting the asyncio backend for anyio-marked tests.
     return "asyncio"
 
 
 def _provider(provider_id: str) -> DynamicProvider:
+    # [FUNCTION DOC]
+    # HELPER: Build a dynamic provider with the given id, a title-cased display
+    # name, one model named "model" as default, and an OpenAI-compatible transport
+    # pointing at an example URL with no auth.
     return DynamicProvider(
         id=provider_id,
         display_name=provider_id.title(),
@@ -55,7 +68,16 @@ def _backend(
     reset=None,
     recommended: bool = False,
 ) -> LocalBackend:
+    # [FUNCTION DOC]
+    # HELPER: Build a local backend with given id, paired provider id and configure
+    # spec, a required configure callback, optional refresh/doctor/reset callbacks
+    # and a recommended flag. Supplies a status callback that always reports a ready
+    # backend with one model "model" selected and refresh/use/configure actions;
+    # refresh defaults to that status callback.
     async def status(context):
+        # [FUNCTION DOC]
+        # HELPER: Async status callback ignoring its context and returning a ready
+        # status with endpoint display set to the backend id and model "model".
         del context
         return LocalBackendStatus(
             state="ready",
@@ -80,6 +102,11 @@ def _backend(
 
 
 async def test_two_backends_have_different_structured_configuration_fields() -> None:
+    # [FUNCTION DOC]
+    # Registers two backends with different field sets (text/secret/choice) and
+    # asserts registration order and recommended flags in the effective views, that
+    # each configure callback receives its own validated values, both commit, and
+    # the values' representation never contains the secret strings.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("source-a", _provider("provider-a"))
@@ -87,6 +114,9 @@ async def test_two_backends_have_different_structured_configuration_fields() -> 
     received: list[tuple[str, object]] = []
 
     async def configure_a(values, context):
+        # [FUNCTION DOC]
+        # HELPER: Configure callback for backend a; records values, asserts the context
+        # action and the endpoint/token/profile values, returns a committed result.
         received.append(("a", values))
         assert context.action == "configure"
         assert values["endpoint"] == "http://a.test"
@@ -95,6 +125,9 @@ async def test_two_backends_have_different_structured_configuration_fields() -> 
         return LocalConfigureResult(committed=True)
 
     async def configure_b(values, context):
+        # [FUNCTION DOC]
+        # HELPER: Configure callback for backend b; records values, asserts the context
+        # action and directory/password values, returns a committed result.
         received.append(("b", values))
         assert context.action == "configure"
         assert values["directory"] == "/models"
@@ -150,12 +183,19 @@ async def test_two_backends_have_different_structured_configuration_fields() -> 
 
 
 async def test_configuration_validation_is_transactional_and_secret_safe() -> None:
+    # [FUNCTION DOC]
+    # Asserts a submission with an empty required field and an invalid choice is not
+    # committed, reports field errors for exactly those fields, never invokes the
+    # backend and does not leak the secret in its representation; a valid submission
+    # then commits once.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("source", _provider("provider"))
     committed: list[object] = []
 
     async def configure(values, context):
+        # [FUNCTION DOC]
+        # HELPER: Configure callback that records the submitted values and commits.
         del context
         committed.append(values)
         return LocalConfigureResult(committed=True)
@@ -188,12 +228,20 @@ async def test_configuration_validation_is_transactional_and_secret_safe() -> No
 
 
 async def test_failed_write_reports_orphan_without_partial_host_commit() -> None:
+    # [FUNCTION DOC]
+    # Asserts a backend result flagged credential_orphaned without committed is
+    # passed through as not committed with the orphan flag.
+    # KNOWN ISSUE: the local state mapping is never touched by the callback, so the
+    # final assertion that it still holds "old" is vacuous.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("source", _provider("provider"))
     state = {"value": "old"}
 
     async def configure(values, context):
+        # [FUNCTION DOC]
+        # HELPER: Configure callback returning an uncommitted result with a failure
+        # message and credential_orphaned set.
         del values, context
         # The backend owns its cross-store write protocol. It reports that the
         # new credential may need cleanup, but does not claim a commit.
@@ -217,6 +265,11 @@ async def test_failed_write_reports_orphan_without_partial_host_commit() -> None
 
 
 async def test_cancelled_operation_does_not_publish_result() -> None:
+    # [FUNCTION DOC]
+    # Starts a refresh that spins until its context is cancelled, cancels it through
+    # the registry and asserts the result is marked cancelled with no backend status
+    # and that the callback's post-loop code had not yet run when the result was
+    # returned. Closes the registry.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("source", _provider("provider"))
@@ -224,6 +277,9 @@ async def test_cancelled_operation_does_not_publish_result() -> None:
     release = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh callback that signals entry, yields until the context reports
+        # cancellation, then sets the release event and returns a "stale" status.
         entered.set()
         while not context.cancelled:
             await asyncio.sleep(0)
@@ -253,6 +309,12 @@ async def test_cancelled_operation_does_not_publish_result() -> None:
 
 
 async def test_replaced_source_is_stale_and_shadowed_source_cannot_reset_effective_layer() -> None:
+    # [FUNCTION DOC]
+    # Starts a refresh, re-registers the same source mid-flight and asserts the
+    # in-flight result is stale or cancelled; then registers a second source for the
+    # same backend id and asserts both views exist, the effective one belongs to the
+    # later-registered source, the first is not usable, and unregistering the first
+    # leaves the second effective.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("first", _provider("provider"))
@@ -261,11 +323,16 @@ async def test_replaced_source_is_stale_and_shadowed_source_cannot_reset_effecti
     release = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh callback that signals entry, waits for release, then returns a
+        # ready status with model "old".
         entered.set()
         await release.wait()
         return LocalBackendStatus(state="ready", models=(LocalModel("old"),))
 
     async def configure(values, context):
+        # [FUNCTION DOC]
+        # HELPER: Configure callback that ignores its inputs and commits.
         del values, context
         return LocalConfigureResult(committed=True)
 
@@ -303,6 +370,9 @@ async def test_replaced_source_is_stale_and_shadowed_source_cannot_reset_effecti
 
 
 async def test_missing_provider_pair_is_rejected() -> None:
+    # [FUNCTION DOC]
+    # Asserts registering a backend whose provider id is not registered raises
+    # LocalBackendError mentioning "paired".
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     backend = _backend(
@@ -316,12 +386,17 @@ async def test_missing_provider_pair_is_rejected() -> None:
 
 
 async def test_optional_secret_may_be_omitted_without_invalidating_submission() -> None:
+    # [FUNCTION DOC]
+    # Asserts an empty submission is accepted when the only secret field is optional
+    # and the passed values report no secret keys.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("source", _provider("provider"))
     received: list[object] = []
 
     async def configure(values, context):
+        # [FUNCTION DOC]
+        # HELPER: Configure callback that records values and commits.
         del context
         received.append(values)
         return LocalConfigureResult(committed=True)
@@ -343,11 +418,18 @@ async def test_optional_secret_may_be_omitted_without_invalidating_submission() 
 
 
 async def test_progress_and_transaction_results_redact_submitted_secrets() -> None:
+    # [FUNCTION DOC]
+    # Asserts submitted secret values are replaced by "[redacted]" in the result
+    # message, diagnostics, field errors and progress reports, and that a result
+    # carrying field errors is downgraded to not committed.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("source", _provider("provider"))
 
     async def configure(values, context):
+        # [FUNCTION DOC]
+        # HELPER: Configure callback that reports progress and returns a committed
+        # result whose message, diagnostics and field errors all embed the secret.
         context.report_progress(LocalProgress("upload secret-token"))
         return LocalConfigureResult(
             committed=True,
@@ -375,12 +457,19 @@ async def test_progress_and_transaction_results_redact_submitted_secrets() -> No
 
 
 async def test_registry_rejects_mismatched_provider_generation() -> None:
+    # [FUNCTION DOC]
+    # Asserts creating a backend registry with a generation id different from its
+    # provider registry raises LocalBackendError mentioning "share a generation".
     providers = DynamicProviderRegistry(generation_id="provider-generation")
     with pytest.raises(LocalBackendError, match="share a generation"):
         LocalBackendRegistry(providers, generation_id="other-generation")
 
 
 async def test_shadowed_source_cannot_reset_or_mutate_backend_state() -> None:
+    # [FUNCTION DOC]
+    # With provider source "second" shadowing "first", asserts resetting a backend
+    # registered by "first" is refused with a warning diagnostic and never calls the
+    # backend's reset callback.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("first", _provider("provider"))
@@ -388,6 +477,8 @@ async def test_shadowed_source_cannot_reset_or_mutate_backend_state() -> None:
     reset_called = False
 
     async def reset(context):
+        # [FUNCTION DOC]
+        # HELPER: Reset callback that records it was called and commits.
         nonlocal reset_called
         del context
         reset_called = True
@@ -411,6 +502,9 @@ async def test_shadowed_source_cannot_reset_or_mutate_backend_state() -> None:
 
 
 async def test_optional_capabilities_return_structured_unavailable_results() -> None:
+    # [FUNCTION DOC]
+    # Asserts invoking doctor on a backend without one returns a single warning
+    # diagnostic "This action is unavailable." rather than raising.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("source", _provider("provider"))
@@ -428,6 +522,11 @@ async def test_optional_capabilities_return_structured_unavailable_results() -> 
 
 
 async def test_confirmation_request_round_trips_through_the_host() -> None:
+    # [FUNCTION DOC]
+    # Re-registers a backend with a load_model callback and asserts: the first call
+    # returns an uncommitted confirmation request with keep/unload/cancel choices; a
+    # call with confirmation "keep" commits with message "Loaded model"; the chosen
+    # confirmations reach the callback; and "cancel" yields an uncommitted result.
     from tau_coding.extensions import LocalConfirmationChoice, LocalConfirmationRequest
 
     providers = DynamicProviderRegistry(generation_id="generation")
@@ -436,6 +535,10 @@ async def test_confirmation_request_round_trips_through_the_host() -> None:
     confirmations: list[str | None] = []
 
     async def load_model(model_id, context):
+        # [FUNCTION DOC]
+        # HELPER: Model-management callback that records the confirmation; asks for
+        # confirmation when none is given, returns a cancelled message for "cancel", and
+        # otherwise commits with "Loaded <model id>".
         confirmations.append(context.confirmation)
         if context.confirmation is None:
             return LocalOperationResult(
@@ -494,6 +597,9 @@ async def test_confirmation_request_round_trips_through_the_host() -> None:
 
 
 async def test_confirmation_request_is_validated() -> None:
+    # [FUNCTION DOC]
+    # Asserts a committed result may not carry a confirmation request and that
+    # confirmation choices must have unique values (LocalBackendError both times).
     from tau_coding.extensions import LocalConfirmationChoice, LocalConfirmationRequest
 
     with pytest.raises(LocalBackendError, match="committed operation"):
@@ -514,12 +620,21 @@ async def test_confirmation_request_is_validated() -> None:
 
 
 async def test_search_models_is_optional_bounded_and_source_bound() -> None:
+    # [FUNCTION DOC]
+    # Asserts blank queries are rejected with "Enter a search query." without
+    # calling the backend, queries are trimmed before being passed, the returned
+    # status is surfaced, and a backend without search returns "This action is
+    # unavailable.". Uses the registry's private provider registry for the second
+    # registry setup.
     providers = DynamicProviderRegistry(generation_id="generation")
     registry = LocalBackendRegistry(providers, generation_id="generation")
     providers.register("source", _provider("provider"))
     queries: list[str] = []
 
     async def search(query, context):
+        # [FUNCTION DOC]
+        # HELPER: Search callback recording the query, asserting the context action is
+        # search_models, and returning a status with one available model.
         queries.append(query)
         assert context.action == "search_models"
         return LocalOperationResult(

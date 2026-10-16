@@ -1,3 +1,12 @@
+# [MODULE DOC]
+# Deterministic, provider-safe repair of tool-call history before it is sent to
+# a model provider. Providers reject transcripts where an assistant tool call
+# lacks a following tool result, or where results are orphaned/duplicated; this
+# module rewrites the message sequence so every tool call is immediately
+# followed by exactly one result, in call order.
+# Defines the synthetic interruption text "Tool call interrupted by user", the
+# ToolHistoryRepair result record, repair_tool_history and a private predicate.
+# Side effects: none (pure functions).
 """Provider-safe repair of malformed tool-call message history."""
 
 from __future__ import annotations
@@ -18,6 +27,12 @@ _INTERRUPTED_TOOL_RESULT = "Tool call interrupted by user"
 
 @dataclass(frozen=True, slots=True)
 class ToolHistoryRepair:
+    # [CLASS DOC]
+    # Frozen, slotted dataclass result of a repair: the repaired message tuple,
+    # whether it differs from the input, and counters for synthesized results,
+    # dropped orphan results (no matching call id anywhere), dropped duplicate
+    # results (extra results for a known call id) and reordered results (real
+    # results moved from a non-adjacent position).
     """A provider-safe transcript plus a summary of deterministic repairs."""
 
     messages: tuple[AgentMessage, ...]
@@ -28,6 +43,11 @@ class ToolHistoryRepair:
     reordered_results: int = 0
 
     def diagnostic_data(self) -> dict[str, int]:
+        # [FUNCTION DOC]
+        # Returns a mapping of camelCase counter names (synthesizedResults,
+        # droppedOrphanResults, droppedDuplicateResults, reorderedResults) to their
+        # integer values for JSON session diagnostics. Excludes messages and changed.
+        # Pure; never raises.
         """Return JSON-safe counters for durable session diagnostics."""
         return {
             "synthesizedResults": self.synthesized_results,
@@ -38,6 +58,30 @@ class ToolHistoryRepair:
 
 
 def repair_tool_history(messages: tuple[AgentMessage, ...]) -> ToolHistoryRepair:
+    # [FUNCTION DOC]
+    # Repairs a transcript so each tool call has exactly one adjacent result.
+    # Inputs: a tuple of agent messages.
+    # Algorithm:
+    # 1. Enumerate every tool call occurrence as (assistant message index, 1-based
+    #    call offset) with its expected result position = index + offset.
+    # 2. Group tool result messages by tool call id with their positions.
+    # 3. Reserve results already at their expected position with matching id.
+    # 4. For each unpaired occurrence choose among unused results with the same id,
+    #    preferring those positioned after the assistant message, and within that
+    #    pool preferring a non-interruption result (else the first). If none exist,
+    #    synthesize an error ToolResultMessage with the interruption text and count
+    #    it.
+    # 5. For occurrences paired with a real-positioned interruption result, swap in
+    #    an unused non-interruption result for the same id if one exists.
+    # 6. Rebuild: copy all non-result messages in order; after each assistant
+    #    message append its selected results in call order, counting results whose
+    #    source position differs from the expected one as reordered.
+    # 7. Unused results are counted as orphans (unknown id) or duplicates.
+    # Outputs: a ToolHistoryRepair whose changed flag compares the new tuple to the
+    # input. Pure; does not mutate input. Raises nothing in normal use.
+    # KNOWN ISSUE: step 5 skips synthesized results (position none), so a
+    # synthesized interruption is never replaced; only pre-existing interruption
+    # results are upgraded, contrary to the comment's broader wording.
     """Return history where every tool call has exactly one adjacent result.
 
     Existing result messages are moved beside their calls. Missing results get a
@@ -166,4 +210,7 @@ def repair_tool_history(messages: tuple[AgentMessage, ...]) -> ToolHistoryRepair
 
 
 def _is_interruption_result(message: ToolResultMessage) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True when a tool result is flagged as an error and its text equals
+    # Tau's synthetic interruption message. Pure.
     return message.is_error and message.text == _INTERRUPTED_TOOL_RESULT

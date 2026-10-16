@@ -1,3 +1,7 @@
+# [MODULE DOC]
+# Tests that transcripts recorded with one provider (OpenAI Codex/Responses) can be
+# replayed to another (Anthropic Messages): tool call ids are made portable, foreign
+# reasoning is dropped, and native Anthropic thinking is preserved.
 """Cross-provider transcript compilation tests."""
 
 from __future__ import annotations
@@ -18,6 +22,10 @@ from tau_ai.tool_call_ids import portable_tool_call_id
 
 
 def test_portable_tool_call_id_preserves_safe_ids_and_hashes_native_ids() -> None:
+    # [FUNCTION DOC]
+    # Asserts ids already made of letters, digits, underscore and dash pass through
+    # unchanged, while ids containing other characters (e.g. the Codex "call|item" form)
+    # map deterministically to distinct safe ids of at most 64 characters.
     assert portable_tool_call_id("call_safe-1") == "call_safe-1"
 
     first = portable_tool_call_id("call_1|fc_1")
@@ -30,6 +38,11 @@ def test_portable_tool_call_id_preserves_safe_ids_and_hashes_native_ids() -> Non
 
 
 def test_anthropic_compiles_codex_tool_history_with_portable_ids() -> None:
+    # [FUNCTION DOC]
+    # Builds a Codex-origin history with foreign thinking and two tool calls plus their
+    # results, compiles it with the Anthropic payload builder, and asserts the assistant
+    # turn contains only two tool_use blocks (thinking dropped), that tool_result ids
+    # match the tool_use ids, and that both ids are distinct and in the safe charset.
     first_native_id = "call_first|fc_first"
     second_native_id = "call_second|fc_second"
     messages = [
@@ -82,6 +95,9 @@ def test_anthropic_compiles_codex_tool_history_with_portable_ids() -> None:
 
 
 def test_anthropic_omits_foreign_thinking_only_assistant_turn() -> None:
+    # [FUNCTION DOC]
+    # An OpenAI assistant turn holding only foreign thinking must be dropped entirely, so
+    # the Anthropic payload contains just the two user messages.
     messages = [
         UserMessage(content="Think about this"),
         AssistantMessage(
@@ -114,6 +130,9 @@ def test_anthropic_omits_foreign_thinking_only_assistant_turn() -> None:
 
 
 def test_anthropic_preserves_native_anthropic_thinking_and_safe_tool_ids() -> None:
+    # [FUNCTION DOC]
+    # A native Anthropic assistant turn keeps its thinking block with signature and its
+    # already-safe tool_use id unchanged.
     messages = [
         AssistantMessage(
             api="anthropic-messages",

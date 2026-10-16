@@ -1,3 +1,13 @@
+# [MODULE DOC]
+# Prompt autocomplete logic for the Textual TUI, kept free of widget code so
+# it is unit-testable. Given the prompt text and cursor, produces completion
+# items for slash commands (and aliases/search terms), prompt templates,
+# /skill:<name> skills, command arguments (models, providers, sessions,
+# themes), @ file references relative to the working directory, and shell
+# paths after a leading "!" or "!!". Also defines the immutable completion
+# state with wrap-around selection. Reads the filesystem for path
+# completions; ignores common VCS/cache/build directories and caps file
+# suggestions at 50.
 """Prompt autocomplete helpers for Tau's Textual TUI."""
 
 from __future__ import annotations
@@ -32,6 +42,9 @@ MAX_FILE_COMPLETIONS = 50
 
 @dataclass(frozen=True, slots=True)
 class CompletionOption:
+    # [CLASS DOC]
+    # Frozen dataclass: an argument completion value plus an optional description
+    # shown in the picker.
     """A possible argument completion value with optional picker metadata."""
 
     value: str
@@ -39,6 +52,10 @@ class CompletionOption:
 
 
 class CompletionKind(StrEnum):
+    # [CLASS DOC]
+    # String enum naming where a completion came from (command, prompt template,
+    # skill, argument, file reference, shell path); the TUI uses it to decide
+    # Enter-key behavior.
     """Source of a prompt completion and its Enter-key behavior."""
 
     COMMAND = "command"
@@ -51,6 +68,10 @@ class CompletionKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class CompletionItem:
+    # [CLASS DOC]
+    # Frozen dataclass for one selectable completion: display text, replacement
+    # text, the start/end character span of the input it replaces, kind, and
+    # optional description and category.
     """One selectable prompt completion."""
 
     display: str
@@ -62,16 +83,24 @@ class CompletionItem:
     category: str | None = None
 
     def apply(self, text: str) -> str:
+        # [FUNCTION DOC]
+        # Return the input text with the span start..end replaced by the
+        # replacement. Pure.
         """Apply this completion to input text."""
         return f"{text[: self.start]}{self.replacement}{text[self.end :]}"
 
     def cursor_after_apply(self) -> int:
+        # [FUNCTION DOC]
+        # Return the cursor offset right after the inserted replacement.
         """Return the cursor offset just after the applied replacement."""
         return self.start + len(self.replacement)
 
 
 @dataclass(frozen=True, slots=True)
 class CompletionState:
+    # [CLASS DOC]
+    # Frozen dataclass holding the tuple of completion items and the selected
+    # index (default 0). Selection changes return new states.
     """Current autocomplete state for the prompt input."""
 
     items: tuple[CompletionItem, ...] = ()
@@ -79,12 +108,18 @@ class CompletionState:
 
     @property
     def selected(self) -> CompletionItem | None:
+        # [FUNCTION DOC]
+        # Property: the item at the selected index, or None when there are no items.
+        # May raise IndexError if constructed with an out-of-range index.
         """Return the currently selected completion item."""
         if not self.items:
             return None
         return self.items[self.selected_index]
 
     def select_next(self) -> CompletionState:
+        # [FUNCTION DOC]
+        # Return a new state selecting the next item, wrapping to the first; returns
+        # self unchanged when empty.
         """Return a state with the next item selected."""
         if not self.items:
             return self
@@ -94,6 +129,9 @@ class CompletionState:
         )
 
     def select_previous(self) -> CompletionState:
+        # [FUNCTION DOC]
+        # Return a new state selecting the previous item, wrapping to the last;
+        # returns self unchanged when empty.
         """Return a state with the previous item selected."""
         if not self.items:
             return self
@@ -118,6 +156,22 @@ def build_completion_state(
     session_options: Sequence[CompletionOption] = (),
     cwd: Path | None = None,
 ) -> CompletionState:
+    # [FUNCTION DOC]
+    # Compute the completion state for the prompt. Inputs: text, optional cursor
+    # (clamped; default end of text), command registry, skills, prompt
+    # templates, and candidate model/provider/thinking-level/theme/session values,
+    # optional rich session options, and optional working directory.
+    # Dispatch: text not starting with a single "/" -> shell path completions if
+    # it is a "!" command, else @ file reference completions (nothing if no cwd).
+    # For slash text, the first token (up to the first space) decides:
+    # "/skill:..." -> file references when a known skill already has argument
+    # text, else skill name completions; any other token containing ":" ->
+    # nothing; then command argument completions for model/scoped-models,
+    # login/logout, resume and theme; then file references after a known prompt
+    # template with arguments; nothing after a known registered command with
+    # arguments; otherwise command and prompt template name completions.
+    # Output: CompletionState. Side effects: filesystem reads for path modes.
+    # Note: thinking levels are accepted but currently not used for any command.
     """Build autocomplete suggestions for the current prompt text."""
     cursor = len(text) if cursor is None else max(0, min(cursor, len(text)))
     if not text.startswith("/") or text.startswith("//"):
@@ -176,6 +230,15 @@ def build_completion_state(
 
 
 def _file_reference_completions(*, text: str, cursor: int, cwd: Path) -> tuple[CompletionItem, ...]:
+    # [FUNCTION DOC]
+    # HELPER: complete the "@" token under the cursor. Finds the active token;
+    # delegates to parent-directory completion for prefixes starting with "../"
+    # or equal to/ending in ".."; otherwise walks all non-ignored paths under cwd
+    # and suggests "@<relative path>" (with a trailing slash for directories)
+    # whose path contains the typed prefix case-insensitively, skipping the
+    # exact existing text, up to the cap. Returns a tuple of items.
+    # KNOWN ISSUE: the full recursive walk of cwd happens on every call before
+    # filtering and capping, which can be slow in large trees.
     token = _active_file_reference_token(text, cursor)
     if token is None:
         return ()
@@ -218,6 +281,13 @@ def _file_reference_completions(*, text: str, cursor: int, cwd: Path) -> tuple[C
 def _external_file_reference_completions(
     *, prefix: str, existing: str, start: int, end: int, cwd: Path
 ) -> tuple[CompletionItem, ...] | None:
+    # [FUNCTION DOC]
+    # HELPER: handle "@" references that leave cwd. For ".." or ".../.." returns
+    # a single "@<prefix>/" directory suggestion if it exists. For "../..."
+    # prefixes lists the parent directory's children (sorted case-insensitively,
+    # skipping ignored names and paths containing ignored parts) matching the
+    # name prefix, up to the cap. Returns None when the prefix is not external
+    # so the caller falls back; returns empty on missing dirs or OS errors.
     if prefix == ".." or prefix.endswith("/.."):
         target = cwd / prefix
         if not target.is_dir():
@@ -276,6 +346,11 @@ def _external_file_reference_completions(
 
 
 def _active_file_reference_token(text: str, cursor: int) -> tuple[int, int] | None:
+    # [FUNCTION DOC]
+    # HELPER: locate the "@" reference containing the cursor: searches the
+    # current whitespace-delimited word (space or newline) before the cursor for
+    # the last "@", and extends the end to the next whitespace. Returns the
+    # start (index of "@") and end, or None if there is no "@".
     token_start = max(text.rfind(" ", 0, cursor), text.rfind("\n", 0, cursor)) + 1
     at_index = text.rfind("@", token_start, cursor)
     if at_index == -1:
@@ -287,6 +362,11 @@ def _active_file_reference_token(text: str, cursor: int) -> tuple[int, int] | No
 
 
 def _iter_file_reference_paths(cwd: Path) -> tuple[Path, ...]:
+    # [FUNCTION DOC]
+    # HELPER: depth-first walk of cwd (directory children sorted
+    # case-insensitively) collecting every file and directory not under an
+    # ignored directory; unreadable directories are skipped. Returns empty if
+    # cwd is missing or not a directory.
     if not cwd.exists() or not cwd.is_dir():
         return ()
     paths: list[Path] = []
@@ -307,6 +387,9 @@ def _iter_file_reference_paths(cwd: Path) -> tuple[Path, ...]:
 
 
 def _is_ignored_file_completion_path(path: Path, *, cwd: Path) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True when the path is outside cwd or any relative path part is an
+    # ignored directory name.
     try:
         relative_parts = path.relative_to(cwd).parts
     except ValueError:
@@ -317,6 +400,15 @@ def _is_ignored_file_completion_path(path: Path, *, cwd: Path) -> bool:
 def _shell_path_completions(
     *, text: str, cursor: int, cwd: Path
 ) -> tuple[CompletionItem, ...] | None:
+    # [FUNCTION DOC]
+    # HELPER: complete relative paths inside a "!" / "!!" shell command. Returns
+    # None when the text is not a shell command (so the caller tries @ refs),
+    # empty when the cursor is inside the prefix, the token is empty or not a
+    # simple relative path, or the parent dir is missing/ignored. Otherwise lists
+    # children of the parent directory matching the name prefix
+    # case-insensitively, producing cwd-relative replacements (keeping a "./"
+    # prefix, trailing slash for directories), skipping the unchanged token, with
+    # a File/Directory description, up to the cap.
     prefix_span = _shell_command_prefix_span(text)
     if prefix_span is None:
         return None
@@ -370,6 +462,9 @@ def _shell_path_completions(
 
 
 def _shell_command_prefix_span(text: str) -> tuple[int, int] | None:
+    # [FUNCTION DOC]
+    # HELPER: return the span of a leading "!!" or "!" after optional leading
+    # whitespace, or None if the text is not a shell command.
     leading_whitespace = len(text) - len(text.lstrip())
     stripped = text[leading_whitespace:]
     if stripped.startswith("!!"):
@@ -380,6 +475,13 @@ def _shell_command_prefix_span(text: str) -> tuple[int, int] | None:
 
 
 def _active_shell_path_token(*, text: str, cursor: int, command_start: int) -> tuple[int, int]:
+    # [FUNCTION DOC]
+    # HELPER: find the shell word under the cursor: scans backward from the
+    # cursor to the previous unescaped whitespace (not before the command
+    # start), and forward via the token-end helper. Returns start and end.
+    # KNOWN ISSUE: the backward scan treats the character after a backslash as
+    # escaped when scanning right-to-left, so escape detection is approximate
+    # (e.g. a backslash-escaped space is not recognized as escaped).
     token_start = command_start
     escaped = False
     for index in range(cursor - 1, command_start - 1, -1):
@@ -397,6 +499,9 @@ def _active_shell_path_token(*, text: str, cursor: int, command_start: int) -> t
 
 
 def _shell_token_end(text: str, cursor: int) -> int:
+    # [FUNCTION DOC]
+    # HELPER: scan forward from the cursor to the next unescaped whitespace
+    # (skipping backslash-escaped characters); return its index or text length.
     index = cursor
     while index < len(text):
         char = text[index]
@@ -410,6 +515,11 @@ def _shell_token_end(text: str, cursor: int) -> int:
 
 
 def _parse_shell_path_token(token: str) -> tuple[str, str, str] | None:
+    # [FUNCTION DOC]
+    # HELPER: split a shell token into parent directory text, name prefix and a
+    # replacement prefix ("./" if present). Returns None for absolute or home
+    # paths, tokens with quotes, backticks, "$" or glob characters, and parent
+    # paths containing empty, "." or ".." segments.
     replacement_prefix = ""
     path_text = token
     if path_text.startswith("./"):
@@ -431,6 +541,8 @@ def _parse_shell_path_token(token: str) -> tuple[str, str, str] | None:
 
 
 def _matches_skill_command(token: str, skills: Sequence[Skill]) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True if "/skill:<name>" names a known skill (case-insensitive).
     command_name = token.removeprefix("/skill:").lower()
     return any(skill.name.lower() == command_name for skill in skills)
 
@@ -438,11 +550,16 @@ def _matches_skill_command(token: str, skills: Sequence[Skill]) -> bool:
 def _matches_prompt_template_command(
     token: str, prompt_templates: Sequence[PromptTemplate]
 ) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True if "/<name>" names a known prompt template (case-insensitive).
     command_name = token.removeprefix("/").lower()
     return any(template.name.lower() == command_name for template in prompt_templates)
 
 
 def _matches_registered_command(token: str, registry: CommandRegistry) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True if the command registry has a command for "/<name>" (name
+    # lower-cased before lookup).
     command_name = token.removeprefix("/").lower()
     return registry.get(command_name) is not None
 
@@ -454,6 +571,11 @@ def _command_completions(
     registry: CommandRegistry,
     prompt_templates: Sequence[PromptTemplate],
 ) -> tuple[CompletionItem, ...]:
+    # [FUNCTION DOC]
+    # HELPER: build slash-command suggestions (via alias completions for each
+    # registered command) followed by prompt templates whose names start with the
+    # typed prefix (case-insensitive), each group sorted with direct name matches
+    # first then by display. Items replace from 0 to the token end.
     prefix = token.removeprefix("/").lower()
     command_suggestions: list[CompletionItem] = []
     for command in registry.list_commands():
@@ -480,6 +602,9 @@ def _command_completions(
 
 
 def _command_completion_sort_key(item: CompletionItem, prefix: str) -> tuple[int, str]:
+    # [FUNCTION DOC]
+    # HELPER: sort key giving rank 0 to items whose display name (without slash
+    # and trailing colon) starts with the prefix, else 1, then the display text.
     if not prefix:
         return (0, item.display)
     display_name = item.display.removeprefix("/").removesuffix(":").lower()
@@ -490,6 +615,14 @@ def _command_completion_sort_key(item: CompletionItem, prefix: str) -> tuple[int
 def _command_alias_completions(
     command: SlashCommand, *, prefix: str, token_end: int
 ) -> list[CompletionItem]:
+    # [FUNCTION DOC]
+    # HELPER: suggestions for one command. With an empty prefix only the primary
+    # name; otherwise the name, aliases and search terms that start with the
+    # prefix. Search-term matches complete to the primary name; aliases complete
+    # to themselves. The skill command completes to "/skill:". Duplicate
+    # displays are removed. Category "Commands", description from the command.
+    # KNOWN ISSUE: matching against the lower-cased prefix is case-sensitive on
+    # the command side, so mixed-case names/aliases/search terms never match.
     names = (
         (command.name,) if not prefix else (command.name, *command.aliases, *command.search_terms)
     )
@@ -524,6 +657,9 @@ def _command_alias_completions(
 def _skill_completions(
     *, token: str, token_end: int, skills: Sequence[Skill]
 ) -> tuple[CompletionItem, ...]:
+    # [FUNCTION DOC]
+    # HELPER: "/skill:<name>" suggestions for skills (sorted by name) whose names
+    # start with the typed prefix case-insensitively.
     prefix = token.removeprefix("/skill:").lower()
     suggestions = [
         CompletionItem(
@@ -551,6 +687,13 @@ def _command_argument_completions(
     session_ids: Sequence[str],
     session_options: Sequence[CompletionOption],
 ) -> tuple[CompletionItem, ...] | None:
+    # [FUNCTION DOC]
+    # HELPER: when text exists after the first token, return argument
+    # completions for known commands: model/scoped-models -> sorted model
+    # names; login/logout -> sorted provider names; resume -> session options
+    # (or plain session ids) in given order; theme -> theme names in given order.
+    # Returns None for other commands or when there is no argument text.
+    # Arguments are assumed to start one character after the command token.
     if token_end >= len(text):
         return None
 
@@ -597,6 +740,10 @@ def _value_completions(
     options: Sequence[CompletionOption],
     sort: bool,
 ) -> tuple[CompletionItem, ...]:
+    # [FUNCTION DOC]
+    # HELPER: complete the argument word starting at the given index (to the next
+    # space) against options whose value starts with it case-insensitively,
+    # optionally sorting by value. Returns ARGUMENT items.
     end = _argument_token_end(text, start)
     prefix = text[start:end].lower()
     ordered_options = sorted(options, key=lambda item: item.value) if sort else options
@@ -619,14 +766,22 @@ def _completion_options(
     *,
     description: str,
 ) -> tuple[CompletionOption, ...]:
+    # [FUNCTION DOC]
+    # HELPER: wrap plain string values as completion options sharing one
+    # description.
     return tuple(CompletionOption(value=value, description=description) for value in values)
 
 
 def _first_token_end(text: str) -> int:
+    # [FUNCTION DOC]
+    # HELPER: index of the first space in the text, or the text length.
+    # Note: only spaces separate tokens (not tabs/newlines).
     separator = text.find(" ")
     return len(text) if separator == -1 else separator
 
 
 def _argument_token_end(text: str, start: int) -> int:
+    # [FUNCTION DOC]
+    # HELPER: index of the first space at or after start, or the text length.
     separator = text.find(" ", start)
     return len(text) if separator == -1 else separator

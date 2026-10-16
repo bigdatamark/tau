@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Runtime model-provider construction for Tau coding sessions (tau_coding layer bridging
+# durable provider settings and extension-defined dynamic providers to tau_ai provider
+# implementations). Builds Anthropic, OpenAI Codex, OpenAI-compatible, Google and Mistral
+# providers; resolves API keys and OAuth credentials (refreshing and persisting rotated
+# tokens under a per-event-loop, per-credential lock so refresh tokens are spent once);
+# and wraps extension authentication errors behind a secret-safe boundary.
 """Runtime provider construction for Tau coding sessions."""
 
 from __future__ import annotations
@@ -64,9 +71,13 @@ from tau_coding.thinking import ThinkingLevel, normalize_thinking_level, reasoni
 
 
 class ClosableModelProvider(ModelProvider, Protocol):
+    # [CLASS DOC]
+    # Protocol: a model provider (stream_response) that Tau owns and can close via aclose.
     """Runtime provider object Tau owns and can close."""
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # Protocol method: release provider-owned resources such as HTTP clients.
         """Close any provider-owned resources."""
         ...
 
@@ -78,6 +89,27 @@ async def create_dynamic_model_provider(
     credential_store: CredentialReader | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> ClosableModelProvider:
+    # [FUNCTION DOC]
+    # Create a candidate runtime provider from a process-local (extension) DynamicProvider.
+    # Inputs: the provider definition; keyword model id; optional credential reader
+    # (defaults to the file credential store); optional environment mapping (defaults to
+    # the process environment).
+    # Behavior: looks up the model (ProviderConfigError if not listed), resolves auth via the
+    # secret-safe resolver, and builds a runtime context (provider id + auth).
+    # If the provider has a runtime factory: calls it with the context and model (awaiting
+    # if it returns an awaitable). Validates the result has callable stream_response and
+    # aclose (attribute access errors are treated as missing); otherwise best-effort closes
+    # it (if closable, swallowing errors) and raises ProviderConfigError.
+    # Otherwise the transport must be OpenAI-compatible (asserted). The effective API is the
+    # model's API or the transport's; anything other than openai-completions/responses
+    # raises ProviderConfigError. Headers are merged case-insensitively (transport, model,
+    # auth; later wins). If auth resolved an API key while asking to omit the Authorization
+    # header and no explicit Authorization header exists, raises ProviderConfigError.
+    # Builds an OpenAI-compatible config (API key or empty, model/transport base URL,
+    # timeouts/retries, max tokens, image support when the model lists the image modality,
+    # JSON-compatible compat settings, provider name, no API inference from model id) and
+    # returns an OpenAICompatibleProvider using the transport's optional shared client.
+    # Never writes the dynamic definition to durable settings. May raise ProviderAuthError.
     """Create a candidate runtime from a process-local provider definition.
 
     Authentication is resolved only here, immediately before construction.
@@ -163,6 +195,14 @@ async def _resolve_dynamic_runtime_auth(
     credentials: CredentialReader,
     environment: Mapping[str, str],
 ) -> ResolvedProviderAuth:
+    # [FUNCTION DOC]
+    # HELPER: Resolve a dynamic provider's auth strategy with credentials and environment,
+    # hiding extension-authored error text. Cancellation is re-raised as a fresh
+    # CancelledError without its message or cause. A missing-required-key error is
+    # re-raised as-is only when the strategy is exactly Tau's RequiredApiKey; otherwise, and
+    # for any ProviderAuthError or other exception, raises a generic ProviderAuthError
+    # ("Dynamic provider authentication resolution failed") with context suppressed.
+    # Returns the resolved auth (API key, headers, omit-authorization flag).
     """Resolve extension auth behind a categorical secret-safe boundary."""
     try:
         return await resolve_provider_auth(
@@ -188,6 +228,9 @@ async def _resolve_dynamic_runtime_auth(
 
 
 def _dynamic_model(provider: DynamicProvider, model: str) -> ProviderModel:
+    # [FUNCTION DOC]
+    # HELPER: Return the provider model whose id exactly equals the requested id, else raise
+    # ProviderConfigError naming the provider and model.
     for candidate in provider.models:
         if candidate.id == model:
             return candidate
@@ -195,6 +238,10 @@ def _dynamic_model(provider: DynamicProvider, model: str) -> ProviderModel:
 
 
 def _merge_dynamic_headers(*values: Mapping[str, str]) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: Merge several header mappings case-insensitively; a later key replaces any
+    # earlier key with the same case-folded name (the earlier spelling is removed and the
+    # new spelling appended). Returns a new mapping.
     """Merge transport/model/auth headers case-insensitively, latest value winning."""
     merged: dict[str, str] = {}
     names: dict[str, str] = {}
@@ -218,6 +265,32 @@ def create_model_provider(
     inference_provider: str | None = None,
     response_headers_observer: Callable[[Mapping[str, str]], None] | None = None,
 ) -> ClosableModelProvider:
+    # [FUNCTION DOC]
+    # Create a runtime provider from durable provider settings.
+    # Inputs: provider config; keyword optional credential store (default file store),
+    # model id, thinking level, Hugging Face inference-provider pin and a response-headers
+    # observer callback.
+    # Validates the model against the config if given. An inference provider is allowed
+    # only for the "huggingface" provider with a model (else ProviderConfigError) and is
+    # validated/normalised.
+    # - Anthropic config: builds the Anthropic config; if an OAuth credential exists for a
+    # registered OAuth provider, switches to bearer auth with the OAuth runtime API key and
+    # merged headers, sets the Claude Code system prompt prefix required for OAuth, OAuth
+    # cache retention, and an OAuth refreshing credential resolver. Returns AnthropicProvider.
+    # - OpenAI Codex config: returns an OpenAICodexProvider with a Codex credential
+    # resolver, base URL, headers, timeouts/retries, reasoning effort derived from the
+    # thinking level, image support, and a client-version resolver rooted at the
+    # credential store's directory.
+    # - OpenAI-compatible config: builds the compatible config; applies a model alias
+    # "<model>:<inference provider>" when pinned; attaches the headers observer; if an
+    # OAuth credential exists, applies runtime auth (API key, base URL override, merged
+    # headers) and an OAuth resolver. Then dispatches on the selected API:
+    # "anthropic-messages" requires OAuth (else ProviderConfigError) and returns an
+    # AnthropicProvider with bearer auth and gateway cache settings;
+    # "google-generative-ai" -> Google provider; "mistral-conversations" -> Mistral
+    # provider; otherwise OpenAICompatibleProvider.
+    # Any other config type raises ProviderConfigError. Reads credentials from disk;
+    # RuntimeError if an OAuth credential exists without a registered OAuth implementation.
     """Create a runtime model provider from durable provider settings."""
     if model is not None:
         validate_provider_model(provider, model)
@@ -350,6 +423,12 @@ def _codex_reasoning_effort(
     model: str | None,
     thinking_level: ThinkingLevel | None,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Map a thinking level to a Codex reasoning effort string.
+    # Returns None if no level is given, the provider's thinking parameter is not
+    # "reasoning.effort", or the model advertises no levels. Normalises the level; raises
+    # ProviderConfigError listing available modes if it is not advertised. "off" -> None,
+    # "minimal" -> "low", others -> the standard effort mapping.
     if thinking_level is None or provider.thinking_parameter != "reasoning.effort":
         return None
     levels = provider_thinking_levels(provider, model=model)
@@ -371,6 +450,9 @@ def _codex_reasoning_effort(
 
 
 class OpenAICodexCredentialResolver:
+    # [CLASS DOC]
+    # Callable resolver producing OpenAI Codex credentials (access token + account id) for
+    # each request, refreshing stored OAuth tokens when expired.
     """Resolve and refresh OpenAI Codex OAuth credentials for one request."""
 
     def __init__(
@@ -379,10 +461,20 @@ class OpenAICodexCredentialResolver:
         *,
         credential_store: FileCredentialStore,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store the Codex provider config and the credential store. No I/O.
         self._provider = provider
         self._credential_store = credential_store
 
     async def __call__(self) -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # Return valid Codex credentials.
+        # If the provider names a stored OAuth credential and it exists: refresh if expired,
+        # then require an account id (RuntimeError if missing) and return it with the access
+        # token. Otherwise, read the provider's API-key environment variable as an access JWT
+        # and derive the account id from it (RuntimeError if not derivable). If neither source
+        # is available, raises RuntimeError telling the user to run /login <provider>.
+        # Side effects: may perform a network token refresh and write the credential store.
         """Return a valid Codex access token and account id."""
         credential_name = self._provider.credential_name
         if credential_name:
@@ -413,6 +505,12 @@ class OpenAICodexCredentialResolver:
         credential_name: str,
         credential: OAuthCredential,
     ) -> OAuthCredential:
+        # [FUNCTION DOC]
+        # HELPER: Return the credential unchanged if not expired. Otherwise, under the shared
+        # per-credential refresh lock, re-read the store (falling back to the given credential);
+        # if the stored one is now valid return it; else refresh via the Codex token endpoint
+        # using the stored refresh token, persist the result if it differs, and return it.
+        # Network errors from refresh propagate.
         if not oauth_credential_is_expired(credential):
             return credential
         async with _refresh_lock(credential_name):
@@ -429,6 +527,11 @@ _REFRESH_LOCKS: MutableMapping[AbstractEventLoop, dict[str, asyncio.Lock]] = Wea
 
 
 def _refresh_lock(credential_name: str) -> asyncio.Lock:
+    # [FUNCTION DOC]
+    # HELPER: Return the asyncio lock for one credential name, cached per running event loop
+    # in a weak-keyed mapping (created on first use). Serialising refreshes ensures rotating
+    # refresh tokens are spent at most once; per-loop caching avoids cross-loop lock errors.
+    # Must be called with a running loop (RuntimeError otherwise).
     """Return this loop's refresh lock for one stored credential.
 
     Providers rotate the refresh token on use: the old one dies the moment a
@@ -457,12 +560,19 @@ def _oauth_credential(
     provider: ProviderConfig,
     credential_store: FileCredentialStore,
 ) -> OAuthCredential | None:
+    # [FUNCTION DOC]
+    # HELPER: Return the stored OAuth credential for a provider config, or None when the
+    # config has no credential name, no OAuth implementation is registered for the provider
+    # name, or no OAuth credential is stored. Reads the credential store.
     if provider.credential_name is None or get_oauth_provider(provider.name) is None:
         return None
     return credential_store.get_oauth(provider.credential_name)
 
 
 class OAuthRuntimeCredentialResolver:
+    # [CLASS DOC]
+    # Provider-neutral callable that refreshes OAuth credentials right before each request
+    # and returns runtime auth (API key, base URL, headers).
     """Refresh provider-neutral OAuth credentials immediately before a request."""
 
     def __init__(
@@ -471,10 +581,19 @@ class OAuthRuntimeCredentialResolver:
         *,
         credential_store: FileCredentialStore,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store the provider config and credential store. No I/O.
         self._provider = provider
         self._credential_store = credential_store
 
     async def __call__(self) -> RuntimeProviderAuth:
+        # [FUNCTION DOC]
+        # Resolve runtime auth. Raises RuntimeError if the config has no credential name or no
+        # OAuth implementation is registered. Under the per-credential refresh lock, reads the
+        # stored credential (RuntimeError suggesting /login if missing), calls the OAuth
+        # provider's refresh (which may return the same credential when still valid), and
+        # persists it if changed. Returns RuntimeProviderAuth built from the OAuth provider's
+        # runtime auth for the (refreshed) credential. Side effects: network refresh, disk write.
         credential_name = self._provider.credential_name
         if credential_name is None:
             raise RuntimeError(f"Provider {self._provider.name} has no credential name")
@@ -500,6 +619,9 @@ class OAuthRuntimeCredentialResolver:
 
 
 def _required_oauth_provider(provider_name: str) -> OAuthProvider:
+    # [FUNCTION DOC]
+    # HELPER: Return the registered OAuth implementation for a provider name, raising
+    # RuntimeError if none is registered.
     oauth_provider = get_oauth_provider(provider_name)
     if oauth_provider is None:
         raise RuntimeError(f"No OAuth implementation is registered for {provider_name}")

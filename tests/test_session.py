@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Tests for the portable session layer (tau_agent.session and message
+# models): canonical JSONL round-trips of session entries and messages
+# (camelCase wire fields, Tau snake_case persisted names), migration of legacy
+# on-disk shapes, JSONL file storage (including Unicode line separators),
+# SessionState replay (labels, model, leaf, compaction and branch summaries,
+# first-kept boundaries, legacy id lists), usage summation, and tree path
+# resolution errors. Async tests run under anyio; file tests use tmp_path.
 import json
 from pathlib import Path
 
@@ -37,6 +45,9 @@ from tau_agent.session import (
 
 
 def test_session_entry_round_trips_canonical_jsonl() -> None:
+    # [FUNCTION DOC]
+    # Verifies a user message entry serialises to one JSON line and parses back
+    # equal, with the nested message as role/content/timestamp.
     entry = MessageEntry(
         id="entry-1",
         timestamp=1,
@@ -54,6 +65,9 @@ def test_session_entry_round_trips_canonical_jsonl() -> None:
 
 
 def test_custom_message_entry_round_trips_with_tau_persisted_naming() -> None:
+    # [FUNCTION DOC]
+    # Verifies custom_message entries persist "custom_type" (not customType),
+    # image blocks use mimeType, and the entry round-trips.
     entry = CustomMessageEntry(
         id="entry-1",
         timestamp=2,
@@ -77,6 +91,9 @@ def test_custom_message_entry_round_trips_with_tau_persisted_naming() -> None:
 
 
 def test_assistant_and_tool_result_round_trip_canonical_blocks() -> None:
+    # [FUNCTION DOC]
+    # Verifies assistant text blocks, default zero usage totalTokens, omitted
+    # timing, and tool results with role "toolResult" and toolName round-trip.
     assistant = MessageEntry(id="a", message=AssistantMessage(content="Hi"))
     result = MessageEntry(
         id="r",
@@ -101,6 +118,8 @@ def test_assistant_and_tool_result_round_trip_canonical_blocks() -> None:
 
 
 def test_assistant_response_timing_round_trips_jsonl() -> None:
+    # [FUNCTION DOC]
+    # Verifies ResponseTiming persists as camelCase fields and round-trips.
     entry = MessageEntry(
         id="timed",
         message=AssistantMessage(
@@ -119,6 +138,9 @@ def test_assistant_response_timing_round_trips_jsonl() -> None:
 
 
 def test_tool_result_image_round_trips_jsonl() -> None:
+    # [FUNCTION DOC]
+    # Verifies image blocks in tool results serialise as type/data/mimeType and
+    # round-trip.
     entry = MessageEntry(
         id="image",
         message=ToolResultMessage(
@@ -142,6 +164,8 @@ def test_tool_result_image_round_trips_jsonl() -> None:
 
 
 def test_structured_thinking_message_round_trips_jsonl() -> None:
+    # [FUNCTION DOC]
+    # Verifies thinking blocks keep order and thinkingSignature through JSONL.
     entry = MessageEntry(
         id="a",
         message=AssistantMessage(
@@ -161,6 +185,10 @@ def test_structured_thinking_message_round_trips_jsonl() -> None:
 
 
 def test_legacy_assistant_message_migrates_to_ordered_blocks() -> None:
+    # [FUNCTION DOC]
+    # Verifies legacy assistant messages with text content and a separate
+    # tool_calls list become ordered text + toolCall blocks and are rewritten
+    # without tool_calls.
     legacy = json.dumps(
         {
             "type": "message",
@@ -188,6 +216,9 @@ def test_legacy_assistant_message_migrates_to_ordered_blocks() -> None:
 
 
 def test_assistant_message_with_legacy_null_usage_cost_migrates() -> None:
+    # [FUNCTION DOC]
+    # Verifies legacy snake_case usage with a null cost loads with zero cost and
+    # is rewritten with a cost object.
     legacy = json.dumps(
         {
             "type": "message",
@@ -219,6 +250,9 @@ def test_assistant_message_with_legacy_null_usage_cost_migrates() -> None:
 
 
 def test_legacy_tool_message_migrates_and_preserves_data() -> None:
+    # [FUNCTION DOC]
+    # Verifies legacy "tool" role messages (name, ok, error, data, details) become
+    # toolResult messages with is_error, merged details and no legacy keys.
     legacy = json.dumps(
         {
             "type": "message",
@@ -256,6 +290,12 @@ def test_legacy_tool_message_migrates_and_preserves_data() -> None:
 def test_legacy_custom_message_shapes_migrate_and_replay_identically(
     role: str, custom_type_key: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over role (user/custom) and custom type key spelling: legacy
+    # message entries carrying a custom type become CustomMessageEntry objects
+    # (timestamp converted from ms to seconds, no parent), replay to an identical
+    # CustomMessage, convert to the same user message, and are rewritten as
+    # custom_message entries.
     legacy_message = {
         "role": role,
         "content": "<task-notification/>",
@@ -302,6 +342,9 @@ def test_legacy_custom_message_shapes_migrate_and_replay_identically(
 
 
 def test_pi_named_custom_message_entry_normalizes_to_tau_persistence() -> None:
+    # [FUNCTION DOC]
+    # Verifies Pi's camelCase customType is accepted and rewritten as
+    # custom_type.
     entry = entry_from_json_line(
         json.dumps(
             {
@@ -321,12 +364,17 @@ def test_pi_named_custom_message_entry_normalizes_to_tau_persistence() -> None:
 
 
 def test_invalid_jsonl_line_raises_useful_error() -> None:
+    # [FUNCTION DOC]
+    # Verifies unknown entry types raise SessionJsonlError naming the line number.
     with pytest.raises(SessionJsonlError, match="Invalid session entry on line 3"):
         entry_from_json_line('{"type":"unknown"}', line_number=3)
 
 
 @pytest.mark.anyio
 async def test_jsonl_storage_appends_and_reads_entries(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verifies JSONL storage creates parent dirs, appends entries and reads them
+    # back in order.
     storage = JsonlSessionStorage(tmp_path / "sessions" / "one.jsonl")
     first = MessageEntry(id="one", message=UserMessage(content="Hi"))
     second = LabelEntry(id="two", target_id="one", label="Greeting")
@@ -342,6 +390,9 @@ async def test_jsonl_storage_appends_and_reads_entries(tmp_path: Path) -> None:
 async def test_jsonl_storage_round_trips_unicode_line_separators(
     tmp_path: Path, separator: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over U+2028, U+2029 and U+0085: such characters inside content
+    # do not split records on read.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     entry = MessageEntry(id="one", message=UserMessage(content=f"before{separator}after"))
 
@@ -354,6 +405,9 @@ async def test_jsonl_storage_round_trips_unicode_line_separators(
 async def test_jsonl_storage_reads_existing_file_with_unicode_line_separator(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verifies an existing file (no trailing newline) containing U+2028 inside a
+    # string is read as one entry.
     entry = MessageEntry(id="one", message=UserMessage(content="a\u2028b"))
     path = tmp_path / "session.jsonl"
     path.write_text(entry_to_json_line(entry), encoding="utf-8")
@@ -363,6 +417,10 @@ async def test_jsonl_storage_reads_existing_file_with_unicode_line_separator(
 
 
 def test_session_state_replays_linear_entries() -> None:
+    # [FUNCTION DOC]
+    # Verifies replay yields messages, the latest model, labels with timestamps,
+    # and that the active leaf is the last entry in file order (leaf pointer
+    # entries do not override it).
     user = UserMessage(content="Hi", timestamp=1)
     assistant = AssistantMessage(content="Hello", timestamp=2)
     entries = [
@@ -391,6 +449,9 @@ def test_session_state_replays_linear_entries() -> None:
 
 
 def test_session_state_resolves_relabel_clear_and_relabel_in_file_order() -> None:
+    # [FUNCTION DOC]
+    # Verifies label set/clear/set sequences resolve in file order to the latest
+    # label and timestamp.
     target = MessageEntry(id="target", message=UserMessage(content="Bookmark me"))
     entries = [
         target,
@@ -408,6 +469,8 @@ def test_session_state_resolves_relabel_clear_and_relabel_in_file_order() -> Non
 
 
 def test_session_state_clear_removes_label_and_timestamp() -> None:
+    # [FUNCTION DOC]
+    # Verifies a none label clears both the label and its timestamp.
     entries = [
         MessageEntry(id="target", message=UserMessage(content="Bookmark me")),
         LabelEntry(id="set", parent_id="target", target_id="target", label="saved"),
@@ -421,6 +484,9 @@ def test_session_state_clear_removes_label_and_timestamp() -> None:
 
 
 def test_legacy_session_label_migrates_to_earliest_branchable_entry() -> None:
+    # [FUNCTION DOC]
+    # Verifies a legacy label without target is migrated to target the first
+    # message entry (after session_info) and resolves as such.
     entries = entries_from_json_lines(
         [
             json.dumps({"type": "session_info", "id": "info", "timestamp": 1}),
@@ -452,6 +518,9 @@ def test_legacy_session_label_migrates_to_earliest_branchable_entry() -> None:
 
 
 def test_compaction_entry_omits_empty_legacy_id_list_from_jsonl() -> None:
+    # [FUNCTION DOC]
+    # Verifies compaction entries omit an empty replaces_entry_ids list and
+    # optional none fields when serialised, and default it to empty when parsed.
     line = entry_to_json_line(
         CompactionEntry(
             id="compact",
@@ -473,6 +542,9 @@ def test_compaction_entry_omits_empty_legacy_id_list_from_jsonl() -> None:
 
 
 def test_legacy_summary_entries_load_without_usage() -> None:
+    # [FUNCTION DOC]
+    # Verifies legacy compaction/branch summary lines load with no usage,
+    # provider, model or response provider.
     compaction = entry_from_json_line(
         '{"type":"compaction","id":"compact","summary":"old","replaces_entry_ids":[]}'
     )
@@ -491,6 +563,9 @@ def test_legacy_summary_entries_load_without_usage() -> None:
 
 
 def test_sum_usage_combines_tokens_optional_fields_and_cost() -> None:
+    # [FUNCTION DOC]
+    # Verifies sum_usage adds token counts, optional reasoning and 1h cache write
+    # fields, and cost components.
     combined = sum_usage(
         [
             Usage(input=10, reasoning=2, cost=UsageCost(input=0.1, total=0.1)),
@@ -513,6 +588,9 @@ def test_sum_usage_combines_tokens_optional_fields_and_cost() -> None:
 
 
 def test_summary_entry_usage_round_trips_with_camel_case_usage_fields() -> None:
+    # [FUNCTION DOC]
+    # Verifies summary entry usage persists in camelCase (cacheRead, cacheWrite1H)
+    # alongside snake_case entry fields, and round-trips.
     entry = CompactionEntry(
         id="compact",
         summary="summary",
@@ -532,6 +610,9 @@ def test_summary_entry_usage_round_trips_with_camel_case_usage_fields() -> None:
 
 
 def test_session_state_applies_compaction_and_branch_summary() -> None:
+    # [FUNCTION DOC]
+    # Verifies a legacy id-list compaction replaces earlier messages with a
+    # summary user message and a branch summary appends another user message.
     entries = [
         MessageEntry(id="user", message=UserMessage(content="Explain sessions.")),
         MessageEntry(
@@ -573,6 +654,10 @@ def test_session_state_applies_first_kept_boundary_inclusively(
     boundary: str | None,
     expected: list[str],
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over boundary ids: replay emits the summary first, then path
+    # entries from the first-kept entry inclusive (none or missing keeps nothing
+    # before the compaction), then later messages; context_entry_ids matches.
     entries = [
         MessageEntry(id="first", message=UserMessage(content="first")),
         MessageEntry(
@@ -602,6 +687,9 @@ def test_session_state_applies_first_kept_boundary_inclusively(
 
 
 def test_first_kept_boundary_can_reference_non_message_path_entry() -> None:
+    # [FUNCTION DOC]
+    # Verifies a boundary pointing at a model change entry keeps the messages
+    # after it.
     entries = [
         MessageEntry(id="first", message=UserMessage(content="first")),
         ModelChangeEntry(
@@ -630,6 +718,9 @@ def test_first_kept_boundary_can_reference_non_message_path_entry() -> None:
 
 
 def test_first_kept_replay_includes_compaction_after_boundary_in_path_order() -> None:
+    # [FUNCTION DOC]
+    # Verifies an older compaction located after the boundary replays as its own
+    # summary in path order under the newer summary.
     entries = [
         MessageEntry(id="first", message=UserMessage(content="first")),
         MessageEntry(id="kept", parent_id="first", message=UserMessage(content="kept")),
@@ -669,6 +760,8 @@ def test_first_kept_replay_includes_compaction_after_boundary_in_path_order() ->
 
 
 def test_session_state_applies_first_kept_boundary_on_active_branch_only() -> None:
+    # [FUNCTION DOC]
+    # Verifies abandoned sibling branches are excluded when applying the boundary.
     entries = [
         MessageEntry(id="root", message=UserMessage(content="root")),
         MessageEntry(
@@ -701,6 +794,9 @@ def test_session_state_applies_first_kept_boundary_on_active_branch_only() -> No
 
 
 def test_legacy_compaction_with_explicit_empty_id_list_keeps_prior_context() -> None:
+    # [FUNCTION DOC]
+    # Verifies a legacy compaction with an explicit empty replaces list keeps prior
+    # messages and appends the summary in place.
     legacy_compaction = entry_from_json_line(
         json.dumps(
             {
@@ -731,6 +827,9 @@ def test_legacy_compaction_with_explicit_empty_id_list_keeps_prior_context() -> 
 async def test_legacy_compaction_fixture_replays_with_id_list_precedence(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Copies the legacy_compaction.jsonl fixture to tmp_path and verifies the
+    # legacy id list takes precedence over first_kept_entry_id during replay.
     fixture = Path(__file__).parent / "fixtures" / "legacy_compaction.jsonl"
     session_path = tmp_path / "legacy_compaction.jsonl"
     session_path.write_bytes(fixture.read_bytes())
@@ -750,6 +849,8 @@ async def test_legacy_compaction_fixture_replays_with_id_list_precedence(
 
 
 def test_path_to_entry_follows_parent_chain() -> None:
+    # [FUNCTION DOC]
+    # Verifies path_to_entry returns root-to-target entries via parent ids.
     root = MessageEntry(id="root", message=UserMessage(content="Hi"))
     child = MessageEntry(id="child", parent_id="root", message=AssistantMessage(content="Hello"))
     leaf = LeafEntry(id="leaf", parent_id="child", entry_id="child")
@@ -761,6 +862,8 @@ def test_path_to_entry_follows_parent_chain() -> None:
 
 
 def test_path_to_entry_rejects_missing_or_cyclic_parent() -> None:
+    # [FUNCTION DOC]
+    # Verifies SessionTreeError for a missing target and for a parent cycle.
     with pytest.raises(SessionTreeError):
         path_to_entry([], "missing")
 

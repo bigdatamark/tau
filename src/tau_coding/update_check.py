@@ -1,3 +1,13 @@
+# [MODULE DOC]
+# Best-effort startup notices for the Tau CLI (tau_coding layer):
+# 1) update checks: looks up the latest stable "tau-ai" release on PyPI at most once
+#    per day (cached in <Tau home>/cache/update-check.json, 1.5s timeout), skippable
+#    via TAU_NO_UPDATE_CHECK or the CI environment variable;
+# 2) one-time release notes: remembers the last-seen installed version in
+#    <Tau home>/cache/release-notes-state.json and, after an upgrade, returns the
+#    bundled release-note entries between the old and new versions.
+# Every failure (network, JSON, disk, version parsing) is swallowed so startup never
+# blocks. The fetcher, clock, environment and paths are injectable for tests.
 """Best-effort PyPI update checks for the Tau CLI."""
 
 from __future__ import annotations
@@ -29,6 +39,9 @@ Clock = Callable[[], datetime]
 
 @dataclass(frozen=True, slots=True)
 class UpdateNotice:
+    # [CLASS DOC]
+    # Immutable notice that a newer version exists: installed version, latest version,
+    # and package name (default "tau-ai").
     """A user-facing update notice."""
 
     current_version: str
@@ -37,6 +50,9 @@ class UpdateNotice:
 
     @property
     def message(self) -> str:
+        # [FUNCTION DOC]
+        # Property: one-line guidance naming the latest and installed versions and telling
+        # the user to run "tau update".
         """Return concise update guidance."""
         return (
             f"Tau {self.latest_version} is available (installed: {self.current_version}). "
@@ -46,6 +62,9 @@ class UpdateNotice:
 
 @dataclass(frozen=True, slots=True)
 class UpdateCheckResult:
+    # [CLASS DOC]
+    # Immutable cached lookup result: when the check happened (timezone-aware) and the
+    # latest stable version found, or None if none was found.
     """Cached latest-version lookup result."""
 
     checked_at: datetime
@@ -54,6 +73,8 @@ class UpdateCheckResult:
 
 @dataclass(frozen=True, slots=True)
 class ReleaseNoteSection:
+    # [CLASS DOC]
+    # Immutable named group of release-note bullet strings (e.g. "Added").
     """A named release-note section."""
 
     title: str
@@ -62,6 +83,9 @@ class ReleaseNoteSection:
 
 @dataclass(frozen=True, slots=True)
 class ReleaseNotesEntry:
+    # [CLASS DOC]
+    # Immutable release notes for one version: version string, optional date string,
+    # and ordered sections.
     """Structured release notes for one Tau version."""
 
     version: str
@@ -70,12 +94,17 @@ class ReleaseNotesEntry:
 
     @property
     def transcript_items(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Property: all bullet items of all sections flattened in order.
         """Return flattened note text for compact in-app display."""
         return tuple(item for section in self.sections for item in section.items)
 
 
 @dataclass(frozen=True, slots=True)
 class ReleaseNotesNotice:
+    # [CLASS DOC]
+    # Immutable notice shown once after an upgrade: current version, previously seen
+    # version, and the release-note entries in between (ascending version order).
     """Release notes shown once after the installed Tau version changes."""
 
     current_version: str
@@ -84,11 +113,17 @@ class ReleaseNotesNotice:
 
     @property
     def notes(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Property: all bullet items across all entries, flattened in order.
         """Return all release note items included in this notice."""
         return tuple(item for entry in self.entries for item in entry.transcript_items)
 
     @property
     def message(self) -> str:
+        # [FUNCTION DOC]
+        # Property: Markdown text "Tau updated to <version>" followed by each entry's
+        # formatted sections separated by blank lines, or a single "See the changelog"
+        # bullet when there are no entries. Entry versions themselves are not printed.
         """Return a compact markdown release-notes block for the transcript."""
         if self.entries:
             version_blocks = [self._format_entry(entry) for entry in self.entries]
@@ -98,6 +133,9 @@ class ReleaseNotesNotice:
         return f"Tau updated to {self.current_version}\n\n{body}"
 
     def _format_entry(self, entry: ReleaseNotesEntry) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Format one entry as blocks of a bold section title followed by "- item"
+        # bullet lines, blocks separated by blank lines.
         section_blocks: list[str] = []
         for section in entry.sections:
             bullets = "\n".join(f"- {item}" for item in section.items)
@@ -113,6 +151,17 @@ def startup_update_notice(
     now: Clock | None = None,
     env: Mapping[str, str] | None = None,
 ) -> UpdateNotice | None:
+    # [FUNCTION DOC]
+    # Return an UpdateNotice when a newer stable release than the current version is
+    # known, else None.
+    # Inputs: installed version string; keyword overrides for the fetcher (url, timeout
+    # to JSON object), cache path, clock, and environment mapping.
+    # Behavior: return None if checks are disabled by the environment; use a cached
+    # result younger than one day if available; otherwise fetch from PyPI (any exception
+    # returns None) and write the result (including a None version) to the cache.
+    # Returns None when no version is known, when it is not newer, or when either
+    # version string is invalid. Raises nothing.
+    # Side effects: may perform an HTTP request and write the cache file.
     """Return an update notice when PyPI has a newer stable Tau release.
 
     This function is intentionally best-effort: cache, network, JSON, and version
@@ -151,6 +200,15 @@ def startup_release_notes_notice(
     state_path: Path | None = None,
     release_notes: tuple[ReleaseNotesEntry, ...] | None = None,
 ) -> ReleaseNotesNotice | None:
+    # [FUNCTION DOC]
+    # Return release notes once after the installed version increases, else None.
+    # Reads the last-seen version from the state file (any error is treated as no
+    # state), then always records the current version. Returns None on first run (no
+    # previous state), when the version did not increase, or on invalid versions.
+    # Otherwise loads bundled notes unless supplied (load failure means no entries) and
+    # returns a notice with entries in the half-open range previous < v <= current.
+    # Inputs: current version; optional state path and preloaded notes.
+    # Side effects: reads and writes the state file. Raises nothing.
     """Return release notes once after Tau starts with a newer installed version.
 
     The first run only records the current version so fresh installs do not see an
@@ -191,6 +249,11 @@ def startup_release_notes_notice(
 
 
 def load_release_notes(path: Path | None = None) -> tuple[ReleaseNotesEntry, ...]:
+    # [FUNCTION DOC]
+    # Read and parse the release-notes JSON file (default: the bundled data file).
+    # Output: tuple of entries in file order.
+    # Raises OSError for unreadable files, JSON errors for invalid JSON, and ValueError
+    # if the top level is not an array or any entry is malformed.
     """Load structured release notes from the repo-owned JSON file."""
     data = json.loads((path or RELEASE_NOTES_PATH).read_text(encoding="utf-8"))
     if not isinstance(data, list):
@@ -203,6 +266,10 @@ def release_notes_between(
     current_version: str,
     release_notes: tuple[ReleaseNotesEntry, ...],
 ) -> tuple[ReleaseNotesEntry, ...]:
+    # [FUNCTION DOC]
+    # Select entries whose version v satisfies previous < v <= current, skipping entries
+    # with invalid versions, sorted ascending by version. Returns an empty tuple if
+    # either bound is invalid. Pure.
     """Return release-note entries newer than previous_version up to current_version."""
     try:
         previous = Version(previous_version)
@@ -222,6 +289,14 @@ def release_notes_between(
 
 
 def fetch_latest_pypi_version(*, fetcher: Fetcher | None = None) -> str | None:
+    # [FUNCTION DOC]
+    # Fetch PyPI's JSON metadata and return the newest stable version as a string.
+    # Prefers the maximum non-prerelease, non-dev version from "releases" that has at
+    # least one file (or non-list file data); falls back to "info.version" if it is
+    # stable; else returns None.
+    # Input: optional fetcher (defaults to an HTTP GET via the provider HTTP helper).
+    # Raises whatever the fetcher raises, and InvalidVersion if info.version is
+    # malformed. Side effects: network request.
     """Fetch the latest stable Tau version from PyPI."""
     data = (fetcher or _httpx_fetch_json)(PYPI_JSON_URL, UPDATE_CHECK_TIMEOUT_SECONDS)
     releases = data.get("releases")
@@ -241,16 +316,25 @@ def fetch_latest_pypi_version(*, fetcher: Fetcher | None = None) -> str | None:
 
 
 def default_update_check_cache_path(paths: TauPaths | None = None) -> Path:
+    # [FUNCTION DOC]
+    # Return <Tau home>/cache/update-check.json for the given (or default) Tau paths.
     """Return the on-disk cache path for startup update checks."""
     return (paths or TauPaths()).home / "cache" / "update-check.json"
 
 
 def default_release_notes_state_path(paths: TauPaths | None = None) -> Path:
+    # [FUNCTION DOC]
+    # Return <Tau home>/cache/release-notes-state.json for the given (or default) paths.
     """Return the on-disk state path for one-time release notes."""
     return (paths or TauPaths()).home / "cache" / RELEASE_NOTES_STATE_FILENAME
 
 
 def _parse_release_notes_entry(data: Any) -> ReleaseNotesEntry:
+    # [FUNCTION DOC]
+    # HELPER: Validate and convert one JSON release-note object: required string
+    # "version", optional string "date", and "sections" as an object mapping titles to
+    # lists of strings (order preserved). Raises ValueError describing the first
+    # problem found.
     if not isinstance(data, dict):
         raise ValueError("release note entry must be an object")
     version = data.get("version")
@@ -274,6 +358,10 @@ def _parse_release_notes_entry(data: Any) -> ReleaseNotesEntry:
 
 
 def _stable_release_versions(releases: dict[Any, Any]) -> list[Version]:
+    # [FUNCTION DOC]
+    # HELPER: From PyPI's releases mapping, collect parsed versions that are strings,
+    # valid, not pre/dev releases, and not explicitly empty file lists (yanked or
+    # placeholder). Returns a list of versions.
     versions: list[Version] = []
     for version_text, files in releases.items():
         if not isinstance(version_text, str):
@@ -291,6 +379,10 @@ def _stable_release_versions(releases: dict[Any, Any]) -> list[Version]:
 
 
 def _httpx_fetch_json(url: str, timeout_seconds: float) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: Default fetcher: GET the URL with the given timeout, following redirects,
+    # and return the decoded JSON object. Raises ValueError if the body is not an
+    # object; HTTP/network errors propagate.
     data = get_json(url, timeout=timeout_seconds, follow_redirects=True)
     if not isinstance(data, dict):
         raise ValueError("PyPI response must be a JSON object")
@@ -298,6 +390,11 @@ def _httpx_fetch_json(url: str, timeout_seconds: float) -> dict[str, Any]:
 
 
 def _cached_update_check_result(cache_path: Path | None, now: datetime) -> UpdateCheckResult | None:
+    # [FUNCTION DOC]
+    # HELPER: Load and parse the cache file (default path if none given); return None
+    # for any read/parse failure or when the entry is older than the check interval.
+    # KNOWN ISSUE: a checked_at timestamp in the future (clock skew) is always treated
+    # as fresh until the clock catches up.
     path = cache_path or default_update_check_cache_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -310,6 +407,10 @@ def _cached_update_check_result(cache_path: Path | None, now: datetime) -> Updat
 
 
 def _parse_cached_result(data: Any) -> UpdateCheckResult:
+    # [FUNCTION DOC]
+    # HELPER: Validate the cache JSON object (string "checked_at" in ISO format,
+    # optional string "latest_version") and return an UpdateCheckResult; naive
+    # timestamps are assumed UTC. Raises ValueError on invalid shape or timestamp.
     if not isinstance(data, dict):
         raise ValueError("cache must be a JSON object")
     checked_at = data.get("checked_at")
@@ -329,6 +430,9 @@ def _write_update_check_cache(
     checked_at: datetime,
     latest_version: str | None,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Write the check time (as UTC ISO-8601) and latest version as indented JSON
+    # to the cache file, creating parent directories. OS errors are ignored.
     path = cache_path or default_update_check_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -348,6 +452,9 @@ def _write_update_check_cache(
 
 
 def _read_last_seen_version(path: Path) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Read "last_seen_version" from the release-notes state JSON. Returns the
+    # string or None. Raises on missing file, invalid JSON, or wrong types.
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("release-note state must be a JSON object")
@@ -358,6 +465,9 @@ def _read_last_seen_version(path: Path) -> str | None:
 
 
 def _write_release_notes_state(path: Path, current_version: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Write the current version as "last_seen_version" JSON to the state file,
+    # creating parent directories. OS errors are ignored.
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -369,6 +479,11 @@ def _write_release_notes_state(path: Path, current_version: str) -> None:
 
 
 def _update_check_disabled(env: Mapping[str, str]) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: Return True if TAU_NO_UPDATE_CHECK is set to anything other than empty,
+    # "0", "false" or "no" (case-insensitive), or if CI is set to any non-empty value.
+    # KNOWN ISSUE: CI set to a falsy-looking string such as "false" or "0" still
+    # disables the check, unlike the TAU_NO_UPDATE_CHECK handling.
     value = env.get(UPDATE_CHECK_ENV_DISABLE)
     if value is not None and value.strip().lower() not in {"", "0", "false", "no"}:
         return True
@@ -376,4 +491,6 @@ def _update_check_disabled(env: Mapping[str, str]) -> bool:
 
 
 def _utc_now() -> datetime:
+    # [FUNCTION DOC]
+    # HELPER: Return the current timezone-aware UTC datetime (default clock).
     return datetime.now(UTC)

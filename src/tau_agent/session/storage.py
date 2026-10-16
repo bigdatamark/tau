@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Append-only session transcript storage. Defines the storage protocol used by
+# the agent session layer, a durable JSONL file implementation guarded by a
+# separate cross-process advisory lock file with atomic batch replacement and
+# crash-temp cleanup, and an in-memory implementation for tests/embedding.
 """Locked, append-only session storage implementations."""
 
 from __future__ import annotations
@@ -15,6 +20,9 @@ from tau_agent.session.jsonl import entries_from_json_lines, entry_to_json_line
 
 
 class SessionStorage(Protocol):
+    # [CLASS DOC]
+    # Protocol for session storage: append one entry, append a batch atomically
+    # (all or nothing), and read all entries in order. All methods are async.
     """Append-only session storage interface.
 
     ``append_batch`` is the durable transaction boundary used by startup,
@@ -23,19 +31,31 @@ class SessionStorage(Protocol):
     """
 
     async def append(self, entry: SessionEntry) -> None:
+        # [FUNCTION DOC]
+        # Append a single entry durably. Returns nothing; may raise storage errors.
         """Append one entry to storage."""
         ...
 
     async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
+        # [FUNCTION DOC]
+        # Append all entries atomically: either the whole batch becomes visible or the
+        # previous transcript remains unchanged.
         """Atomically append a complete batch of entries."""
         ...
 
     async def read_all(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # Return the list of all stored entries in storage order.
         """Read all entries in storage order."""
         ...
 
 
 class JsonlSessionStorage:
+    # [CLASS DOC]
+    # JSONL file storage. Holds the transcript path, a sibling hidden lock file
+    # path (".<name>.lock") and a fixed recovery temp path (".<name>.tmp").
+    # KNOWN ISSUE: async methods perform blocking file I/O and blocking lock
+    # acquisition directly on the event loop thread.
     """Local JSONL storage with a per-session cross-process lock.
 
     The lock is deliberately separate from the transcript. Readers use a
@@ -45,11 +65,18 @@ class JsonlSessionStorage:
     """
 
     def __init__(self, path: str | Path) -> None:
+        # [FUNCTION DOC]
+        # Store the transcript path and derive the lock and temp paths. No I/O.
         self.path = Path(path)
         self.lock_path = self.path.with_name(f".{self.path.name}.lock")
         self.temp_path = self.path.with_name(f".{self.path.name}.tmp")
 
     async def append(self, entry: SessionEntry) -> None:
+        # [FUNCTION DOC]
+        # Create the parent dir, take the exclusive lock, remove stale temp files, then
+        # append the entry's JSON line in binary append mode and flush plus fsync.
+        # Side effects: file writes, lock acquisition. May raise OSError or
+        # serialization errors.
         """Append one entry under the session's exclusive cross-process lock."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._locked(exclusive=True):
@@ -60,6 +87,11 @@ class JsonlSessionStorage:
                 os.fsync(file.fileno())
 
     async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
+        # [FUNCTION DOC]
+        # No-op for an empty batch. Otherwise encode all entries as JSON lines, take the
+        # exclusive lock, clean stale temps, read existing bytes (empty if missing), and
+        # atomically replace the file with old plus new content. Raises on I/O errors,
+        # leaving the previous file intact.
         """Atomically append all entries, preserving the old file on failure."""
         batch = tuple(entries)
         if not batch:
@@ -73,6 +105,11 @@ class JsonlSessionStorage:
             self._atomic_replace(data)
 
     async def read_all(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # Create the parent dir (a side effect even for reads). If the fixed temp path
+        # exists, take an exclusive lock, clean temps and read; otherwise read under a
+        # shared lock. Returns parsed entries, or an empty list if the file is missing.
+        # May raise on parse errors from the JSONL decoder.
         """Read all entries in file order; missing files are empty sessions."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # A fixed temp name makes crash recovery deterministic. If it exists,
@@ -85,11 +122,20 @@ class JsonlSessionStorage:
             return self._read_unlocked()
 
     def _read_unlocked(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # HELPER: read the file as UTF-8, split on newlines and parse entries; returns
+        # an empty list when the file does not exist. Caller must hold the lock.
         if not self.path.exists():
             return []
         return entries_from_json_lines(self.path.read_text(encoding="utf-8").split("\n"))
 
     def _atomic_replace(self, data: bytes) -> None:
+        # [FUNCTION DOC]
+        # HELPER: write the bytes to a unique temp file in the same directory, fsync,
+        # rename over the transcript, then fsync the directory. On any exception
+        # (including cancellation) the temp file is removed and the error re-raised.
+        # KNOWN ISSUE: the comment mentions also keeping the stable recovery marker,
+        # but the fixed temp path is never created here; only the unique temp is used.
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{self.path.name}.",
             suffix=".tmp",
@@ -112,6 +158,9 @@ class JsonlSessionStorage:
             raise
 
     def _remove_incomplete_temp(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: delete the fixed temp file and any ".<name>.*.tmp" unique temp files
+        # in the directory, ignoring OSErrors. Caller must hold the exclusive lock.
         with _suppress_os_error():
             self.temp_path.unlink()
         # Also clean unique temp files left by a process killed during a
@@ -123,6 +172,10 @@ class JsonlSessionStorage:
 
     @contextmanager
     def _locked(self, *, exclusive: bool) -> Iterator[None]:
+        # [FUNCTION DOC]
+        # HELPER context manager: create the lock file's directory, open the lock file
+        # in append mode, chmod it to owner read/write, acquire a shared or exclusive
+        # advisory lock (blocking), yield, and always unlock on exit.
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         with self.lock_path.open("a+b") as lock_file:
             os.chmod(self.lock_path, 0o600)
@@ -134,32 +187,49 @@ class JsonlSessionStorage:
 
 
 class InMemorySessionStorage:
+    # [CLASS DOC]
+    # Storage backed by a list, guarded by an asyncio lock; entries attribute is
+    # publicly inspectable. Deterministic, used by tests and embedded frontends.
     """Deterministic storage useful for tests and embedded frontends."""
 
     def __init__(self, entries: Sequence[SessionEntry] = ()) -> None:
+        # [FUNCTION DOC]
+        # Copy the optional initial entries into a list and create the asyncio lock.
         self.entries = list(entries)
         self._lock = asyncio.Lock()
 
     async def append(self, entry: SessionEntry) -> None:
+        # [FUNCTION DOC]
+        # Append one entry under the lock. Mutates the entries list.
         async with self._lock:
             self.entries.append(entry)
 
     async def append_batch(self, entries: Sequence[SessionEntry]) -> None:
+        # [FUNCTION DOC]
+        # Extend the list with all entries under the lock (trivially atomic).
         async with self._lock:
             self.entries.extend(entries)
 
     async def read_all(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # Return a shallow copy of the entries list under the lock.
         async with self._lock:
             return list(self.entries)
 
 
 @contextmanager
 def _suppress_os_error() -> Iterator[None]:
+    # [FUNCTION DOC]
+    # HELPER context manager that swallows OSError raised inside its block.
     with suppress(OSError):
         yield
 
 
 def _lock_file(file: BinaryIO, *, exclusive: bool) -> None:
+    # [FUNCTION DOC]
+    # HELPER: acquire an advisory lock on the open file. On Windows uses msvcrt
+    # locking of one byte (always exclusive, since no shared mode exists); elsewhere
+    # uses flock with shared or exclusive mode. Blocks until acquired; may raise OSError.
     """Apply an advisory lock, with a clear unsupported-platform fallback."""
     if os.name == "nt":
         import msvcrt
@@ -176,6 +246,9 @@ def _lock_file(file: BinaryIO, *, exclusive: bool) -> None:
 
 
 def _unlock_file(file: BinaryIO) -> None:
+    # [FUNCTION DOC]
+    # HELPER: release the lock: on Windows seeks to offset 0 and unlocks one byte;
+    # elsewhere flock unlock.
     if os.name == "nt":
         import msvcrt
 
@@ -188,6 +261,9 @@ def _unlock_file(file: BinaryIO) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
+    # [FUNCTION DOC]
+    # HELPER: open the directory read-only and fsync it so a rename is durable;
+    # silently does nothing if the open or fsync fails (e.g. unsupported platforms).
     """Persist the directory entry where the OS supports directory fsync."""
     try:
         descriptor = os.open(path, os.O_RDONLY)

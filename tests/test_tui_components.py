@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Focused Textual tests for the extension component (widget-hosting) seam of the TUI app, driven
+# through the host bridge helper from the sibling TUI app tests: above/below-prompt slot widgets,
+# ordering, main-view replacement and open/close transcript restore, same-id swaps in one tick
+# without duplicate ids, host exceptions not being swallowed, sidebar sections keyed by
+# (extension, key) with update/remove/reorder, sidebar unsupported when off, responsive hiding,
+# live-theme rebuilds, and factory/render failure quarantine with diagnostics.
 """Focused tests for the component (widget-hosting) seam.
 
 These drive the generic seam on the real ``TauTuiApp`` via the host bridge,
@@ -28,6 +35,8 @@ from test_tui_app import (  # noqa: E402 - sibling test module (see docstring)
 
 @pytest.mark.anyio
 async def test_component_above_prompt_slot_mounts_into_above_slot() -> None:
+    # [FUNCTION DOC]
+    # Async test: an above-prompt slot widget mounts in the above-prompt container only and is tracked by key.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(100, 30)) as pilot:
@@ -50,6 +59,8 @@ async def test_component_above_prompt_slot_mounts_into_above_slot() -> None:
 
 @pytest.mark.anyio
 async def test_component_multiple_slot_widgets_mount_in_call_order() -> None:
+    # [FUNCTION DOC]
+    # Async test: two below-prompt slot widgets mount in call order and are tracked in that order.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(100, 30)) as pilot:
@@ -67,6 +78,8 @@ async def test_component_multiple_slot_widgets_mount_in_call_order() -> None:
 
 @pytest.mark.anyio
 async def test_component_second_main_view_replaces_first() -> None:
+    # [FUNCTION DOC]
+    # Async test: opening a second main view closes the first handle; the main slot holds only the second.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(100, 30)) as pilot:
@@ -91,6 +104,9 @@ async def test_component_second_main_view_replaces_first() -> None:
 
 @pytest.mark.anyio
 async def test_component_slot_replace_same_id_same_tick_no_duplicate() -> None:
+    # [FUNCTION DOC]
+    # Async test: removing and re-adding a same-id slot widget in one tick leaves one widget, no
+    # reported failures, and the mounted widget equals the tracked one.
     """Replacing a slot widget with a same-id widget in one tick must sequence.
 
     The old widget's ``remove()`` is deferred; mounting the replacement before it
@@ -123,6 +139,8 @@ async def test_component_slot_replace_same_id_same_tick_no_duplicate() -> None:
 
 @pytest.mark.anyio
 async def test_component_slot_rapid_a_b_c_last_wins() -> None:
+    # [FUNCTION DOC]
+    # Async test: three same-id slot swaps in one tick leave only the last-built widget mounted.
     """Three same-id slot swaps in one tick collapse to the last, no duplicates."""
     app = TauTuiApp(FakeSession())
 
@@ -133,7 +151,11 @@ async def test_component_slot_rapid_a_b_c_last_wins() -> None:
         made: dict[str, Static] = {}
 
         def factory(label: str):  # noqa: ANN202
+            # [FUNCTION DOC]
+            # HELPER: Return a widget factory for the label that records each built widget in the shared map.
             def build(theme):  # noqa: ANN001, ANN202
+                # [FUNCTION DOC]
+                # HELPER: Build a Static with the label and a fixed id, record it and return it (theme ignored).
                 widget = made[label] = Static(label, id="abc-slot")
                 return widget
 
@@ -156,6 +178,9 @@ async def test_component_slot_rapid_a_b_c_last_wins() -> None:
 
 @pytest.mark.anyio
 async def test_component_second_main_view_same_id_no_duplicate() -> None:
+    # [FUNCTION DOC]
+    # Async test: opening a second same-id main view before the first drains leaves one mounted view,
+    # which is the second handle's widget, with no failures.
     """Opening a second same-id main view while one is open must not collide."""
     app = TauTuiApp(FakeSession())
 
@@ -179,6 +204,8 @@ async def test_component_second_main_view_same_id_no_duplicate() -> None:
 
 @pytest.mark.anyio
 async def test_component_main_view_rapid_a_b_c_last_wins() -> None:
+    # [FUNCTION DOC]
+    # Async test: three same-id main-view opens in one tick mount only the last; earlier handles are closed.
     """Three same-id main-view opens in one tick mount exactly the last one."""
     app = TauTuiApp(FakeSession())
 
@@ -207,6 +234,9 @@ async def test_component_main_view_rapid_a_b_c_last_wins() -> None:
 
 @pytest.mark.anyio
 async def test_component_host_exception_is_not_swallowed() -> None:
+    # [FUNCTION DOC]
+    # Async test: with an extension widget tracked, a core RuntimeError passed to the app's exception
+    # handler reaches Textual's default handling (stored on the app) and is re-raised by run_test on exit.
     app = TauTuiApp(FakeSession())
 
     with pytest.raises(RuntimeError, match="core-bug"):
@@ -231,6 +261,9 @@ async def test_component_host_exception_is_not_swallowed() -> None:
 
 @pytest.mark.anyio
 async def test_component_main_view_open_close_restores_transcript() -> None:
+    # [FUNCTION DOC]
+    # Async test: opening a main view hides the transcript and shows the main slot; closing the handle
+    # restores the transcript, hides the slot and focuses the prompt input.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(100, 30)) as pilot:
@@ -255,6 +288,9 @@ async def test_component_main_view_open_close_restores_transcript() -> None:
 
 @pytest.mark.anyio
 async def test_sidebar_sections_mount_update_and_remove_by_owned_key() -> None:
+    # [FUNCTION DOC]
+    # Async test: sidebar sections mount in order, an identical update keeps the same widget, a changed
+    # update rewrites title/body in place, and removal leaves only the remaining section.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -307,6 +343,8 @@ async def test_sidebar_sections_mount_update_and_remove_by_owned_key() -> None:
 async def test_sidebar_removing_absent_key_does_not_schedule_reconciliation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: removing an unknown sidebar section does not schedule a swap coroutine.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -314,6 +352,8 @@ async def test_sidebar_removing_absent_key_does_not_schedule_reconciliation(
         scheduled = False
 
         def schedule(coro):  # noqa: ANN001, ANN202
+            # [FUNCTION DOC]
+            # HELPER: Replacement scheduler that flags it was called and closes the coroutine unrun.
             nonlocal scheduled
             scheduled = True
             coro.close()
@@ -326,6 +366,8 @@ async def test_sidebar_removing_absent_key_does_not_schedule_reconciliation(
 
 @pytest.mark.anyio
 async def test_sidebar_same_local_key_is_isolated_between_extensions() -> None:
+    # [FUNCTION DOC]
+    # Async test: the same local key from two extensions yields two distinct tracked sections.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -340,6 +382,8 @@ async def test_sidebar_same_local_key_is_isolated_between_extensions() -> None:
 
 @pytest.mark.anyio
 async def test_sidebar_remove_then_readd_moves_section_to_end() -> None:
+    # [FUNCTION DOC]
+    # Async test: removing and re-adding a section in the same tick moves it to the end of the order.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -365,10 +409,15 @@ async def test_sidebar_remove_then_readd_moves_section_to_end() -> None:
 
 @pytest.mark.anyio
 async def test_sidebar_off_is_unsupported_and_does_not_call_factory() -> None:
+    # [FUNCTION DOC]
+    # Async test: with the sidebar position "off", the bridge reports no sidebar support, the content
+    # factory is never called, nothing is tracked and the sidebar is hidden.
     app = TauTuiApp(FakeSession(), tui_settings=TuiSettings(sidebar_position="off"))
     called = False
 
     def factory(theme):  # noqa: ANN001, ANN202
+        # [FUNCTION DOC]
+        # HELPER: Content factory that flags it was called and returns a Static.
         nonlocal called
         called = True
         return Static("hidden")
@@ -387,6 +436,9 @@ async def test_sidebar_off_is_unsupported_and_does_not_call_factory() -> None:
 
 @pytest.mark.anyio
 async def test_responsive_hidden_sidebar_keeps_sections_for_resize() -> None:
+    # [FUNCTION DOC]
+    # Async test: at narrow width the sidebar is hidden but sections stay mounted; after resizing wider
+    # the sidebar is displayed with sections intact.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(80, 30)) as pilot:
@@ -407,6 +459,9 @@ async def test_responsive_hidden_sidebar_keeps_sections_for_resize() -> None:
 @pytest.mark.anyio
 @pytest.mark.parametrize("position", ["left", "right"])
 async def test_sidebar_sections_work_in_both_sidebar_positions(position: str) -> None:
+    # [FUNCTION DOC]
+    # Async parametrized test: sections mount for left and right sidebar positions; the app has the
+    # right-sidebar class only for "right".
     app = TauTuiApp(FakeSession(), tui_settings=TuiSettings(sidebar_position=position))
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -423,11 +478,16 @@ async def test_sidebar_sections_work_in_both_sidebar_positions(position: str) ->
 async def test_sidebar_factory_rebuilds_with_live_theme(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: a sidebar content factory is rebuilt with the new theme when the TUI theme changes
+    # (dark then light). Isolates HOME so theme persistence writes to tmp_path.
     isolate_home(monkeypatch, tmp_path)
     app = TauTuiApp(FakeSession())
     themes: list[str] = []
 
     def factory(theme):  # noqa: ANN001, ANN202
+        # [FUNCTION DOC]
+        # HELPER: Factory recording the theme name and returning a Static showing it.
         themes.append(theme.name)
         return Static(theme.name, classes="theme-body")
 
@@ -449,6 +509,9 @@ async def test_sidebar_factory_rebuilds_with_live_theme(
 
 @pytest.mark.anyio
 async def test_sidebar_factory_failure_keeps_app_running() -> None:
+    # [FUNCTION DOC]
+    # Async test: a sidebar factory that raises is reported as a component failure, not tracked, and
+    # the app keeps running.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(120, 40)) as pilot:
@@ -456,6 +519,8 @@ async def test_sidebar_factory_failure_keeps_app_running() -> None:
         bridge = _component_bridge(app)
 
         def explode(theme):  # noqa: ANN001, ANN202
+            # [FUNCTION DOC]
+            # HELPER: Factory that always raises RuntimeError.
             raise RuntimeError("sidebar factory exploded")
 
         bridge.set_sidebar_section("ext", "bad", title="Bad", content=explode)
@@ -467,12 +532,19 @@ async def test_sidebar_factory_failure_keeps_app_running() -> None:
 
 
 class _SidebarRenderCrash(Static):
+    # [CLASS DOC]
+    # HELPER: Static widget whose render always raises, used to simulate an extension render crash.
     def render(self):  # noqa: ANN201
+        # [FUNCTION DOC]
+        # HELPER: Raise RuntimeError("sidebar render exploded").
         raise RuntimeError("sidebar render exploded")
 
 
 @pytest.mark.anyio
 async def test_sidebar_render_failure_is_quarantined_and_diagnosed() -> None:
+    # [FUNCTION DOC]
+    # Async test: a sidebar widget crashing at render time is quarantined (untracked) while the app
+    # keeps running, and a diagnostic naming the extension and section is added to the runtime.
     session = FakeSession()
     runtime = ExtensionRuntime()
     session.extension_runtime = runtime
@@ -501,6 +573,8 @@ async def test_sidebar_render_failure_is_quarantined_and_diagnosed() -> None:
 
 @pytest.mark.anyio
 async def test_component_clear_removes_sidebar_sections() -> None:
+    # [FUNCTION DOC]
+    # Async test: clearing components removes all sidebar contributions, tracked/mounted widgets and children.
     app = TauTuiApp(FakeSession())
 
     async with app.run_test(size=(120, 40)) as pilot:

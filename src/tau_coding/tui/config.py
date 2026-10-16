@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Durable configuration for the Textual TUI, stored as JSON at
+# <tau home>/tui.json. Defines keybinding and settings dataclasses with JSON
+# serialization, plus load/save/parse functions with strict validation of
+# recognized keys (unknown keys are ignored for forward compatibility).
+# Re-exports theme types from the themes package. Lives in tau_coding, not in
+# the agent core.
 """Durable Textual TUI configuration for Tau."""
 
 from __future__ import annotations
@@ -43,11 +50,18 @@ __all__ = [
 
 
 class TuiConfigError(ValueError):
+    # [CLASS DOC]
+    # Exception (ValueError) raised when TUI configuration is invalid.
     """Raised when Tau TUI configuration is invalid."""
 
 
 @dataclass(frozen=True, slots=True)
 class TuiKeybindings:
+    # [CLASS DOC]
+    # Frozen dataclass of key strings (Textual key names) for each TUI action:
+    # cancel, command palette, session picker, queue follow-up, insert newline,
+    # completion accept/next/previous, thinking cycle, model cycle forward and
+    # reverse, toggle thinking, toggle tool results, copy message, quit.
     """Configurable keys for Tau's built-in Textual frontend."""
 
     cancel: str = "escape"
@@ -67,6 +81,9 @@ class TuiKeybindings:
     quit: str = "ctrl+d"
 
     def to_json(self) -> dict[str, str]:
+        # [FUNCTION DOC]
+        # Return a mapping from action name to key string for every field. Also used
+        # as the canonical list of known actions when parsing.
         """Serialize these keybindings to JSON-compatible data."""
         return {
             "cancel": self.cancel,
@@ -89,6 +106,10 @@ class TuiKeybindings:
 
 @dataclass(frozen=True, slots=True)
 class TuiSettings:
+    # [CLASS DOC]
+    # Frozen dataclass of TUI settings: keybindings, theme name (default
+    # tau-dark), auto-copy on selection, sidebar position (left/right/off), and
+    # turn-completion notification mode (off/bell/desktop).
     """Tau TUI settings loaded from Tau home."""
 
     keybindings: TuiKeybindings = field(default_factory=TuiKeybindings)
@@ -98,6 +119,8 @@ class TuiSettings:
     turn_notification: TurnNotificationMode = "desktop"
 
     def to_json(self) -> dict[str, Any]:
+        # [FUNCTION DOC]
+        # Return a JSON-compatible mapping of all settings (keybindings nested).
         """Serialize these settings to JSON-compatible data."""
         return {
             "auto_copy_selection": self.auto_copy_selection,
@@ -109,6 +132,9 @@ class TuiSettings:
 
     @property
     def resolved_theme(self) -> TuiTheme:
+        # [FUNCTION DOC]
+        # Property: look up the configured theme by name; return the tau-dark theme
+        # when the name is unknown. No side effects.
         """Return the selected theme, falling back to tau-dark when unknown."""
         try:
             return get_tui_theme(self.theme)
@@ -117,11 +143,20 @@ class TuiSettings:
 
 
 def tui_settings_path(paths: TauPaths | None = None) -> Path:
+    # [FUNCTION DOC]
+    # Return <tau home>/tui.json for the given paths object (default TauPaths).
     """Return the durable TUI settings path."""
     return (paths or TauPaths()).home / "tui.json"
 
 
 def load_tui_settings(paths: TauPaths | None = None) -> TuiSettings:
+    # [FUNCTION DOC]
+    # Load settings from the TUI settings file. Missing file -> default settings.
+    # Otherwise reads and parses JSON and validates via tui_settings_from_json.
+    # Raises TuiConfigError when the top level is not an object or values are
+    # invalid. Side effect: file read.
+    # KNOWN ISSUE: malformed JSON or read errors propagate as raw decode/OS
+    # errors rather than TuiConfigError.
     """Load durable TUI settings, falling back to built-in defaults."""
     path = tui_settings_path(paths)
     if not path.exists():
@@ -133,6 +168,10 @@ def load_tui_settings(paths: TauPaths | None = None) -> TuiSettings:
 
 
 def save_tui_settings(settings: TuiSettings, paths: TauPaths | None = None) -> Path:
+    # [FUNCTION DOC]
+    # Serialize settings to indented JSON with trailing newline, creating the
+    # parent directory as needed. Returns the written path. Side effect: writes
+    # the file; OS errors propagate.
     """Persist durable TUI settings and return the written path."""
     path = tui_settings_path(paths)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +180,13 @@ def save_tui_settings(settings: TuiSettings, paths: TauPaths | None = None) -> P
 
 
 def tui_settings_from_json(data: dict[str, Any]) -> TuiSettings:
+    # [FUNCTION DOC]
+    # Parse settings from a mapping. Validates keybindings is an object, sidebar
+    # position is left/right/off (default right), turn notification is
+    # off/bell/desktop (default desktop), theme is a non-empty string (stripped;
+    # unknown names are allowed here and resolved later), and auto-copy is a
+    # boolean. Unknown top-level keys are ignored. Raises TuiConfigError.
+    # Output: TuiSettings.
     """Parse TUI settings from JSON-compatible data."""
     # Ignore settings added by newer Tau versions so sharing this user-level
     # file across upgrades, downgrades, and multiple installations cannot block
@@ -171,12 +217,19 @@ def tui_settings_from_json(data: dict[str, Any]) -> TuiSettings:
 
 
 def _bool_setting(value: object, field_name: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: return the value if it is a bool, else raise TuiConfigError naming
+    # the field.
     if isinstance(value, bool):
         return value
     raise TuiConfigError(f"TUI setting must be a boolean: {field_name}")
 
 
 def _keybindings_from_json(data: dict[str, Any]) -> TuiKeybindings:
+    # [FUNCTION DOC]
+    # HELPER: build TuiKeybindings from a mapping, reading only known actions
+    # (defaults for missing ones), each validated as a non-empty stripped string;
+    # rejects any key bound to two actions. Raises TuiConfigError.
     defaults = TuiKeybindings()
     # Future versions may add actions to this nested object. Read only actions
     # this version understands, just as the top-level settings parser does.
@@ -189,18 +242,27 @@ def _keybindings_from_json(data: dict[str, Any]) -> TuiKeybindings:
 
 
 def _key_string(value: object, field_name: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: validate a keybinding is a non-empty string and return it stripped;
+    # otherwise raise TuiConfigError naming the action.
     if not isinstance(value, str) or not value.strip():
         raise TuiConfigError(f"TUI keybinding must be a non-empty string: {field_name}")
     return value.strip()
 
 
 def _theme_name(value: object) -> TuiThemeName:
+    # [FUNCTION DOC]
+    # HELPER: validate the theme value is a non-empty string and return it
+    # stripped; else raise TuiConfigError.
     if not isinstance(value, str) or not value.strip():
         raise TuiConfigError("TUI theme must be a non-empty string")
     return value.strip()
 
 
 def _reject_duplicate_keys(values: dict[str, str]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: raise TuiConfigError if the same key string (exact match) is
+    # assigned to more than one action; otherwise return nothing.
     key_to_action: dict[str, str] = {}
     for action, key in values.items():
         previous_action = key_to_action.get(key)

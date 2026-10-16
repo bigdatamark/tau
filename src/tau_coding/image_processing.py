@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Image detection and normalization for image attachments read by coding tools
+# (tau_coding layer). Detects image types from magic bytes, rejects unsupported
+# variants (JPEG XL, animated PNG), and decodes/re-encodes images with Pillow under
+# strict limits: 50MB source size, 40 million source pixels, 2000px max dimension
+# and 5MB encoded output by default, with up to 12 encode/shrink attempts.
+# Decompression-bomb warnings are escalated to errors. All functions are pure apart
+# from CPU/memory use; failures are returned as values, not raised.
 """Bounded image detection and normalization for coding-tool attachments."""
 
 from __future__ import annotations
@@ -20,6 +28,10 @@ type PngKind = Literal["static", "animated", "invalid"]
 
 @dataclass(frozen=True, slots=True)
 class ProcessedImage:
+    # [CLASS DOC]
+    # Immutable result of successful processing: encoded bytes, MIME type, final width
+    # and height, and a tuple of human-readable notes about conversions/resizes applied
+    # (empty when the original bytes were passed through).
     """Provider-safe encoded image and notes about transformations applied."""
 
     data: bytes
@@ -31,12 +43,19 @@ class ProcessedImage:
 
 @dataclass(frozen=True, slots=True)
 class ImageProcessingFailure:
+    # [CLASS DOC]
+    # Immutable value carrying a safe, user-facing message explaining why an image was
+    # not attached.
     """Safe user-facing reason why an image attachment was omitted."""
 
     message: str
 
 
 def detect_image_family_mime_type(data: bytes) -> str | None:
+    # [FUNCTION DOC]
+    # Classify bytes into a broad image family by magic number only, without checking
+    # validity: JPEG XL (checked before JPEG since it shares the prefix), JPEG, PNG,
+    # GIF, WebP (RIFF with WEBP tag), BMP. Returns the MIME type string or None.
     """Identify a known image family from the minimum available magic bytes."""
     if data.startswith(b"\xff\xd8\xff\xf7"):
         return "image/jxl"
@@ -54,6 +73,10 @@ def detect_image_family_mime_type(data: bytes) -> str | None:
 
 
 def unsupported_image_reason(data: bytes) -> str | None:
+    # [FUNCTION DOC]
+    # Return a user-facing reason for recognized-but-unsupported images: JPEG XL, or a
+    # PNG whose chunk scan finds an animation control chunk before image data.
+    # Returns None for everything else (including unrecognized data).
     """Explain recognized image variants that Tau intentionally cannot attach."""
     if data.startswith(b"\xff\xd8\xff\xf7"):
         return "JPEG XL images are not supported"
@@ -63,6 +86,10 @@ def unsupported_image_reason(data: bytes) -> str | None:
 
 
 def detect_supported_image_mime_type(data: bytes) -> str | None:
+    # [FUNCTION DOC]
+    # Return the MIME type only for images Tau will attach: JPEG (not JPEG XL), static
+    # PNG with a well-formed chunk structure, GIF, WebP with a VP8/VP8L/VP8X chunk, and
+    # BMP with a plausible header. Returns None otherwise.
     """Detect a supported image from its bytes while rejecting unsafe variants."""
     if data.startswith(b"\xff\xd8\xff"):
         return None if data.startswith(b"\xff\xd8\xff\xf7") else "image/jpeg"
@@ -91,6 +118,20 @@ def process_image(
     max_source_bytes: int = DEFAULT_MAX_SOURCE_IMAGE_BYTES,
     max_source_pixels: int = DEFAULT_MAX_SOURCE_PIXELS,
 ) -> ProcessedImage | ImageProcessingFailure:
+    # [FUNCTION DOC]
+    # Validate an image and normalize it to provider-safe limits.
+    # Inputs: raw bytes, declared MIME type, keyword limits (max output bytes, max
+    # dimension, max source bytes, max source pixels).
+    # Steps: reject sources over the source byte limit; read size/animation flag and
+    # verify the image (any decode/bomb error becomes a failure); reject if pixel count
+    # exceeds the limit; pass through unchanged when the type is not BMP and it is
+    # within dimension and byte limits. Otherwise reject animated images; fully decode
+    # pixels; BMP is converted to PNG (with a note); downscale preserving aspect ratio to
+    # fit the max dimension; then repeatedly encode (JPEG/WebP quality decreasing by 8
+    # per attempt down to 45, GIF/PNG optimized) and if still too large shrink by 20%
+    # each attempt, until it fits or attempts run out or size stops changing.
+    # Output: ProcessedImage (with a resize note when dimensions changed) or
+    # ImageProcessingFailure. Raises nothing intentionally; encode errors become failures.
     """Validate and, when needed, normalize an image within deterministic limits."""
     if len(data) > max_source_bytes:
         return ImageProcessingFailure(
@@ -179,6 +220,10 @@ def process_image(
 
 
 def _validated_image_metadata(data: bytes) -> tuple[int, int, bool]:
+    # [FUNCTION DOC]
+    # HELPER: Open bytes with Pillow (bomb warnings as errors), read width, height and
+    # animated flag, and run Pillow's verify. Returns a triple of width, height, animated.
+    # Raises Pillow/OS/value errors on invalid data, ValueError for non-positive size.
     with warnings.catch_warnings():
         warnings.simplefilter("error", Image.DecompressionBombWarning)
         with Image.open(BytesIO(data)) as image:
@@ -191,6 +236,11 @@ def _validated_image_metadata(data: bytes) -> tuple[int, int, bool]:
 
 
 def _encode_image(image: Image.Image, mime_type: str, attempt: int) -> bytes:
+    # [FUNCTION DOC]
+    # HELPER: Encode a Pillow image to bytes in the given MIME format. JPEG converts to
+    # RGB and uses quality max(45, 90 - 8*attempt) with optimization; WebP uses the same
+    # quality ramp; GIF optimized; anything else is encoded as optimized PNG.
+    # May raise Pillow errors (e.g. unsupported mode for a format).
     output = BytesIO()
     if mime_type == "image/jpeg":
         quality = max(45, 90 - attempt * 8)
@@ -206,11 +256,19 @@ def _encode_image(image: Image.Image, mime_type: str, attempt: int) -> bytes:
 
 
 def _bounded_dimensions(width: int, height: int, maximum: int) -> tuple[int, int]:
+    # [FUNCTION DOC]
+    # HELPER: Scale width and height down (never up) so neither exceeds the maximum,
+    # preserving aspect ratio; each result is at least 1. Returns the new pair.
     scale = min(1.0, maximum / width, maximum / height)
     return max(1, int(width * scale)), max(1, int(height * scale))
 
 
 def _classify_png(data: bytes) -> PngKind:
+    # [FUNCTION DOC]
+    # HELPER: Walk PNG chunks after the signature. Returns "invalid" if the first chunk
+    # is not a 13-byte IHDR, data is shorter than 33 bytes, or a chunk length overruns
+    # the data; "animated" if an acTL chunk appears before the first IDAT; "static" when
+    # IDAT is reached first; "invalid" if neither is found.
     if len(data) < 33 or int.from_bytes(data[8:12], "big") != 13 or data[12:16] != b"IHDR":
         return "invalid"
     offset = len(PNG_SIGNATURE)
@@ -229,6 +287,11 @@ def _classify_png(data: bytes) -> PngKind:
 
 
 def _is_valid_bmp_header(data: bytes) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: Sanity-check a BMP header: at least 30 bytes, declared file size (if
+    # non-zero) at least 26, pixel data offset after the headers and before the declared
+    # end, DIB header size 12 (core) or 40..124 (info variants), one color plane, and a
+    # standard bit depth (1, 4, 8, 16, 24, 32). Returns a boolean.
     if len(data) < 30:
         return False
     declared_size = int.from_bytes(data[2:6], "little")
@@ -250,4 +313,6 @@ def _is_valid_bmp_header(data: bytes) -> bool:
 
 
 def _format_size(size: int) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Format a byte count as megabytes with one decimal, e.g. "5.0MB".
     return f"{size / (1024 * 1024):.1f}MB"

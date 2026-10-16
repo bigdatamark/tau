@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Model-assisted summaries for abandoned session-tree branches (Pi's branch summarization, used
+# when navigating away from a branch). Defines the summarizer system prompt, a preamble prefixed
+# to stored summaries, a structured Markdown summary template (Goal, Constraints & Preferences,
+# Progress Done/In Progress/Blocked, Key Decisions, Next Steps), and size limits: 4000 chars per
+# source message, 60000 chars total, 2000 chars per tool result. The branch messages are
+# serialized into a single tagged user prompt, sent to the provider with no tools, and the reply
+# is augmented with read-only and modified file lists derived from read/edit/write tool calls.
 """Model-assisted summaries for abandoned session-tree branches."""
 
 from __future__ import annotations
@@ -73,6 +81,16 @@ async def summarize_branch_messages_with_model(
     custom_instructions: str | None = None,
     replace_instructions: bool = False,
 ) -> tuple[str, Usage, str | None] | None:
+    # [FUNCTION DOC]
+    # Async: generate a branch summary with a model.
+    # Inputs (keyword-only): model provider, model id, the branch's agent messages, optional custom
+    # instructions, and a flag to replace (rather than extend) the default template with them.
+    # Behavior: returns None immediately for no messages. Streams one response with the summary system
+    # prompt, a single user message built from the serialized conversation, and no tools. Any
+    # assistant error event returns None; a done event records the final message and its usage.
+    # Output: None if no done message or the trimmed text is empty; otherwise a triple of (preamble +
+    # summary + file-list sections, summed usage, the response's resolved provider name or None).
+    # Exceptions raised by the provider stream propagate. Side effect: one provider request.
     """Return a generated summary, usage, and resolved provider, or None on failure."""
     if not messages:
         return None
@@ -117,6 +135,11 @@ def _branch_summary_prompt(
     custom_instructions: str | None = None,
     replace_instructions: bool = False,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Build the summarization user prompt: the serialized conversation wrapped in
+    # conversation tags, a blank line, then the instructions. Instructions are the custom text alone
+    # when replace is set and custom text is non-empty; the template plus "Additional focus: ..." when
+    # only custom text is given; otherwise the default template. Returns the prompt string.
     conversation = _serialize_branch_conversation(messages)
     if replace_instructions and custom_instructions:
         instructions = custom_instructions
@@ -128,6 +151,10 @@ def _branch_summary_prompt(
 
 
 def _serialize_branch_conversation(messages: Sequence[AgentMessage]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render messages in order, joined by blank lines, stopping before the first rendered
+    # message that would exceed the remaining 60000-character budget; then appends a marker saying
+    # how many trailing messages were omitted. Returns the serialized string.
     parts: list[str] = []
     remaining_chars = MAX_SUMMARY_SOURCE_TOTAL_CHARS
     omitted_count = 0
@@ -147,6 +174,10 @@ def _serialize_branch_conversation(messages: Sequence[AgentMessage]) -> str:
 
 
 def _format_summary_source_message(message: AgentMessage) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render one message for the summary source: user messages as "[User]: text", assistant
+    # messages via the assistant formatter, tool results as "[Tool result: name (ok|failed)]: text"
+    # trimmed to 2000 chars, and any other message as "[role]: text". Text is trimmed via the trim helper.
     match message:
         case UserMessage():
             return f"[User]: {_trim_summary_source_text(message.text)}"
@@ -161,6 +192,12 @@ def _format_summary_source_message(message: AgentMessage) -> str:
 
 
 def _format_assistant_summary_source(message: AssistantMessage) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Render an assistant message as an "[Assistant]: text" line (skipped when the trimmed
+    # text is "(empty)") plus an "[Assistant tool calls]: name(args); ..." line when tool calls exist.
+    # Returns "[Assistant]: (empty)" when neither part is present.
+    # KNOWN ISSUE: an assistant whose actual text is literally "(empty)" is indistinguishable from an
+    # empty message and its text line is dropped.
     parts: list[str] = []
     content = _trim_summary_source_text(message.text)
     if content != "(empty)":
@@ -175,6 +212,9 @@ def _format_assistant_summary_source(message: AssistantMessage) -> str:
 
 
 def _format_tool_call_arguments(arguments: Mapping[str, object]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Format tool-call arguments as "key=json" pairs sorted by key and joined with ", ";
+    # values are JSON-encoded with sorted keys. Raises TypeError for non-JSON-serializable values.
     return ", ".join(
         f"{key}={json.dumps(value, sort_keys=True)}" for key, value in sorted(arguments.items())
     )
@@ -185,6 +225,9 @@ def _trim_summary_source_text(
     *,
     max_chars: int = MAX_SUMMARY_SOURCE_MESSAGE_CHARS,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Strip text (empty becomes "(empty)"); if longer than max_chars (default 4000), keep the
+    # first max_chars (right-stripped) and append a note with the number of truncated characters.
     normalized = text.strip() or "(empty)"
     if len(normalized) <= max_chars:
         return normalized
@@ -193,6 +236,10 @@ def _trim_summary_source_text(
 
 
 def _add_branch_summary_context(summary: str, messages: Sequence[AgentMessage]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Prefix the summary with the branch preamble and append "<read-files>" and
+    # "<modified-files>" sections (newline-separated paths) when non-empty; sections are joined by
+    # blank lines. Returns the final stored summary text.
     read_files, modified_files = _branch_file_operations(messages)
     sections = [BRANCH_SUMMARY_PREAMBLE + summary]
     if read_files:
@@ -205,6 +252,10 @@ def _add_branch_summary_context(summary: str, messages: Sequence[AgentMessage]) 
 
 
 def _branch_file_operations(messages: Sequence[AgentMessage]) -> tuple[list[str], list[str]]:
+    # [FUNCTION DOC]
+    # HELPER: Scan assistant tool calls for a non-empty string "path" argument; "read" calls add to the
+    # read set, "edit"/"write" calls to the modified set. Returns (sorted read-only paths excluding
+    # modified ones, sorted modified paths).
     read: set[str] = set()
     modified: set[str] = set()
     for message in messages:

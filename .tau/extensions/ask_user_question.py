@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Project-local Tau extension that registers an "ask_user_question" tool letting
+# the agent present a multiple-choice question through the active frontend's UI
+# selector and receive the user's choice. Loaded from .tau/extensions or via the
+# -e flag.
 """Let the agent ask the user a multiple-choice question.
 
 Install by copying into `~/.tau/extensions/`, or run:
@@ -19,6 +24,9 @@ from tau_coding.extensions import ExtensionAPI
 
 
 def _result(text: str, *, selected: str | None = None) -> AgentToolResult:
+    # [FUNCTION DOC]
+    # HELPER: wrap text into a tool result with a single text content block and a
+    # details mapping whose "selected" key holds the chosen option or nothing.
     return AgentToolResult(
         content=[TextContent(text=text)],
         details={"selected": selected},
@@ -26,6 +34,12 @@ def _result(text: str, *, selected: str | None = None) -> AgentToolResult:
 
 
 def setup(tau: ExtensionAPI) -> None:
+    # [FUNCTION DOC]
+    # Extension entry point. Defines the async tool executor below and registers an
+    # agent tool named "ask_user_question" with a JSON schema (question string,
+    # at least two unique non-empty option strings), sequential execution mode, a
+    # prompt snippet, and a guideline not to assume an answer when none is chosen.
+    # Input: the extension API. Returns nothing. Side effect: mutates the tool registry.
     """Register the ask_user_question tool."""
 
     async def ask_user_question(
@@ -34,6 +48,15 @@ def setup(tau: ExtensionAPI) -> None:
         signal: ToolCancellationToken | None = None,
         on_update: ToolUpdateCallback | None = None,
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # Tool executor. Ignores the call id, cancellation token and update callback.
+        # Validates arguments itself (schema is not trusted): question must be a
+        # non-empty string; options must be a list of at least two non-empty strings,
+        # which are stripped and must be unique. Invalid input yields an explanatory
+        # text result (never raises). Otherwise awaits the extension context's UI select
+        # with the stripped question and options; a cancelled selection (nothing chosen)
+        # yields a "did not select" result, else a result naming the selection with the
+        # selection stored in details. Side effects: interactive UI prompt.
         del tool_call_id, signal, on_update
 
         question = arguments.get("question")

@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Tests that the OpenAI-compatible (Chat Completions) provider treats reasoning
+# text and visible content as independent channels: interleaved deltas must
+# accumulate into exactly one stable thinking block and one stable text block
+# rather than producing alternating fragmented blocks.
 """Chat Completions fields are independent channels, not ordered blocks."""
 
 import json
@@ -13,6 +18,16 @@ from tau_ai.events import AssistantDoneEvent, TextDeltaEvent
 @pytest.mark.anyio
 @pytest.mark.parametrize("same_chunk", [False, True])
 async def test_interleaved_reasoning_keeps_stable_blocks(same_chunk: bool) -> None:
+    # [FUNCTION DOC]
+    # Streams a fake SSE response (via an httpx mock transport) whose deltas alternate
+    # reasoning_content and content, either as separate chunks or merged into the same
+    # chunk (parametrized). Asserts the final assistant-done message has exactly two
+    # content blocks with the concatenated text and thinking, that the thinking block's
+    # signature records the "reasoning_content" field name, that each kind has exactly
+    # one start/end event with all deltas sharing that content index, and that the first
+    # text delta's partial message contains only the first text fragment.
+    # Input: same_chunk flag. Output: none; raises assertion errors on failure.
+    # Side effects: none beyond an in-memory HTTP client.
     deltas = [
         {"reasoning_content": "Done. C"},
         {"content": "Done. Pr"},
@@ -27,6 +42,9 @@ async def test_interleaved_reasoning_keeps_stable_blocks(same_chunk: bool) -> No
     )
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock transport handler; ignores the request and returns HTTP 200 with the
+        # prepared SSE body and an event-stream content type.
         return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:

@@ -1,3 +1,8 @@
+# [MODULE DOC]
+# Packaged example extension (shipped as data) that lets the agent ask the user
+# a multiple-choice question through the active UI and wait for the answer.
+# Registers a sequential tool named "ask_user_question". Identical to the
+# repository copy under examples/extensions.
 """Let the agent ask the user a multiple-choice question.
 
 Install by copying into `~/.tau/extensions/`, or run:
@@ -19,6 +24,11 @@ from tau_coding.extensions import ExtensionAPI
 
 
 def _result(text: str, *, selected: str | None = None) -> AgentToolResult:
+    # [FUNCTION DOC]
+    # HELPER: build a tool result with one text content block and details
+    # containing the "selected" option (or null when nothing was selected).
+    # Inputs: message text and optional keyword-only selected option.
+    # Output: the constructed tool result. No side effects.
     return AgentToolResult(
         content=[TextContent(text=text)],
         details={"selected": selected},
@@ -26,6 +36,14 @@ def _result(text: str, *, selected: str | None = None) -> AgentToolResult:
 
 
 def setup(tau: ExtensionAPI) -> None:
+    # [FUNCTION DOC]
+    # Extension entry point: defines the ask_user_question execute function as a
+    # closure over the API (so it can reach the UI context at call time) and
+    # registers it as an AgentTool with a strict JSON schema (non-empty question,
+    # at least two unique non-empty string options, no extra properties),
+    # sequential execution mode, a prompt snippet and a guideline telling the
+    # model not to assume an answer when nothing is selected.
+    # Returns nothing. Side effect: mutates the extension API's tool registry.
     """Register the ask_user_question tool."""
 
     async def ask_user_question(
@@ -34,6 +52,19 @@ def setup(tau: ExtensionAPI) -> None:
         signal: ToolCancellationToken | None = None,
         on_update: ToolUpdateCallback | None = None,
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # Tool execute function (nested closure). Validates arguments itself rather
+        # than trusting the schema: question must be a non-blank string; options must
+        # be a list of at least two items, each a non-blank string (stripped), and the
+        # stripped options must be unique. Any violation returns an explanatory error
+        # text result (no exception). On success awaits the UI select prompt with the
+        # stripped question and options.
+        # Output: a result saying the user did not select an option (selected null)
+        # or "The user selected: <option>" with the option recorded in details.
+        # Side effects: shows an interactive selection prompt in the frontend and
+        # blocks until the user responds. The call id, cancellation token and update
+        # callback are ignored, so cancellation is not honored while waiting.
+        # Exceptions: whatever the UI select implementation raises propagates.
         del tool_call_id, signal, on_update
 
         question = arguments.get("question")

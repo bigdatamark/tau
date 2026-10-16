@@ -1,3 +1,11 @@
+# [PACKAGE DOC]
+# Package tau_coding.tui: the Textual-based interactive TUI frontend for Tau coding sessions.
+# It is one possible frontend: it consumes agent/session events through an adapter and never
+# becomes a dependency of the reusable harness. This init only re-exports the public surface:
+# the event adapter, the app class and its runner, autocomplete option type, TUI configuration
+# (settings, keybindings, role styles, themes including built-in dark/light/high-contrast, theme
+# lookup, settings load/save/path, notification mode, config error), TUI state types, and the
+# transcript/sidebar widgets and render helpers. Importing it imports Textual. No other side effects.
 """Textual TUI frontend for Tau coding sessions."""
 
 from __future__ import annotations

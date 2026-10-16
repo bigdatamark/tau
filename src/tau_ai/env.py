@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Environment-based provider configuration for the tau_ai layer. Defines
+# default endpoints/timeouts/retry settings, the cache retention preference
+# type and constants, the runtime auth value and resolver/observer callable
+# types, frozen config dataclasses for OpenAI-compatible and Anthropic
+# providers, and a loader that builds an OpenAI-compatible config from
+# environment variables (with private parsing helpers).
 """Environment-based provider configuration helpers."""
 
 from __future__ import annotations
@@ -27,6 +34,9 @@ CACHE_RETENTION_LONG: CacheRetention = "long"
 
 @dataclass(frozen=True, slots=True)
 class RuntimeProviderAuth:
+    # [CLASS DOC]
+    # Frozen dataclass of request auth resolved right before a provider call: API
+    # key, optional base URL override, optional extra headers.
     """Request auth resolved immediately before a provider call."""
 
     api_key: str
@@ -40,6 +50,15 @@ type RuntimeResponseHeadersObserver = Callable[[Mapping[str, str]], None]
 
 @dataclass(frozen=True, slots=True)
 class OpenAICompatibleConfig:
+    # [CLASS DOC]
+    # Frozen dataclass configuring an OpenAI-compatible endpoint: API key (hidden
+    # from repr), base URL, headers (hidden from repr), timeout, retry count and
+    # max retry delay, wire API name, max tokens, image support, reasoning effort
+    # and its parameter name, thinking format, compat flags, model aliases,
+    # whether to send reasoning effort none, display provider name, optional
+    # response provider header, whether to omit the Authorization header, optional
+    # runtime credential resolver and response-headers observer, and whether to
+    # infer the wire API from the model id.
     """Configuration for an OpenAI-compatible chat completions endpoint."""
 
     api_key: str = field(repr=False)
@@ -67,6 +86,12 @@ class OpenAICompatibleConfig:
 
 @dataclass(frozen=True, slots=True)
 class AnthropicConfig:
+    # [CLASS DOC]
+    # Frozen dataclass configuring Anthropic's Messages API: API key, whether to
+    # use bearer (OAuth) auth, base URL, headers, timeout, retries and max retry
+    # delay, max tokens, image support, thinking budget/effort/mode, provider
+    # name, optional OAuth system prompt, cache retention preference, whether to
+    # put cache control on tools, and optional runtime credential resolver.
     """Configuration for Anthropic's Messages API."""
 
     api_key: str
@@ -99,6 +124,14 @@ def openai_compatible_config_from_env(
     default_max_retries: int = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES,
     default_max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS,
 ) -> OpenAICompatibleConfig:
+    # [FUNCTION DOC]
+    # Build an OpenAICompatibleConfig from environment variables. Inputs: names
+    # of the API key, base URL, timeout, max retries and max retry delay variables,
+    # plus defaults for the numeric values. Reads the API key (required), base URL
+    # (default OpenAI URL, trailing slashes stripped) and parses the numeric values
+    # via the helpers. Output: the config (other fields default).
+    # Raises RuntimeError when the API key is missing/empty or a numeric variable
+    # is invalid. Side effects: reads process environment.
     """Load OpenAI-compatible provider configuration from environment variables."""
     api_key = environ.get(api_key_var)
     if not api_key:
@@ -120,6 +153,9 @@ def openai_compatible_config_from_env(
 
 
 def _timeout_seconds_from_env(name: str, default: float) -> float:
+    # [FUNCTION DOC]
+    # HELPER: read a positive float from the named env var, returning the default
+    # when unset. Raises RuntimeError if not a number or not greater than 0.
     raw = environ.get(name)
     if raw is None:
         return default
@@ -133,6 +169,9 @@ def _timeout_seconds_from_env(name: str, default: float) -> float:
 
 
 def _non_negative_int_from_env(name: str, default: int) -> int:
+    # [FUNCTION DOC]
+    # HELPER: read a non-negative int from the named env var, returning the
+    # default when unset. Raises RuntimeError if not an integer or negative.
     raw = environ.get(name)
     if raw is None:
         return default
@@ -146,6 +185,9 @@ def _non_negative_int_from_env(name: str, default: int) -> int:
 
 
 def _non_negative_float_from_env(name: str, default: float) -> float:
+    # [FUNCTION DOC]
+    # HELPER: read a non-negative float from the named env var, returning the
+    # default when unset. Raises RuntimeError if not a number or negative.
     raw = environ.get(name)
     if raw is None:
         return default

@@ -1,3 +1,9 @@
+# [MODULE DOC]
+# Tests for system prompt construction in tau_coding.system_prompt: default
+# prompt content (tools, guidelines, docs pointers, date, cwd), tool visibility,
+# guideline de-duplication, custom/append prompt handling, extension sections
+# ordering, source-attributed inspection, and skills XML formatting/escaping and
+# gating on the read tool.
 from datetime import date
 from pathlib import Path
 
@@ -22,11 +28,19 @@ async def _unused_executor(
     signal: object | None = None,
     on_update: object | None = None,
 ) -> AgentToolResult:
+    # [FUNCTION DOC]
+    # HELPER: dummy async tool executor for tools built only for prompt formatting;
+    # discards its inputs and returns an empty-content tool result.
     del tool_call_id, signal, on_update
     return AgentToolResult(content="")
 
 
 def test_default_prompt_includes_tools_guidelines_date_and_cwd(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Builds the default prompt with the coding tools and a fixed date and asserts
+    # key phrases: Tau identity, tools list starting with read, bash/read usage
+    # guidelines, safety/honesty guidelines, Tau documentation pointers, and that it
+    # ends with the current date and working directory lines.
     tools = create_coding_tools(cwd=tmp_path)
 
     prompt = build_system_prompt(
@@ -52,6 +66,9 @@ def test_default_prompt_includes_tools_guidelines_date_and_cwd(tmp_path: Path) -
 
 
 def test_tool_without_prompt_snippet_is_hidden_from_available_tools() -> None:
+    # [FUNCTION DOC]
+    # Asserts a tool lacking a prompt snippet is omitted from the available tools
+    # text, which becomes "(none)".
     tool = AgentTool(
         name="hidden",
         label="Hidden",
@@ -64,6 +81,9 @@ def test_tool_without_prompt_snippet_is_hidden_from_available_tools() -> None:
 
 
 def test_guidelines_are_deduplicated(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Passes a tool guideline again as an extra guideline and asserts it appears
+    # only once in the collected guidelines.
     tools = create_coding_tools(cwd=tmp_path)
     duplicate = tools[0].prompt_guidelines[0]
 
@@ -73,6 +93,9 @@ def test_guidelines_are_deduplicated(tmp_path: Path) -> None:
 
 
 def test_custom_prompt_replaces_default_but_keeps_append_context_and_date(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a custom prompt replaces the default body (no tools list or docs) but
+    # is followed by the append text, project instructions block and current date.
     prompt = build_system_prompt(
         BuildSystemPromptOptions(
             cwd=tmp_path,
@@ -93,6 +116,10 @@ def test_custom_prompt_replaces_default_but_keeps_append_context_and_date(tmp_pa
 
 
 def test_extra_sections_follow_user_append_in_registration_order(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts extension sections come after the user append text in order, titled
+    # ones rendered with a level-2 heading, untitled ones as bare body, all before
+    # project instructions.
     prompt = build_system_prompt(
         BuildSystemPromptOptions(
             cwd=tmp_path,
@@ -120,6 +147,10 @@ def test_extra_sections_follow_user_append_in_registration_order(tmp_path: Path)
 
 
 def test_inspection_attributes_prompt_inputs_without_changing_text(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the inspection's text equals the built prompt, its source contents
+    # concatenate to that text, and sources are attributed in order: custom prompt
+    # file, append file, extension, each context file, skill path, Tau runtime, cwd.
     skill_path = tmp_path / "skills" / "review" / "SKILL.md"
     options = BuildSystemPromptOptions(
         cwd=tmp_path,
@@ -157,6 +188,9 @@ def test_inspection_attributes_prompt_inputs_without_changing_text(tmp_path: Pat
 
 
 def test_empty_custom_prompt_is_still_custom(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an empty custom prompt is treated as custom (not default): the prompt
+    # starts with the separator then append text and has no tools list.
     prompt = build_system_prompt(
         BuildSystemPromptOptions(
             cwd=tmp_path,
@@ -173,6 +207,9 @@ def test_empty_custom_prompt_is_still_custom(tmp_path: Path) -> None:
 
 
 def test_skills_are_formatted_as_xml_and_escaped(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts skills render within an available_skills XML block with name,
+    # description and location, XML-escaping ampersands and angle brackets.
     skill_path = tmp_path / "skills" / "review" / "SKILL.md"
     skill = Skill(
         name="review&check",
@@ -190,6 +227,9 @@ def test_skills_are_formatted_as_xml_and_escaped(tmp_path: Path) -> None:
 
 
 def test_format_skills_for_prompt_excludes_disabled_skills(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts skills with model invocation disabled are omitted, and formatting only
+    # disabled skills yields an empty string.
     visible = Skill(
         name="visible",
         path=tmp_path / "skills" / "visible" / "SKILL.md",
@@ -213,6 +253,9 @@ def test_format_skills_for_prompt_excludes_disabled_skills(tmp_path: Path) -> No
 
 
 def test_skills_are_included_only_when_read_tool_is_available(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the skills block is omitted when no read tool is present and included
+    # when the standard coding tools (with read) are provided.
     skill = Skill(name="testing", path=tmp_path / "testing.md", content="", description="Test")
     no_read_tool = AgentTool(
         name="custom",

@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# Tests for the TUI event adapter and TUI state model (tau_coding.tui): how agent and
+# coding-session events become transcript items (assistant, thinking, user, skill, tool,
+# status, error), running/settled state, error replacement after overflow recovery,
+# restoration of persisted messages, grouping/clustering/batching of tool calls, and
+# the human-readable tool call/result formatters (notably bash description handling).
+# Pure in-memory; no Textual app is run.
 from pathlib import Path
 
 import pytest
@@ -38,10 +45,15 @@ from tau_coding.tui.state import (
 
 
 def _update(event) -> MessageUpdateEvent:  # noqa: ANN001
+    # [FUNCTION DOC]
+    # HELPER: Wrap a provider assistant-message event in a message-update event whose
+    # message is the event's partial message.
     return MessageUpdateEvent(message=event.partial, assistant_message_event=event)
 
 
 def test_tui_adapter_tracks_running_state() -> None:
+    # [FUNCTION DOC]
+    # Agent start sets running True; agent end sets it False.
     state = TuiState()
     adapter = TuiEventAdapter(state)
 
@@ -53,6 +65,8 @@ def test_tui_adapter_tracks_running_state() -> None:
 
 
 def test_tui_adapter_waits_for_session_settlement_after_low_level_agent_end() -> None:
+    # [FUNCTION DOC]
+    # A session-level agent end keeps running True; only the settled event clears it.
     state = TuiState()
     adapter = TuiEventAdapter(state)
 
@@ -65,6 +79,10 @@ def test_tui_adapter_waits_for_session_settlement_after_low_level_agent_end() ->
 
 
 def test_tui_adapter_replaces_recovered_overflow_with_terminal_retry_error() -> None:
+    # [FUNCTION DOC]
+    # A context-overflow error followed by overflow compaction and a retry that fails with a
+    # different error leaves exactly one error item, showing the final retry error, and
+    # state.error contains only that message.
     state = TuiState()
     adapter = TuiEventAdapter(state)
     overflow = AssistantMessage(
@@ -94,6 +112,9 @@ def test_tui_adapter_replaces_recovered_overflow_with_terminal_retry_error() -> 
 
 
 def test_tui_adapter_builds_assistant_item_from_nested_stream_events() -> None:
+    # [FUNCTION DOC]
+    # Text deltas accumulate in the assistant buffer; message end clears the buffer and
+    # adds one assistant item with the final text.
     state = TuiState()
     adapter = TuiEventAdapter(state)
     partial = AssistantMessage()
@@ -110,6 +131,9 @@ def test_tui_adapter_builds_assistant_item_from_nested_stream_events() -> None:
 
 
 def test_tui_adapter_builds_user_and_compact_skill_items() -> None:
+    # [FUNCTION DOC]
+    # A plain user message becomes a user item; a skill invocation message is shown as a
+    # compact "Using skill: <name>" skill item followed by the user's extra text.
     skill = Skill(
         name="review",
         path=Path("/workspace/.tau/skills/review.md"),
@@ -132,6 +156,8 @@ def test_tui_adapter_builds_user_and_compact_skill_items() -> None:
 
 
 def test_tui_adapter_groups_nested_thinking_deltas() -> None:
+    # [FUNCTION DOC]
+    # Consecutive thinking deltas merge into one thinking item; thinking is hidden by default.
     state = TuiState()
     adapter = TuiEventAdapter(state)
     partial = AssistantMessage()
@@ -144,6 +170,9 @@ def test_tui_adapter_groups_nested_thinking_deltas() -> None:
 
 
 def test_tui_state_restores_persisted_assistant_blocks_in_order() -> None:
+    # [FUNCTION DOC]
+    # Loading an assistant message with interleaved thinking/text/tool-call blocks yields
+    # items in the same block order.
     state = TuiState()
     state.load_messages(
         [
@@ -169,6 +198,10 @@ def test_tui_state_restores_persisted_assistant_blocks_in_order() -> None:
 
 
 def test_tui_state_groups_adjacent_reads_from_one_assistant_message() -> None:
+    # [FUNCTION DOC]
+    # Two adjacent reads in one message restore as one grouped "Read 2 files" item listing
+    # paths; both call ids resolve to it; expanded invocation lists each read; the result
+    # summary reads "✓ read group".
     state = TuiState()
     state.load_messages(
         [
@@ -203,6 +236,9 @@ def test_tui_state_groups_adjacent_reads_from_one_assistant_message() -> None:
 
 
 def test_tui_state_clusters_edits_and_lists_every_path() -> None:
+    # [FUNCTION DOC]
+    # Adjacent edits cluster into "Edited 2 files" with each path; expanded view includes each
+    # call with its result.
     state = TuiState()
     state.load_messages(
         [
@@ -229,6 +265,8 @@ def test_tui_state_clusters_edits_and_lists_every_path() -> None:
 
 
 def test_tui_state_clusters_writes_and_lists_every_path() -> None:
+    # [FUNCTION DOC]
+    # Adjacent writes cluster into "Written 2 files"; expanded view includes each result.
     state = TuiState()
     state.load_messages(
         [
@@ -263,6 +301,9 @@ def test_tui_state_clusters_writes_and_lists_every_path() -> None:
 
 
 def test_tui_state_restores_write_only_model_continuations_as_one_group() -> None:
+    # [FUNCTION DOC]
+    # Five consecutive assistant turns that each only write one file restore as a single
+    # "Written 5 files" group containing all calls in order.
     messages = []
     for index in range(1, 6):
         messages.extend(
@@ -308,6 +349,8 @@ def test_tui_state_restores_write_only_model_continuations_as_one_group() -> Non
 
 
 def test_tui_state_restores_edit_only_model_continuations_as_one_group() -> None:
+    # [FUNCTION DOC]
+    # Three edit-only continuation turns restore as one "Edited 3 files" group.
     state = TuiState()
     state.load_messages(
         [
@@ -357,6 +400,8 @@ def test_tui_state_restores_edit_only_model_continuations_as_one_group() -> None
 
 
 def test_tui_state_keeps_write_continuations_separate_across_assistant_text() -> None:
+    # [FUNCTION DOC]
+    # Assistant text between write turns breaks grouping: three separate items result.
     state = TuiState()
     state.load_messages(
         [
@@ -404,6 +449,10 @@ def test_file_mutation_continuation_boundaries_match_live_and_restored(
     boundary: TextContent | ThinkingContent,
     boundary_before_call: bool,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrised over a text or thinking block before or after the first write call: in
+    # both the restored state and the live adapter-driven state, the two writes remain
+    # separate ungrouped items (boundary content prevents continuation grouping).
     first_call = ToolCall(
         id="write-1",
         name="write",
@@ -471,6 +520,10 @@ def test_file_mutation_continuation_boundaries_match_live_and_restored(
 
 
 def test_tui_state_batches_mixed_tools_and_clusters_adjacent_reads() -> None:
+    # [FUNCTION DOC]
+    # Mixed bash and read calls in one message form one batch item with four sub-items
+    # (adjacent reads clustered), showing bash descriptions and the read group; every call
+    # id resolves to the batch item.
     state = TuiState()
     state.load_messages(
         [
@@ -529,6 +582,9 @@ def test_tui_state_batches_mixed_tools_and_clusters_adjacent_reads() -> None:
 
 
 def test_tui_state_keeps_custom_rendered_calls_out_of_tool_batches() -> None:
+    # [FUNCTION DOC]
+    # A call with a custom tool-call renderer is not batched with other calls in the same
+    # batch id; two separate non-batch items result.
     state = TuiState(
         tool_call_renderer=lambda name, _arguments: (
             "[bold]agent card[/bold]" if name == "agent" else None
@@ -554,6 +610,9 @@ def test_tui_state_keeps_custom_rendered_calls_out_of_tool_batches() -> None:
 
 
 def test_tui_state_keeps_result_only_extension_tools_out_of_batches() -> None:
+    # [FUNCTION DOC]
+    # Tools with a custom result renderer are not batched; each item's result resolves to
+    # the custom card markup.
     state = TuiState(
         tool_result_renderer=lambda name, _result, _expanded: f"[bold]{name} card[/bold]"
     )
@@ -579,6 +638,9 @@ def test_tui_state_keeps_result_only_extension_tools_out_of_batches() -> None:
 
 
 def test_tui_state_marks_group_failed_when_any_read_fails() -> None:
+    # [FUNCTION DOC]
+    # A read group with one failing read shows "· 1 failed" in its header and a failure
+    # mark in its result summary.
     state = TuiState()
     state.load_messages(
         [
@@ -605,6 +667,8 @@ def test_tui_state_marks_group_failed_when_any_read_fails() -> None:
 
 
 def test_tui_adapter_does_not_group_reads_separated_by_assistant_text() -> None:
+    # [FUNCTION DOC]
+    # Live reads separated by assistant text in the same message are not grouped.
     state = TuiState()
     adapter = TuiEventAdapter(state)
     adapter.apply(
@@ -629,6 +693,8 @@ def test_tui_adapter_does_not_group_reads_separated_by_assistant_text() -> None:
 
 
 def test_tui_state_does_not_group_reads_from_different_assistant_messages() -> None:
+    # [FUNCTION DOC]
+    # Reads from different assistant messages are not grouped on restore.
     state = TuiState()
     state.load_messages(
         [
@@ -647,6 +713,9 @@ def test_tui_state_does_not_group_reads_from_different_assistant_messages() -> N
 
 
 def test_tui_adapter_records_tool_progress_and_result() -> None:
+    # [FUNCTION DOC]
+    # Tool start, update and end produce one tool item with the invocation, result text
+    # "✓ read" plus output, and no lingering progress text.
     state = TuiState()
     adapter = TuiEventAdapter(state)
 
@@ -676,6 +745,8 @@ def test_tui_adapter_records_tool_progress_and_result() -> None:
 
 
 def test_tui_adapter_renders_skill_file_reads_with_skill_style() -> None:
+    # [FUNCTION DOC]
+    # Reading a known skill file renders as a skill item "Loading skill: <name>".
     skill = Skill(
         name="review",
         path=Path("/workspace/.tau/skills/review.md"),
@@ -707,6 +778,9 @@ def test_tui_adapter_renders_skill_file_reads_with_skill_style() -> None:
 
 
 def test_tui_adapter_records_retry_and_queue_status() -> None:
+    # [FUNCTION DOC]
+    # An auto-retry start replaces the preceding error with a status item and clears
+    # state.error; queue updates set queued steering and follow-up messages.
     state = TuiState()
     adapter = TuiEventAdapter(state)
     adapter.apply(
@@ -734,6 +808,9 @@ def test_tui_adapter_records_retry_and_queue_status() -> None:
 
 
 def test_tui_adapter_records_assistant_error_and_aborted_message() -> None:
+    # [FUNCTION DOC]
+    # An assistant error message end sets state.error, adds an "Error: ..." item and clears
+    # the partial assistant buffer.
     state = TuiState(running=True, assistant_buffer="partial")
     adapter = TuiEventAdapter(state)
 
@@ -749,6 +826,9 @@ def test_tui_adapter_records_assistant_error_and_aborted_message() -> None:
 
 
 def test_tui_state_restores_partial_assistant_response_and_error() -> None:
+    # [FUNCTION DOC]
+    # Restoring an errored assistant message with text yields the assistant text item then
+    # an error item, and sets state.error.
     state = TuiState()
 
     state.load_messages(
@@ -769,6 +849,9 @@ def test_tui_state_restores_partial_assistant_response_and_error() -> None:
 
 
 def test_tool_formatters_keep_human_readable_output() -> None:
+    # [FUNCTION DOC]
+    # A read call with offset/limit formats as "path:start-end"; long results are truncated
+    # to eight lines with a "more lines" note.
     from tau_agent import ToolCall
 
     assert (
@@ -789,6 +872,9 @@ def test_tool_formatters_keep_human_readable_output() -> None:
 
 
 def test_bash_tool_formatter_hides_short_command_until_expanded() -> None:
+    # [FUNCTION DOC]
+    # An undescribed bash call collapses to "Running shell command" with timeout; expanded
+    # shows the "$ command" form with timeout.
     command = 'rg -n "ToolCall" src'
     call = ToolCall(
         id="call-1",
@@ -801,6 +887,8 @@ def test_bash_tool_formatter_hides_short_command_until_expanded() -> None:
 
 
 def test_bash_tool_formatter_hides_described_short_command_until_expanded() -> None:
+    # [FUNCTION DOC]
+    # A described bash call collapses to its description; expanded shows the command.
     command = "rm -rf /tmp/x"
     call = ToolCall(
         id="call-1",
@@ -813,6 +901,9 @@ def test_bash_tool_formatter_hides_described_short_command_until_expanded() -> N
 
 
 def test_bash_tool_formatter_hides_long_command_behind_description() -> None:
+    # [FUNCTION DOC]
+    # Descriptions are whitespace-normalised to one line and shown with timeout; the
+    # non-compact and expanded forms show the full command with timeout.
     command = "git diff --check && git commit -m 'Finish work' && " + "echo done " * 12
     call = ToolCall(
         id="call-1",
@@ -833,6 +924,8 @@ def test_bash_tool_formatter_hides_long_command_behind_description() -> None:
 
 
 def test_bash_tool_formatter_shows_complete_description_without_command_hint() -> None:
+    # [FUNCTION DOC]
+    # A long description is shown completely (trimmed) without command text or newlines.
     command = "python - <<'PY'\nprint('hello')\nPY"
     description = "Describing a deliberately overlong inline script operation " * 2
     call = ToolCall(
@@ -848,6 +941,9 @@ def test_bash_tool_formatter_shows_complete_description_without_command_hint() -
 
 
 def test_bash_tool_formatter_never_previews_undescribed_commands() -> None:
+    # [FUNCTION DOC]
+    # For various undescribed commands (multi-line, long, blank) the collapsed form is always
+    # "Running shell command" and the expanded form is the exact command.
     commands = [
         "python - <<'PY'\nprint('one')\nPY",
         "git status &&\ngit diff",
@@ -863,6 +959,9 @@ def test_bash_tool_formatter_never_previews_undescribed_commands() -> None:
 
 
 def test_tui_state_recovers_full_bash_command_when_tool_output_expands() -> None:
+    # [FUNCTION DOC]
+    # For an undescribed bash call, collapsed invocation resolves to None and expanded
+    # invocation shows the collapsed header followed by the full command.
     command = "python - <<'PY'\nprint('hello')\nPY"
     state = TuiState(tool_call_renderer=lambda _name, _arguments: None)
     state.add_tool_call(ToolCall(id="call-1", name="bash", arguments={"command": command}))
@@ -877,6 +976,9 @@ def test_tui_state_recovers_full_bash_command_when_tool_output_expands() -> None
 
 
 def test_tui_adapter_uses_canonical_result_details_for_patch() -> None:
+    # [FUNCTION DOC]
+    # An edit result whose details contain a patch shows a "Patch:" section with the diff
+    # in the tool result text.
     state = TuiState()
     adapter = TuiEventAdapter(state)
 

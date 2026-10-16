@@ -1,3 +1,16 @@
+# [PACKAGE DOC]
+# Public facade of the tau_agent package: the portable, Pi-compatible agent
+# harness ("reusable agent brain") with no CLI, Textual or Rich dependencies.
+# Behavior: re-exports agent lifecycle events (agent/turn/message/tool
+# execution start, update and end events), the AgentHarness with its config,
+# listener type, queued messages and simple cancellation token, the
+# run_agent_loop function, message/content models and text helpers, session
+# entry models and storage/state, tool contracts (AgentTool, results,
+# cancellation, execution mode, executor, update callback) and JSON type aliases.
+# The export list is computed dynamically as every module-level name not
+# starting with an underscore, so it also includes imported submodule names
+# that appear as globals.
+# Side effects: importing the listed submodules. Raises nothing itself.
 """Portable Pi-compatible agent harness primitives for Tau."""
 
 # ruff: noqa: F401 - this module intentionally defines the public facade

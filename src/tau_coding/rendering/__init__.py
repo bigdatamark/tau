@@ -1,3 +1,10 @@
+# [PACKAGE DOC]
+# Package for event renderers used by Tau's print mode and frontends. Renderers
+# consume agent events and turn them into terminal output. Re-exports the base
+# renderer type, the print output mode enum, the final-text, JSON and transcript
+# renderers, and a factory that picks one for a given print output mode.
+# Side effects: importing loads the renderer submodules and the extension API
+# (for the custom-message markup type).
 """Event renderers for Tau coding frontends and print modes."""
 
 from __future__ import annotations
@@ -14,6 +21,15 @@ def create_event_renderer(
     *,
     custom_message_renderer: CustomMessageMarkup | None = None,
 ) -> EventRenderer:
+    # [FUNCTION DOC]
+    # Factory that maps a print output mode to a renderer instance.
+    # Inputs: the output mode; optionally (keyword-only) a custom message markup
+    # callback used by extensions to render custom messages.
+    # Behavior: text mode returns a fresh final-text renderer; json mode returns a
+    # fresh JSON event renderer; any other mode (transcript) returns a transcript
+    # renderer configured with the custom message callback.
+    # Outputs: a new event renderer. Raises nothing; no side effects.
+    # Note: the custom message callback is only honoured by the transcript renderer.
     """Create a renderer for a print output mode."""
     if mode is PrintOutputMode.text:
         return FinalTextRenderer()

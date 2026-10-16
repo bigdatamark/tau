@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Tests for the TOML-backed built-in provider catalog and the user catalog
+# overlay (<tau home>/catalog file): golden checks of specific built-in
+# entries (names/order, Anthropic, OpenAI vs Codex limits, NVIDIA, Hugging
+# Face, Kimi, MiniMax tiered pricing, Copilot), internal consistency, and
+# user overlay behavior (adding providers, merging, tombstones, thinking
+# group replacement, cost tiers, validation errors, and visibility in
+# provider settings). Uses temporary Tau homes; no network.
 """Tests for the TOML-backed provider catalog."""
 
 from __future__ import annotations
@@ -44,6 +52,10 @@ thinking_parameter = "reasoning_effort"
 
 
 def _write_user_catalog(tau_home: Path, body: str) -> TauPaths:
+    # [FUNCTION DOC]
+    # HELPER: create the Tau home directory, write a user catalog file with a
+    # schema_version 1 header followed by the given TOML body, and return
+    # TauPaths pointing at that home.
     paths = TauPaths(home=tau_home)
     tau_home.mkdir(parents=True, exist_ok=True)
     user_catalog_path(paths).write_text(f"schema_version = 1\n{body}", encoding="utf-8")
@@ -51,6 +63,8 @@ def _write_user_catalog(tau_home: Path, body: str) -> TauPaths:
 
 
 def test_builtin_catalog_matches_expected_providers() -> None:
+    # [FUNCTION DOC]
+    # Verify the exact ordered list of built-in provider names.
     names = [entry.name for entry in BUILTIN_PROVIDER_CATALOG]
     assert names == [
         "openai",
@@ -85,6 +99,12 @@ def test_builtin_catalog_matches_expected_providers() -> None:
 
 
 def test_builtin_catalog_golden_anthropic_entry() -> None:
+    # [FUNCTION DOC]
+    # Golden check of the Anthropic entry: display/kind/base URL/env/credential,
+    # required models, default model, docs URL, context windows covering all
+    # models, Opus 5 metadata (window, max tokens, inputs, costs incl. 1h cache
+    # write, compat, thinking level map), thinking settings and auth methods
+    # (api key and oauth).
     entry = builtin_provider_entry("anthropic")
     assert entry is not None
     assert entry.display_name == "Anthropic"
@@ -143,6 +163,9 @@ def test_builtin_catalog_golden_anthropic_entry() -> None:
 
 
 def test_builtin_catalog_separates_openai_api_and_codex_context_limits() -> None:
+    # [FUNCTION DOC]
+    # Verify OpenAI API and Codex entries carry different context windows for
+    # the same model family and that gpt-5.6 is tombstoned (removed) from Codex.
     openai = builtin_provider_entry("openai")
     codex = builtin_provider_entry("openai-codex")
 
@@ -247,6 +270,9 @@ def test_builtin_catalog_separates_openai_api_and_codex_context_limits() -> None
 def test_sparse_provider_catalogs_declare_model_input_modalities(
     provider_name: str, vision_models: set[str]
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: for sparse providers, every model has metadata and the
+    # expected vision models declare image input.
     provider = builtin_provider_entry(provider_name)
 
     assert provider is not None
@@ -258,6 +284,9 @@ def test_sparse_provider_catalogs_declare_model_input_modalities(
 
 
 def test_builtin_catalog_oauth_and_opencode_auth_methods() -> None:
+    # [FUNCTION DOC]
+    # Verify Codex and Copilot are oauth-only and both OpenCode providers are api
+    # key only with OPENCODE_API_KEY.
     codex = builtin_provider_entry("openai-codex")
     copilot = builtin_provider_entry("github-copilot")
     opencode_go = builtin_provider_entry("opencode-go")
@@ -272,6 +301,9 @@ def test_builtin_catalog_oauth_and_opencode_auth_methods() -> None:
 
 
 def test_builtin_catalog_copilot_claude_max_tokens() -> None:
+    # [FUNCTION DOC]
+    # Verify Copilot Claude models use the Anthropic messages API with expected
+    # max output tokens.
     entry = builtin_provider_entry("github-copilot")
     assert entry is not None
 
@@ -294,6 +326,9 @@ def test_builtin_catalog_copilot_claude_max_tokens() -> None:
 
 
 def test_builtin_catalog_golden_nvidia_entry() -> None:
+    # [FUNCTION DOC]
+    # Golden check of the NVIDIA NIM entry, its context windows, thinking
+    # settings and model metadata for the default and gpt-oss models.
     entry = builtin_provider_entry("nvidia")
     assert entry is not None
     assert entry.display_name == "NVIDIA NIM"
@@ -336,6 +371,9 @@ def test_builtin_catalog_golden_nvidia_entry() -> None:
 
 
 def test_builtin_catalog_huggingface_model_expansion() -> None:
+    # [FUNCTION DOC]
+    # Verify the Hugging Face entry includes the expanded model set, complete
+    # context windows/metadata, default model, and specific model metadata.
     entry = builtin_provider_entry("huggingface")
     assert entry is not None
     added_models = {
@@ -403,6 +441,9 @@ def test_builtin_catalog_huggingface_model_expansion() -> None:
 
 
 def test_builtin_catalog_golden_kimi_entries() -> None:
+    # [FUNCTION DOC]
+    # Golden check of Moonshot (global/CN) and Kimi Code entries, models,
+    # defaults, context windows and thinking level maps.
     moonshot = builtin_provider_entry("moonshotai")
     assert moonshot is not None
     assert moonshot.display_name == "Moonshot AI (Kimi)"
@@ -474,6 +515,9 @@ def test_builtin_catalog_golden_kimi_entries() -> None:
 
 
 def test_builtin_minimax_m3_has_tiered_pricing() -> None:
+    # [FUNCTION DOC]
+    # Verify MiniMax M3 on both MiniMax providers has base pricing up to 512000
+    # input tokens and long-context pricing above.
     base_cost = {"input": 0.3, "output": 1.2, "cacheRead": 0.06, "cacheWrite": 0}
     long_context_cost = {
         "input": 0.6,
@@ -494,6 +538,8 @@ def test_builtin_minimax_m3_has_tiered_pricing() -> None:
 
 @pytest.mark.parametrize("input_tokens", [-1, True])
 def test_model_cost_for_input_tokens_rejects_invalid_count(input_tokens: int) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: negative and boolean token counts raise ValueError.
     entry = builtin_provider_entry("minimax")
     assert entry is not None
     metadata = entry.model_metadata["MiniMax-M3"]
@@ -503,6 +549,9 @@ def test_model_cost_for_input_tokens_rejects_invalid_count(input_tokens: int) ->
 
 
 def test_builtin_catalog_entries_are_internally_consistent() -> None:
+    # [FUNCTION DOC]
+    # Verify every built-in entry's default, thinking models and context windows
+    # refer to listed models, and thinking default is among thinking levels.
     for entry in builtin_catalog():
         assert entry.default_model in entry.models
         assert set(entry.thinking_models) <= set(entry.models)
@@ -513,15 +562,21 @@ def test_builtin_catalog_entries_are_internally_consistent() -> None:
 
 
 def test_builtin_catalog_resource_is_packaged() -> None:
+    # [FUNCTION DOC]
+    # Verify the packaged catalog resource text contains provider tables.
     assert "[[providers]]" in builtin_catalog_resource_text()
 
 
 def test_effective_catalog_without_user_file_is_builtin(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify the effective catalog equals the built-in catalog with no user file.
     paths = TauPaths(home=tmp_path / ".tau")
     assert effective_catalog(paths) == builtin_catalog()
 
 
 def test_user_catalog_adds_new_provider(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a new user provider is appended after built-ins with parsed fields.
     paths = _write_user_catalog(tmp_path / ".tau", VALID_PROVIDER)
     catalog = effective_catalog(paths)
     assert [entry.name for entry in catalog[:-1]] == [e.name for e in builtin_catalog()]
@@ -533,6 +588,9 @@ def test_user_catalog_adds_new_provider(tmp_path: Path) -> None:
 
 
 def test_user_catalog_overlays_builtin_provider(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a user entry for a built-in provider prepends models, overrides the
+    # default and context windows, and inherits untouched fields.
     paths = _write_user_catalog(
         tmp_path / ".tau",
         """
@@ -558,6 +616,10 @@ default_model = "claude-next-1"
 
 
 def test_builtin_tombstone_removes_model_from_user_catalog_overlay(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a built-in tombstoned model added by the user overlay is removed
+    # from models, thinking models, windows and metadata, with the default
+    # falling back.
     paths = _write_user_catalog(
         tmp_path / ".tau",
         """
@@ -587,6 +649,9 @@ name = "GPT-5.6"
 
 
 def test_user_catalog_thinking_fields_replace_as_group(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify specifying thinking fields in an overlay replaces the whole thinking
+    # group (unspecified ones reset).
     paths = _write_user_catalog(
         tmp_path / ".tau",
         """
@@ -604,6 +669,9 @@ thinking_default = "high"
 
 
 def test_user_catalog_overlays_and_serializes_cost_tiers(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify user cost tiers apply by input size and survive saving and
+    # reloading the user catalog. Writes a file.
     paths = _write_user_catalog(
         tmp_path / ".tau",
         """
@@ -642,6 +710,9 @@ cost_tiers = [
 
 
 def test_user_catalog_cost_tier_accepts_one_hour_cache_write_rate(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a cost tier may include a 1h cache write rate and tiers without it
+    # omit the key.
     paths = _write_user_catalog(
         tmp_path / ".tau",
         """
@@ -674,6 +745,8 @@ cost_tiers = [
 
 
 def test_user_catalog_rejects_bounded_final_cost_tier(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a final tier with a max input bound raises CatalogError.
     paths = _write_user_catalog(
         tmp_path / ".tau",
         """
@@ -691,12 +764,16 @@ cost_tiers = [
 
 
 def test_user_catalog_rejects_unknown_keys(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify an unknown provider key raises CatalogError naming the provider.
     paths = _write_user_catalog(tmp_path / ".tau", VALID_PROVIDER.replace("docs_url", "docs_ur1"))
     with pytest.raises(CatalogError, match=r"providers\.nebius"):
         effective_catalog(paths)
 
 
 def test_user_catalog_rejects_default_model_not_in_models(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a default model not among models raises CatalogError.
     paths = _write_user_catalog(
         tmp_path / ".tau",
         VALID_PROVIDER.replace(
@@ -760,12 +837,17 @@ def test_user_catalog_rejects_empty_and_coerced_values(
     body: str,
     match: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: empty display name/model names/window keys and non-positive,
+    # boolean or string context windows raise CatalogError at the right path.
     paths = _write_user_catalog(tmp_path / ".tau", body)
     with pytest.raises(CatalogError, match=match):
         effective_catalog(paths)
 
 
 def test_user_catalog_rejects_bad_kind(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify an unsupported provider kind raises CatalogError.
     paths = _write_user_catalog(
         tmp_path / ".tau", VALID_PROVIDER.replace("openai-compatible", "grpc")
     )
@@ -774,12 +856,16 @@ def test_user_catalog_rejects_bad_kind(tmp_path: Path) -> None:
 
 
 def test_user_catalog_rejects_malformed_toml(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify malformed TOML raises CatalogError mentioning invalid TOML.
     paths = _write_user_catalog(tmp_path / ".tau", "[[providers]\nname =")
     with pytest.raises(CatalogError, match="invalid TOML"):
         effective_catalog(paths)
 
 
 def test_user_catalog_provider_appears_in_settings(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a user catalog provider is available from loaded provider settings.
     paths = _write_user_catalog(tmp_path / ".tau", VALID_PROVIDER)
     settings = load_provider_settings(paths)
     provider = settings.get_provider("nebius")
@@ -788,6 +874,9 @@ def test_user_catalog_provider_appears_in_settings(tmp_path: Path) -> None:
 
 
 def test_user_catalog_provider_appears_with_existing_settings_file(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify the user provider is still available when a providers.json settings
+    # file already exists without it.
     paths = _write_user_catalog(tmp_path / ".tau", VALID_PROVIDER)
     (tmp_path / ".tau" / "providers.json").write_text(
         '{"default_provider": "openai", "providers": [{"type": "openai-compatible", '
