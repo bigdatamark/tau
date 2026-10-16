@@ -1,3 +1,17 @@
+# [MODULE DOC]
+# Durable provider configuration for coding sessions. Defines immutable,
+# self-validating provider config types (OpenAI-compatible, Anthropic, OpenAI
+# Codex) with per-model metadata, the persisted provider settings (default
+# provider, per-provider runtime preferences, scoped models for quick
+# cycling) and their JSON schema (version 2, providers.json in the Tau home).
+# Provider capabilities (models, URLs, metadata) come from the effective
+# catalog (built-in plus user catalog.toml); providers.json only stores
+# preferences, and legacy full-record files are migrated (with a .bak backup).
+# Also resolves provider/model selection from CLI/env/settings, thinking-level
+# availability and defaults, credential availability, and builds runtime
+# tau_ai configs (API key lookup from credentials or environment, OAuth
+# handling, headers, cache retention). Raises ProviderConfigError for invalid
+# configuration.
 """Durable provider configuration for Tau coding sessions."""
 
 from __future__ import annotations
@@ -56,17 +70,29 @@ PROVIDER_SETTINGS_SCHEMA_VERSION = 2
 
 
 class ProviderConfigError(ValueError):
+    # [CLASS DOC]
+    # Exception (ValueError subclass) raised for invalid provider configuration,
+    # unknown providers/models, or unusable settings.
     """Raised when Tau provider configuration is invalid."""
 
 
 class CredentialReader(Protocol):
+    # [CLASS DOC]
+    # Structural protocol for a credential lookup with a get-by-name method.
     """Credential lookup used while building runtime provider config."""
 
     def get(self, name: str) -> str | None: ...
+                                            # [FUNCTION DOC]
+                                            # Protocol method: return the stored secret for a name, or none.
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderModelMetadata:
+    # [CLASS DOC]
+    # Immutable runtime metadata for one model: display name, API override, base
+    # URL override, reasoning flag, input modalities, flat cost rates, cost tiers,
+    # context window, max tokens, extra headers, compat options and a map from
+    # thinking level to provider value (none meaning unsupported).
     """Runtime metadata for one configured model."""
 
     name: str | None = None
@@ -83,6 +109,9 @@ class ProviderModelMetadata:
     thinking_level_map: dict[ThinkingLevel, str | None] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
+        # [FUNCTION DOC]
+        # Serializes all fields to a JSON-compatible mapping; cost tiers become
+        # mappings of optional max_input_tokens plus rates. No side effects.
         """Serialize this model metadata to JSON-compatible data."""
         return {
             "name": self.name,
@@ -112,6 +141,14 @@ class ProviderModelMetadata:
 
 @dataclass(frozen=True, slots=True)
 class OpenAICompatibleProviderConfig:
+    # [CLASS DOC]
+    # Immutable durable config for an OpenAI-compatible provider (chat
+    # completions, responses, Google or Mistral APIs): name, base URL, API, API
+    # key env var, credential name, models, default model, context windows,
+    # headers, compat, model metadata, timeout/retry settings, thinking
+    # configuration (levels, thinking models, default, parameter), remembered
+    # per-model thinking defaults and per-model inference provider routes.
+    # Validated on construction.
     """Durable settings for one OpenAI-compatible provider."""
 
     name: str
@@ -136,6 +173,10 @@ class OpenAICompatibleProviderConfig:
     inference_providers: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # [FUNCTION DOC]
+        # Validates numbers (timeout, retries, retry delay), context windows, model
+        # metadata keys, compat JSON, thinking configuration, thinking defaults and
+        # inference provider routes. Raises ProviderConfigError on any violation.
         _validate_provider_numbers(
             timeout_seconds=self.timeout_seconds,
             max_retries=self.max_retries,
@@ -154,6 +195,9 @@ class OpenAICompatibleProviderConfig:
         _validate_inference_providers(self.name, self.models, self.inference_providers)
 
     def to_json(self) -> dict[str, Any]:
+        # [FUNCTION DOC]
+        # Serializes the full config with type "openai-compatible" to a JSON-ready
+        # mapping (lists for tuples, copied mappings).
         """Serialize this provider config to JSON-compatible data."""
         return {
             "name": self.name,
@@ -186,6 +230,11 @@ class OpenAICompatibleProviderConfig:
 
 @dataclass(frozen=True, slots=True)
 class AnthropicProviderConfig:
+    # [CLASS DOC]
+    # Immutable durable config for Anthropic Messages API providers; same fields
+    # as the OpenAI-compatible config minus inference provider routes, with
+    # Anthropic defaults (name anthropic, ANTHROPIC_API_KEY, credential name
+    # anthropic, default model claude-sonnet-4-6). Validated on construction.
     """Durable settings for Anthropic's Messages API."""
 
     name: str = "anthropic"
@@ -209,6 +258,9 @@ class AnthropicProviderConfig:
     thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # [FUNCTION DOC]
+        # Validates numbers, context windows, model metadata, compat, thinking
+        # configuration and thinking defaults; raises ProviderConfigError.
         _validate_provider_numbers(
             timeout_seconds=self.timeout_seconds,
             max_retries=self.max_retries,
@@ -226,6 +278,8 @@ class AnthropicProviderConfig:
         _validate_thinking_defaults(self.thinking_defaults)
 
     def to_json(self) -> dict[str, Any]:
+        # [FUNCTION DOC]
+        # Serializes the full config with type "anthropic".
         """Serialize this provider config to JSON-compatible data."""
         return {
             "name": self.name,
@@ -257,6 +311,11 @@ class AnthropicProviderConfig:
 
 @dataclass(frozen=True, slots=True)
 class OpenAICodexProviderConfig:
+    # [CLASS DOC]
+    # Immutable durable config for the OpenAI Codex subscription (OAuth)
+    # provider: no API or compat fields; defaults to the Codex base URL, access
+    # token env var, credential name openai-codex and a fixed GPT-5.x model list
+    # with default gpt-5.5. Validated on construction.
     """Durable settings for OpenAI Codex subscription OAuth."""
 
     name: str = "openai-codex"
@@ -285,6 +344,9 @@ class OpenAICodexProviderConfig:
     thinking_defaults: dict[str, ThinkingLevel] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # [FUNCTION DOC]
+        # Validates numbers, context windows, model metadata, thinking configuration
+        # and thinking defaults; raises ProviderConfigError.
         _validate_provider_numbers(
             timeout_seconds=self.timeout_seconds,
             max_retries=self.max_retries,
@@ -301,6 +363,8 @@ class OpenAICodexProviderConfig:
         _validate_thinking_defaults(self.thinking_defaults)
 
     def to_json(self) -> dict[str, Any]:
+        # [FUNCTION DOC]
+        # Serializes the full config with type "openai-codex".
         """Serialize this provider config to JSON-compatible data."""
         return {
             "name": self.name,
@@ -335,18 +399,25 @@ type ProviderConfig = (
 
 @dataclass(frozen=True, slots=True)
 class ScopedModelConfig:
+    # [CLASS DOC]
+    # Immutable provider/model pair enabled for quick model cycling.
     """A provider/model pair enabled for quick model cycling."""
 
     provider: str
     model: str
 
     def to_json(self) -> dict[str, str]:
+        # [FUNCTION DOC]
+        # Returns a mapping with provider and model.
         """Serialize this scoped model reference."""
         return {"provider": self.provider, "model": self.model}
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderSettings:
+    # [CLASS DOC]
+    # Immutable provider settings: default provider name (default "openai"),
+    # configured providers (default the built-in configs) and scoped models.
     """Tau provider settings loaded from Tau home."""
 
     default_provider: str = DEFAULT_PROVIDER_NAME
@@ -356,6 +427,9 @@ class ProviderSettings:
     scoped_models: tuple[ScopedModelConfig, ...] = ()
 
     def get_provider(self, name: str | None = None) -> ProviderConfig:
+        # [FUNCTION DOC]
+        # Returns the provider with the given name (default the default provider).
+        # Raises ProviderConfigError("Unknown provider") when absent.
         """Return a configured provider by name."""
         target = name or self.default_provider
         for provider in self.providers:
@@ -364,6 +438,10 @@ class ProviderSettings:
         raise ProviderConfigError(f"Unknown provider: {target}")
 
     def to_json(self) -> dict[str, Any]:
+        # [FUNCTION DOC]
+        # Serializes runtime preferences only: schema version 2, default provider,
+        # per-provider preference mappings and scoped models. Full definitions are
+        # not included (they live in the catalog).
         """Serialize runtime preferences to JSON-compatible data."""
         return {
             "schema_version": PROVIDER_SETTINGS_SCHEMA_VERSION,
@@ -377,6 +455,8 @@ class ProviderSettings:
 
 @dataclass(frozen=True, slots=True)
 class ProviderSelection:
+    # [CLASS DOC]
+    # Immutable resolved selection of a provider config and model for a run.
     """Resolved provider/model selection for a Tau run."""
 
     provider: ProviderConfig
@@ -384,6 +464,9 @@ class ProviderSelection:
 
 
 def builtin_provider_configs() -> tuple[ProviderConfig, ...]:
+    # [FUNCTION DOC]
+    # Returns provider configs for every entry of the built-in provider catalog,
+    # in catalog order.
     """Return Tau's built-in provider configs."""
     return tuple(
         provider_config_from_catalog_entry(entry.name) for entry in BUILTIN_PROVIDER_CATALOG
@@ -391,6 +474,9 @@ def builtin_provider_configs() -> tuple[ProviderConfig, ...]:
 
 
 def provider_config_from_catalog_entry(name: str) -> ProviderConfig:
+    # [FUNCTION DOC]
+    # Returns the config for the named built-in catalog entry; raises
+    # ProviderConfigError for unknown names.
     """Create a durable provider config from a built-in catalog entry."""
     for entry in BUILTIN_PROVIDER_CATALOG:
         if entry.name == name:
@@ -399,6 +485,13 @@ def provider_config_from_catalog_entry(name: str) -> ProviderConfig:
 
 
 def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
+    # [FUNCTION DOC]
+    # Converts a catalog entry into the matching config type by kind: anthropic
+    # entries become Anthropic configs (API forced to anthropic-messages),
+    # openai-codex entries become Codex configs, everything else becomes an
+    # OpenAI-compatible config (entry API or kind default). Copies models,
+    # headers, compat, metadata and thinking settings with empty thinking
+    # defaults. Raises ProviderConfigError if the result fails validation.
     """Create a durable provider config from a catalog entry."""
     context_windows = dict(entry.context_windows or {})
     model_metadata = _provider_model_metadata_from_catalog(entry.model_metadata)
@@ -459,6 +552,10 @@ def provider_config_from_entry(entry: ProviderCatalogEntry) -> ProviderConfig:
 
 
 def _default_api_for_kind(kind: str) -> ProviderApi:
+    # [FUNCTION DOC]
+    # HELPER: maps a provider kind to its default API name (anthropic-messages,
+    # openai-codex-responses, google-generative-ai, mistral-conversations, else
+    # openai-completions).
     if kind == "anthropic":
         return "anthropic-messages"
     if kind == "openai-codex":
@@ -473,6 +570,9 @@ def _default_api_for_kind(kind: str) -> ProviderApi:
 def _provider_model_metadata_from_catalog(
     model_metadata: dict[str, ModelCatalogMetadata],
 ) -> dict[str, ProviderModelMetadata]:
+    # [FUNCTION DOC]
+    # HELPER: converts catalog model metadata mappings into runtime model
+    # metadata, copying collections.
     return {
         model: ProviderModelMetadata(
             name=metadata.name,
@@ -493,6 +593,9 @@ def _provider_model_metadata_from_catalog(
 
 
 def default_openai_provider_config() -> OpenAICompatibleProviderConfig:
+    # [FUNCTION DOC]
+    # Returns the built-in "openai" provider config. Raises AssertionError if it
+    # is not an OpenAI-compatible config.
     """Return Tau's default OpenAI-compatible provider entry."""
     provider = provider_config_from_catalog_entry(DEFAULT_PROVIDER_NAME)
     if not isinstance(provider, OpenAICompatibleProviderConfig):
@@ -501,11 +604,23 @@ def default_openai_provider_config() -> OpenAICompatibleProviderConfig:
 
 
 def provider_settings_path(paths: TauPaths | None = None) -> Path:
+    # [FUNCTION DOC]
+    # Returns the providers.json path in the Tau home. No I/O.
     """Return the durable provider settings path."""
     return (paths or TauPaths()).home / "providers.json"
 
 
 def load_provider_settings(paths: TauPaths | None = None) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Loads settings. Without a file, returns defaults with providers from the
+    # effective catalog (user catalog providers always, built-ins only when
+    # credentialed via the append rule). With a file: parses JSON (must be an
+    # object), builds settings; legacy files (no provider_preferences key) are
+    # migrated onto catalog definitions and immediately saved with a strict
+    # backup; otherwise preferences are merged with the current catalog.
+    # Raises ProviderConfigError for invalid content; JSON decode and OS errors
+    # propagate. Side effects: reads files; may write providers.json, its .bak
+    # and the user catalog during migration.
     """Load durable provider settings, falling back to env-compatible defaults."""
     resolved_paths = paths or TauPaths()
     path = provider_settings_path(resolved_paths)
@@ -523,6 +638,11 @@ def load_provider_settings(paths: TauPaths | None = None) -> ProviderSettings:
 
 
 def save_provider_settings(settings: ProviderSettings, paths: TauPaths | None = None) -> Path:
+    # [FUNCTION DOC]
+    # Persists settings: upserts non-built-in provider definitions into the user
+    # catalog, then atomically writes preferences JSON (after a best-effort
+    # backup of the previous file). Output: the settings path. Side effects:
+    # file writes.
     """Write durable provider preferences and return the path."""
     resolved_paths = paths or TauPaths()
     _save_provider_definitions_to_catalog(settings, paths=resolved_paths)
@@ -539,6 +659,10 @@ def save_default_provider_model(
     paths: TauPaths | None = None,
     fallback_settings: ProviderSettings | None = None,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Reloads the latest settings (or the fallback when no file exists), sets the
+    # default provider/model, saves and returns the updated settings. Raises
+    # ProviderConfigError for unknown provider or model.
     """Reload settings, persist one default provider/model change, and return them."""
     settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
     updated = set_default_provider_model(settings, provider_name=provider_name, model=model)
@@ -554,6 +678,10 @@ def save_provider_thinking_level(
     paths: TauPaths | None = None,
     fallback_settings: ProviderSettings | None = None,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Reloads settings, remembers the thinking level for one provider/model,
+    # saves and returns them. Raises ProviderConfigError if the level is not
+    # available for that model.
     """Reload settings, persist one provider/model thinking preference, and return them."""
     settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
     updated = set_provider_thinking_level(
@@ -573,6 +701,10 @@ def toggle_saved_stable_scoped_model(
     paths: TauPaths | None = None,
     fallback_settings: ProviderSettings | None = None,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Reloads settings and toggles a provider/model pair in scoped models without
+    # validating that the model is configured (for trusted dynamic providers),
+    # then saves and returns them.
     """Toggle an already-authorized stable reference without saving a definition.
 
     Callers must restrict this path to trusted built-in dynamic providers.  The
@@ -598,6 +730,10 @@ def toggle_saved_scoped_model(
     paths: TauPaths | None = None,
     fallback_settings: ProviderSettings | None = None,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Reloads settings and toggles a scoped provider/model pair (added at the end
+    # or removed), saves and returns them. Raises ProviderConfigError if the
+    # provider is unknown or the model is not configured for it.
     """Reload settings, toggle one scoped model, persist them, and return them."""
     settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
     provider = settings.get_provider(provider_name)
@@ -622,6 +758,9 @@ def upsert_saved_provider(
     paths: TauPaths | None = None,
     fallback_settings: ProviderSettings | None = None,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Reloads settings, adds or replaces one provider (optionally making it the
+    # default), saves and returns the result.
     """Reload settings, upsert one provider entry, persist them, and return them."""
     settings = _load_provider_settings_for_write(paths, fallback_settings=fallback_settings)
     updated = upsert_provider(settings, provider, set_default=set_default)
@@ -634,6 +773,9 @@ def _load_provider_settings_for_write(
     *,
     fallback_settings: ProviderSettings | None = None,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # HELPER: loads the on-disk settings when the file exists; otherwise returns
+    # the fallback settings if given, else freshly loaded defaults.
     """Load the latest on-disk settings, falling back only when no file exists."""
     resolved_paths = paths or TauPaths()
     if provider_settings_path(resolved_paths).exists():
@@ -649,6 +791,9 @@ def set_default_provider_model(
     provider_name: str,
     model: str,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Pure: returns settings with the given provider as default and its default
+    # model changed. Raises ProviderConfigError for unknown provider/model.
     """Return settings with the default provider/model preference updated."""
     provider = settings.get_provider(provider_name)
     validate_provider_model(provider, model)
@@ -670,6 +815,10 @@ def set_provider_thinking_level(
     model: str,
     thinking_level: ThinkingLevel,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Pure: normalizes the level and verifies it is available for the provider and
+    # model, then returns settings with that model's remembered thinking default
+    # updated. Raises ProviderConfigError listing the available modes otherwise.
     """Return settings with a remembered thinking level for one provider/model."""
     provider = settings.get_provider(provider_name)
     validate_provider_model(provider, model)
@@ -701,6 +850,8 @@ def upsert_openai_compatible_provider(
     *,
     set_default: bool = False,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Pure alias of upsert_provider for OpenAI-compatible providers.
     """Return settings with an OpenAI-compatible provider added or replaced."""
     return upsert_provider(settings, provider, set_default=set_default)
 
@@ -711,6 +862,12 @@ def upsert_provider(
     *,
     set_default: bool = False,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Pure: adds or replaces a provider by name; when replacing a built-in
+    # provider the incoming config is merged with the existing one to keep local
+    # customizations. Providers are re-sorted by name; default changes when
+    # requested. Raises ProviderConfigError if the resulting default provider does
+    # not exist.
     """Return settings with a provider added or replaced."""
     providers_by_name = {item.name: item for item in settings.providers}
     builtin_names = {entry.name for entry in BUILTIN_PROVIDER_CATALOG}
@@ -733,6 +890,11 @@ def _with_builtin_catalog_models(
     *,
     paths: TauPaths | None = None,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # HELPER: merges each saved provider with the current effective catalog
+    # config of the same name (saved preferences win), appends catalog providers
+    # per the append rule, and repairs the default provider to the first provider
+    # (or "openai") if it disappeared. Side effects: reads catalog/credentials.
     """Return settings with the current provider catalog merged in."""
     catalog_configs = {config.name: config for config in _effective_provider_configs(paths)}
     providers = tuple(
@@ -757,6 +919,13 @@ def _migrate_legacy_provider_settings(
     *,
     paths: TauPaths,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # HELPER: migrates legacy full provider records: catalog-known providers take
+    # the catalog definition plus only the legacy preferences (default model kept
+    # only if still listed, thinking defaults kept only for valid models/levels);
+    # unknown providers are kept intact (to be saved as custom catalog entries).
+    # Appends catalog providers, repairs the default and drops scoped models whose
+    # provider or model no longer exists.
     """Move legacy full provider records onto catalog-owned definitions.
 
     Built-in and user-catalog provider capabilities come exclusively from the
@@ -801,6 +970,11 @@ def _migrate_legacy_provider_settings(
 
 
 def _save_migrated_provider_settings(settings: ProviderSettings, *, paths: TauPaths) -> None:
+    # [FUNCTION DOC]
+    # HELPER: backs up the existing settings file (failure raises), saves
+    # providers not present in the effective catalog as user catalog entries, then
+    # writes the migrated preferences without another backup. Side effects: file
+    # writes.
     """Persist one legacy migration after creating its required recovery backup."""
     path = provider_settings_path(paths)
     _backup_provider_settings(path, strict=True)
@@ -816,6 +990,9 @@ def _save_migrated_provider_settings(settings: ProviderSettings, *, paths: TauPa
 
 
 def _backup_provider_settings(path: Path, *, strict: bool) -> None:
+    # [FUNCTION DOC]
+    # HELPER: copies the settings file to "<name>.bak" if it exists; strict mode
+    # propagates copy errors, otherwise OS errors are ignored.
     """Copy existing settings to the recovery path, optionally requiring success."""
     if not path.exists():
         return
@@ -832,6 +1009,10 @@ def _write_provider_settings(
     path: Path,
     backup: bool,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: ensures the directory, optionally makes a best-effort backup, then
+    # atomically writes the settings JSON (indented, sorted keys, trailing
+    # newline).
     """Atomically write preferences, optionally retaining the previous file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if backup:
@@ -840,6 +1021,9 @@ def _write_provider_settings(
 
 
 def _effective_provider_configs(paths: TauPaths | None = None) -> tuple[ProviderConfig, ...]:
+    # [FUNCTION DOC]
+    # HELPER: converts every effective catalog entry into a provider config.
+    # Raises CatalogError/ProviderConfigError on invalid catalogs.
     """Return provider configs for the effective catalog (builtin + user overlay)."""
     return tuple(provider_config_from_entry(entry) for entry in effective_catalog(paths))
 
@@ -850,6 +1034,11 @@ def _append_catalog_providers(
     *,
     paths: TauPaths | None,
 ) -> tuple[ProviderConfig, ...]:
+    # [FUNCTION DOC]
+    # HELPER: appends catalog providers missing from the list: user-catalog
+    # (non-built-in) providers always, built-in providers only when they have
+    # usable credentials in the credential file or environment. Side effects:
+    # reads the credential store.
     """Append catalog providers: user-catalog ones always, builtins when credentialed."""
     credential_store = FileCredentialStore(credentials_path(paths) if paths else None)
     builtin_names = {entry.name for entry in BUILTIN_PROVIDER_CATALOG}
@@ -867,6 +1056,13 @@ def _append_catalog_providers(
 
 
 def _merge_provider_config(existing: ProviderConfig, incoming: ProviderConfig) -> ProviderConfig:
+    # [FUNCTION DOC]
+    # HELPER: merges an incoming (catalog/replacement) config with an existing
+    # one of the same type, keeping local customizations; different types return
+    # the incoming config. For Codex: incoming models, existing default if still
+    # listed, headers/context windows/metadata merged with existing winning,
+    # existing timeouts/retries, existing thinking group when it defines levels,
+    # existing thinking defaults. Other types delegate to type-specific merges.
     """Merge a replacement provider config without losing local customizations."""
     if type(existing) is not type(incoming):
         return incoming
@@ -930,6 +1126,12 @@ def _merge_openai_compatible_provider(
     existing: OpenAICompatibleProviderConfig,
     incoming: OpenAICompatibleProviderConfig,
 ) -> OpenAICompatibleProviderConfig:
+    # [FUNCTION DOC]
+    # HELPER: merge for OpenAI-compatible configs: models are incoming then
+    # existing (deduplicated), default kept if listed, headers/compat/context
+    # windows/metadata merged with existing winning, existing timeouts/retries,
+    # thinking group from existing when it defines levels, existing thinking
+    # defaults and inference provider routes.
     models = _unique_strings((*incoming.models, *existing.models))
     return replace(
         incoming,
@@ -976,6 +1178,9 @@ def _merge_anthropic_provider(
     existing: AnthropicProviderConfig,
     incoming: AnthropicProviderConfig,
 ) -> AnthropicProviderConfig:
+    # [FUNCTION DOC]
+    # HELPER: same merge rules as the OpenAI-compatible merge, for Anthropic
+    # configs (no inference routes).
     models = _unique_strings((*incoming.models, *existing.models))
     return replace(
         incoming,
@@ -1021,6 +1226,12 @@ def _merge_provider_model_metadata(
     incoming: dict[str, ProviderModelMetadata],
     existing: dict[str, ProviderModelMetadata],
 ) -> dict[str, ProviderModelMetadata]:
+    # [FUNCTION DOC]
+    # HELPER: merges per-model metadata: models only in existing are added; for
+    # shared models existing truthy scalars win, mappings are key-merged with
+    # existing winning, and non-empty existing inputs/tiers replace incoming.
+    # KNOWN ISSUE: truthiness checks mean an existing value of zero or empty
+    # cannot override the incoming value.
     merged = dict(incoming)
     for model, metadata in existing.items():
         if model not in merged:
@@ -1046,11 +1257,16 @@ def _merge_provider_model_metadata(
 
 
 def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
+    # [FUNCTION DOC]
+    # HELPER: removes duplicates preserving first-seen order.
     """Return values with duplicates removed while preserving order."""
     return tuple(dict.fromkeys(values))
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: writes text to a sibling temporary file and atomically replaces the
+    # target; removes the temp file and re-raises on failure.
     """Write text through a sibling temp file and atomically replace the target."""
     temp_path: Path | None = None
     try:
@@ -1074,6 +1290,10 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def _provider_preference_to_json(provider: ProviderConfig) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: serializes only runtime preferences of a provider: default model,
+    # headers, timeout, retries, retry delay, thinking defaults, and inference
+    # provider routes for OpenAI-compatible providers when non-empty.
     """Serialize only runtime preferences for one provider."""
     preference = {
         "default_model": provider.default_model,
@@ -1093,6 +1313,11 @@ def _save_provider_definitions_to_catalog(
     *,
     paths: TauPaths | None,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: for each provider not in the effective catalog, or whose definition
+    # differs from its catalog entry, upserts a catalog entry (keeping the
+    # existing display name/docs URL) into the user catalog. Side effect: may
+    # write catalog.toml.
     """Persist provider definitions that are not already represented by the catalog."""
     catalog_by_name = {entry.name: entry for entry in effective_catalog(paths)}
     entries_to_save = []
@@ -1108,6 +1333,12 @@ def _provider_definition_differs_from_catalog(
     provider: ProviderConfig,
     entry: ProviderCatalogEntry,
 ) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: returns true when kind, base URL, API key env, credential name,
+    # models, API (only when the entry declares one), context windows, headers,
+    # compat, model metadata or any thinking field differ from the catalog entry.
+    # Note: headers are runtime preferences too, so a header-only change also
+    # writes a catalog entry.
     """Return whether provider metadata changed enough to belong in catalog.toml."""
     if provider_kind(provider) != entry.kind:
         return True
@@ -1143,6 +1374,10 @@ def _catalog_entry_from_provider(
     *,
     existing: ProviderCatalogEntry | None = None,
 ) -> ProviderCatalogEntry:
+    # [FUNCTION DOC]
+    # HELPER: builds a catalog entry from a provider config, reusing the existing
+    # entry's display name, docs URL and default model (when still listed),
+    # otherwise using the provider name, base URL and its default model.
     """Create catalog metadata from a runtime provider config."""
     return ProviderCatalogEntry(
         name=provider.name,
@@ -1173,6 +1408,9 @@ def _catalog_entry_from_provider(
 def _catalog_model_metadata_from_provider(
     provider: ProviderConfig,
 ) -> dict[str, ModelCatalogMetadata]:
+    # [FUNCTION DOC]
+    # HELPER: converts runtime model metadata to catalog metadata, keeping only
+    # text/image input modalities and turning empty cost into none.
     metadata_by_model = getattr(provider, "model_metadata", {})
     return {
         model: ModelCatalogMetadata(
@@ -1198,6 +1436,13 @@ def provider_settings_from_json(
     *,
     paths: TauPaths | None = None,
 ) -> ProviderSettings:
+    # [FUNCTION DOC]
+    # Parses settings JSON. Accepts schema_version missing or 2 (otherwise raises).
+    # Requires a string default provider. The current shape applies
+    # provider_preferences onto effective catalog configs; the legacy shape
+    # requires a non-empty providers list of full definitions with unique names.
+    # Scoped models are parsed and deduplicated. Raises ProviderConfigError for
+    # any invalid field. Side effect: reads the effective catalog.
     """Parse provider preferences from JSON-compatible data.
 
     The current providers.json shape stores runtime preferences under
@@ -1244,6 +1489,11 @@ def _providers_with_preferences(
     *,
     paths: TauPaths | None,
 ) -> tuple[ProviderConfig, ...]:
+    # [FUNCTION DOC]
+    # HELPER: requires an object; for each non-empty, unique provider name present
+    # in the effective catalog applies its preferences to the catalog config.
+    # Orphaned preferences (provider no longer in the catalog) are skipped.
+    # Raises ProviderConfigError for bad or duplicate names (after stripping).
     if not isinstance(value, dict):
         raise ProviderConfigError("Provider settings field must be an object: provider_preferences")
     catalog_configs = {provider.name: provider for provider in _effective_provider_configs(paths)}
@@ -1275,6 +1525,13 @@ def _apply_provider_preference(
     provider: ProviderConfig,
     value: object,
 ) -> ProviderConfig:
+    # [FUNCTION DOC]
+    # HELPER: overlays a preference object onto a provider config, validating
+    # each recognized key (default model reverts to the provider default if not
+    # listed; headers; positive timeout; non-negative retries and delay; thinking
+    # defaults with unknown models and unavailable levels dropped; inference
+    # provider routes for OpenAI-compatible providers). Unknown keys are ignored
+    # for forward compatibility. Raises ProviderConfigError for invalid values.
     if not isinstance(value, dict):
         raise ProviderConfigError("Provider preference entries must be objects")
     # Provider preferences are user-level state shared across Tau versions.
@@ -1363,6 +1620,9 @@ def _inference_providers_dict(
     provider: OpenAICompatibleProviderConfig,
     field_name: str,
 ) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: parses a string mapping of model to route, keeps only configured
+    # models with stripped routes and validates them.
     routes = _string_dict(value, field_name)
     routes = {model: route.strip() for model, route in routes.items() if model in provider.models}
     _validate_inference_providers(provider.name, provider.models, routes)
@@ -1377,6 +1637,10 @@ def _thinking_defaults_dict(
     ignore_unknown_models: bool = False,
     ignore_unavailable: bool = False,
 ) -> dict[str, ThinkingLevel]:
+    # [FUNCTION DOC]
+    # HELPER: parses a mapping of model to thinking level; optionally drops
+    # unknown models and unavailable levels, otherwise raises ProviderConfigError
+    # for an unknown model or a level not available for that model.
     raw = _raw_thinking_defaults_dict(value, field_name)
     if ignore_unknown_models:
         raw = {model: level for model, level in raw.items() if model in provider.models}
@@ -1397,6 +1661,9 @@ def _thinking_defaults_dict(
 
 
 def _raw_thinking_defaults_dict(value: object, field_name: str) -> dict[str, ThinkingLevel]:
+    # [FUNCTION DOC]
+    # HELPER: requires an object whose keys are strings and values valid thinking
+    # level names; raises ProviderConfigError otherwise.
     if not isinstance(value, dict):
         raise ProviderConfigError(f"Provider field must be a thinking mode object: {field_name}")
     defaults: dict[str, ThinkingLevel] = {}
@@ -1410,6 +1677,9 @@ def _raw_thinking_defaults_dict(value: object, field_name: str) -> dict[str, Thi
 
 
 def _scoped_models_from_json(value: object) -> tuple[ScopedModelConfig, ...]:
+    # [FUNCTION DOC]
+    # HELPER: parses an optional list of provider/model objects into scoped model
+    # configs, removing duplicates. Raises ProviderConfigError for wrong types.
     if value is None:
         return ()
     if not isinstance(value, list):
@@ -1434,6 +1704,11 @@ def resolve_provider_selection(
     provider_name: str | None = None,
     model: str | None = None,
 ) -> ProviderSelection:
+    # [FUNCTION DOC]
+    # Resolves the provider (given name or default) and model (given or the
+    # provider's default) for a run and validates that the model is configured.
+    # Raises ProviderConfigError for unknown providers, no default model or an
+    # unconfigured model.
     """Resolve the provider and model for a run."""
     provider = settings.get_provider(provider_name)
     selected_model = model or provider.default_model
@@ -1444,6 +1719,9 @@ def resolve_provider_selection(
 
 
 def validate_provider_model(provider: ProviderConfig, model: str) -> None:
+    # [FUNCTION DOC]
+    # Returns silently when the model is in the provider's models; otherwise
+    # raises ProviderConfigError listing the available models sorted.
     """Raise when ``model`` is not declared by ``provider``."""
     if model in provider.models:
         return
@@ -1459,6 +1737,14 @@ def provider_thinking_levels(
     *,
     model: str | None = None,
 ) -> tuple[ThinkingLevel, ...]:
+    # [FUNCTION DOC]
+    # Returns the thinking levels (in canonical order) supported by a provider and
+    # model (default model when none). Rules: metadata marking the model as
+    # non-reasoning gives none; without provider-declared levels, only models
+    # whose metadata says reasoning get levels derived from their level map
+    # (xhigh and max only if explicitly mapped); with declared levels, models
+    # outside a non-empty thinking models list get none, otherwise a level is
+    # offered if declared or mapped in metadata, and supported by the metadata.
     """Return thinking levels supported by a provider/model pair."""
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
@@ -1487,6 +1773,11 @@ def provider_thinking_unavailable_reason(
     *,
     model: str | None = None,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # Explains why no thinking modes are configurable: non-reasoning model,
+    # Codex lacking a validated effort mapping, provider declaring no levels, or
+    # model not in thinking models. Returns none when modes are available by
+    # declaration or reasoning metadata.
     """Explain why a provider/model pair has no configurable thinking modes."""
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
@@ -1510,6 +1801,8 @@ def provider_thinking_unavailable_reason(
 def _levels_from_thinking_map(
     thinking_level_map: dict[ThinkingLevel, str | None],
 ) -> tuple[ThinkingLevel, ...]:
+    # [FUNCTION DOC]
+    # HELPER: canonical-ordered levels the level map supports.
     return tuple(
         level
         for level in THINKING_LEVELS
@@ -1521,6 +1814,9 @@ def _metadata_supports_thinking_level(
     metadata: ProviderModelMetadata,
     level: ThinkingLevel,
 ) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true when metadata has neither a reasoning flag nor a level map
+    # (unknown, assume supported), else defers to the level map rule.
     if metadata.reasoning is None and not metadata.thinking_level_map:
         return True
     return _thinking_level_map_supports(metadata.thinking_level_map, level)
@@ -1530,16 +1826,24 @@ def _thinking_level_map_supports(
     thinking_level_map: dict[ThinkingLevel, str | None],
     level: ThinkingLevel,
 ) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: a mapped level is supported when its value is not none; an
+    # unmapped level is supported unless it is xhigh or max.
     if level in thinking_level_map:
         return thinking_level_map[level] is not None
     return level not in {"xhigh", "max"}
 
 
 def _metadata_for_model(provider: ProviderConfig, model: str) -> ProviderModelMetadata | None:
+    # [FUNCTION DOC]
+    # HELPER: returns a model's metadata from the provider, or none.
     return getattr(provider, "model_metadata", {}).get(model)
 
 
 def _provider_api(provider: ProviderConfig, model: str | None = None) -> ProviderApi | str:
+    # [FUNCTION DOC]
+    # HELPER: effective API for a model: metadata override, else the Codex
+    # responses API for Codex configs, else the provider API.
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
     if metadata is not None and metadata.api is not None:
@@ -1550,18 +1854,25 @@ def _provider_api(provider: ProviderConfig, model: str | None = None) -> Provide
 
 
 def _model_base_url(provider: ProviderConfig, model: str | None = None) -> str:
+    # [FUNCTION DOC]
+    # HELPER: model metadata base URL override, else the provider base URL.
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
     return metadata.base_url if metadata is not None and metadata.base_url else provider.base_url
 
 
 def _model_headers(provider: ProviderConfig, model: str | None = None) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: provider headers overlaid by model metadata headers.
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
     return {**provider.headers, **(metadata.headers if metadata is not None else {})}
 
 
 def _model_compat(provider: ProviderConfig, model: str | None = None) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: compat options layered as detected defaults, then provider compat,
+    # then model metadata compat (later wins).
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
     return {
@@ -1572,6 +1883,13 @@ def _model_compat(provider: ProviderConfig, model: str | None = None) -> dict[st
 
 
 def _detected_compat(provider: ProviderConfig, model: str) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: infers OpenAI-compatible behavior flags from the provider name and
+    # base URL host (Together, Z.ai, Moonshot, xAI, DeepSeek, Cerebras,
+    # OpenRouter, OpenAI, Anthropic): store support, reasoning-effort support,
+    # streaming usage, max tokens field name, thinking request format,
+    # developer-role and strict-mode support, reasoning content field, and related
+    # flags. Output: a compat mapping.
     base_url = _model_base_url(provider, model)
     is_together = provider.name == "together" or "api.together.ai" in base_url
     is_zai = provider.name == "zai" or "api.z.ai" in base_url
@@ -1621,6 +1939,9 @@ def _detected_compat(provider: ProviderConfig, model: str) -> dict[str, Any]:
 
 
 def provider_model_max_tokens(provider: ProviderConfig, model: str | None = None) -> int | None:
+    # [FUNCTION DOC]
+    # Returns the model's catalog max output tokens, or none when unset or no
+    # metadata.
     """Return the catalog output token limit for a model, or None when it is unset."""
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
@@ -1628,6 +1949,8 @@ def provider_model_max_tokens(provider: ProviderConfig, model: str | None = None
 
 
 def provider_model_supports_images(provider: ProviderConfig, model: str | None = None) -> bool:
+    # [FUNCTION DOC]
+    # Returns true only when the model's metadata lists image input.
     selected_model = model or provider.default_model
     metadata = _metadata_for_model(provider, selected_model)
     return metadata is not None and "image" in metadata.input
@@ -1638,6 +1961,10 @@ def provider_default_thinking_level(
     *,
     model: str | None = None,
 ) -> ThinkingLevel | None:
+    # [FUNCTION DOC]
+    # Returns the preferred level for a provider/model: none when no levels; the
+    # provider's thinking default if available; else the global default level if
+    # available; else the first available level.
     """Return the preferred thinking level for a provider/model pair."""
     levels = provider_thinking_levels(provider, model=model)
     if not levels:
@@ -1656,6 +1983,12 @@ def resolve_startup_thinking_level(
     preferred: ThinkingLevel = DEFAULT_THINKING_LEVEL,
     cli_override: ThinkingLevel | None = None,
 ) -> ThinkingLevel | None:
+    # [FUNCTION DOC]
+    # Picks the startup thinking level. A CLI override is strict: raises
+    # ProviderConfigError when the model has no levels or does not support it,
+    # else is returned. Otherwise returns none when no levels exist, then the
+    # remembered per-model level, the preferred (global) level, the provider
+    # default, or the first available level, in that order.
     """Pick a valid startup thinking level for a provider/model pair.
 
     Startup (TUI and print mode) must never crash just because the remembered
@@ -1699,6 +2032,16 @@ def openai_compatible_config_from_provider(
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> OpenAICompatibleConfig:
+    # [FUNCTION DOC]
+    # Builds the tau_ai OpenAI-compatible runtime config for a model: API key from
+    # credentials or environment, model base URL (the default openai provider
+    # using OPENAI_API_KEY honors the OPENAI_BASE_URL environment override),
+    # trailing slash removed, effective API, merged headers, timeouts/retries,
+    # image support, mapped reasoning effort and parameter name, thinking format,
+    # layered compat, the x-inference-provider response header for huggingface,
+    # and whether to send an explicit "none" effort for off.
+    # Raises RuntimeError when no API key is found and ProviderConfigError for an
+    # unavailable thinking level. Side effect: reads environment and credentials.
     """Build OpenAI-compatible runtime config from durable settings."""
     api_key = _api_key_from_provider(provider, credential_reader=credential_reader)
     selected_model = model or provider.default_model
@@ -1743,6 +2086,13 @@ def anthropic_config_from_provider(
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> AnthropicConfig:
+    # [FUNCTION DOC]
+    # Builds the tau_ai Anthropic runtime config: API key, base URL normalized to
+    # end with /v1, cache retention and tool cache-control (API-key intent, i.e.
+    # short retention), headers, timeouts/retries, max tokens, image support,
+    # thinking budget (budget mode only), thinking effort and thinking mode.
+    # Raises RuntimeError for missing keys and ProviderConfigError for an
+    # unavailable thinking level.
     """Build Anthropic runtime config from durable settings."""
     api_key = _api_key_from_provider(provider, credential_reader=credential_reader)
     selected_model = model or provider.default_model
@@ -1778,6 +2128,10 @@ def anthropic_config_from_provider(
 
 
 def provider_kind(provider: ProviderConfig) -> ProviderKind:
+    # [FUNCTION DOC]
+    # Returns the durable kind of a config: anthropic, openai-codex,
+    # google-generative-ai or mistral-conversations (by API of OpenAI-compatible
+    # configs), else openai-compatible.
     """Return the durable provider kind."""
     if isinstance(provider, AnthropicProviderConfig):
         return "anthropic"
@@ -1796,6 +2150,11 @@ def provider_has_usable_credentials(
     *,
     credential_reader: CredentialReader | None = None,
 ) -> bool:
+    # [FUNCTION DOC]
+    # Returns true when calls can be attempted without setup: a stored OAuth
+    # credential exists for a provider with a registered OAuth implementation, a
+    # stored API key credential exists, or the API key environment variable is
+    # non-empty. Side effect: reads credentials and environment.
     """Return whether Tau can attempt calls for this provider without prompting setup."""
     if provider.credential_name and credential_reader is not None:
         get_oauth = getattr(credential_reader, "get_oauth", None)
@@ -1816,6 +2175,12 @@ def _reasoning_effort_from_provider(
     model: str | None,
     thinking_level: ThinkingLevel | None,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: maps a thinking level to the provider's reasoning effort value when
+    # the thinking parameter is reasoning_effort or reasoning.effort and the
+    # model has levels: metadata map value first, huggingface maps minimal to
+    # low, else the generic effort mapping. Returns none when not applicable.
+    # Raises ProviderConfigError for an unavailable level.
     if thinking_level is None or provider.thinking_parameter not in {
         "reasoning_effort",
         "reasoning.effort",
@@ -1850,6 +2215,11 @@ def _anthropic_thinking_budget_from_provider(
     model: str | None,
     thinking_level: ThinkingLevel | None,
 ) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: returns a token budget for the level when the provider uses the
+    # anthropic.thinking parameter, the model is in budget (not adaptive) mode
+    # and has levels; none otherwise. Raises ProviderConfigError for an
+    # unavailable level.
     if thinking_level is None or provider.thinking_parameter != "anthropic.thinking":
         return None
 
@@ -1876,6 +2246,8 @@ def _metadata_thinking_value(
     model: str,
     level: ThinkingLevel,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: the model metadata's provider string for a level, or none.
     metadata = _metadata_for_model(provider, model)
     if metadata is None:
         return None
@@ -1884,6 +2256,10 @@ def _metadata_thinking_value(
 
 
 def _thinking_format(provider: ProviderConfig, model: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: thinking request format from compat thinkingFormat if set, else
+    # detected from provider name or base URL (deepseek, zai, together,
+    # openrouter), else openai.
     compat = _model_compat(provider, model)
     value = compat.get("thinkingFormat")
     if isinstance(value, str) and value:
@@ -1906,6 +2282,9 @@ def _include_reasoning_effort_none(
     model: str,
     thinking_level: ThinkingLevel | None,
 ) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true only when the level normalizes to off and the model metadata
+    # maps off to "none"; invalid levels give false.
     if thinking_level is None:
         return False
     try:
@@ -1923,6 +2302,11 @@ def _reasoning_effort_from_anthropic_provider(
     model: str,
     thinking_level: ThinkingLevel | None,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: effort string for Anthropic: none when no level or off, else the
+    # metadata-mapped value or the normalized level name.
+    # KNOWN ISSUE: unlike the budget path, the level is not checked against the
+    # model's available levels.
     if thinking_level is None:
         return None
     selected_model = model
@@ -1939,6 +2323,9 @@ def _anthropic_thinking_mode(
     *,
     thinking_level: ThinkingLevel | None = None,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: "adaptive" when compat forces adaptive thinking (or "disabled" when
+    # the level is off), otherwise "budget".
     compat = _model_compat(provider, model)
     if compat.get("forceAdaptiveThinking") is True:
         if thinking_level is not None and normalize_thinking_level(thinking_level) == "off":
@@ -1948,6 +2335,8 @@ def _anthropic_thinking_mode(
 
 
 def _normalize_anthropic_base_url(base_url: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: strips trailing slashes and appends /v1 unless already present.
     normalized = base_url.rstrip("/")
     if normalized.endswith("/v1"):
         return normalized
@@ -1960,6 +2349,12 @@ def anthropic_cache_settings(
     *,
     oauth: bool = False,
 ) -> tuple[CacheRetention, bool]:
+    # [FUNCTION DOC]
+    # Resolves prompt-cache retention and tool cache-control for an
+    # Anthropic-protocol request: no caching when compat says cache control is
+    # unsupported; otherwise long retention for OAuth or short for API keys,
+    # downgraded to short when long retention is unsupported; tool cache control
+    # enabled unless compat disables it. Output: retention and a flag.
     """Resolve prompt-cache settings for one Anthropic-protocol request.
 
     Capability comes from compat, which layers a detected default under the
@@ -1978,6 +2373,14 @@ def anthropic_cache_settings(
 
 
 def _provider_from_json(data: object) -> ProviderConfig:
+    # [FUNCTION DOC]
+    # HELPER: parses one legacy full provider record: validates type (OpenAI
+    # compatible, anthropic, openai-codex, google-generative-ai,
+    # mistral-conversations), name, base URL (trailing slash removed), API, key
+    # env, credential name, models, default model (appended to models if
+    # missing), context windows, headers, compat, metadata, numbers with defaults,
+    # thinking settings and defaults, and builds the matching config. Codex
+    # records reject legacy compat. Raises ProviderConfigError on invalid data.
     if not isinstance(data, dict):
         raise ProviderConfigError("Provider entries must be JSON objects")
     provider_type = _string(data.get("type"), "providers[].type")
@@ -2111,6 +2514,13 @@ def _api_key_from_provider(
     *,
     credential_reader: CredentialReader | None,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: returns the API key: stored credential by credential name, else an
+    # OAuth access token when the provider has a registered OAuth implementation,
+    # else the API key environment variable. Raises RuntimeError naming the env
+    # var (and a /login hint) when none is found.
+    # KNOWN ISSUE: a stored OAuth access token is returned without checking
+    # expiry; callers must refresh it beforehand.
     if provider.credential_name and credential_reader is not None:
         credential = credential_reader.get(provider.credential_name)
         if credential:
@@ -2136,6 +2546,11 @@ def _validate_provider_numbers(
     max_retries: int,
     max_retry_delay_seconds: float,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires timeout greater than 0 (not boolean), integer retries of 0
+    # or more, and numeric retry delay of 0 or more; raises ProviderConfigError.
+    # KNOWN ISSUE: timeout is not type-checked as numeric, so a non-number raises
+    # TypeError rather than ProviderConfigError.
     if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
         raise ProviderConfigError("Provider timeout_seconds must be greater than 0")
     if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 0:
@@ -2149,6 +2564,9 @@ def _validate_provider_numbers(
 
 
 def _validate_context_windows(context_windows: dict[str, int]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires non-empty string keys and positive integer (non-boolean)
+    # values; raises ProviderConfigError.
     for model, context_window in context_windows.items():
         if not isinstance(model, str) or not model.strip():
             raise ProviderConfigError("Provider context_windows keys must be non-empty strings")
@@ -2164,6 +2582,13 @@ def _validate_model_metadata(
     models: tuple[str, ...],
     model_metadata: dict[str, ProviderModelMetadata],
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires every metadata key to be a configured model, positive
+    # context window and max tokens, inputs only text/image, non-negative costs,
+    # valid cost tiers, JSON compat, non-empty string headers, valid level names
+    # and non-blank string or null level values. Raises ProviderConfigError.
+    # KNOWN ISSUE: an invalid thinking level name raises the raw ValueError from
+    # normalization instead of ProviderConfigError.
     model_names = set(models)
     for model, metadata in model_metadata.items():
         if model not in model_names:
@@ -2188,6 +2613,9 @@ def _validate_model_metadata(
 
 
 def _validate_runtime_cost_tiers(tiers: tuple[ModelCostTier, ...]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires the final tier to omit max_input_tokens, non-negative tier
+    # rates and strictly increasing limits; raises ProviderConfigError.
     if tiers and tiers[-1].max_input_tokens is not None:
         raise ProviderConfigError(
             "Provider model_metadata final cost tier must omit max_input_tokens"
@@ -2208,6 +2636,9 @@ def _validate_runtime_cost_tiers(tiers: tuple[ModelCostTier, ...]) -> None:
 
 
 def _validate_string_dict(value: dict[str, str], field_name: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires non-empty string keys and values; raises
+    # ProviderConfigError with the field name.
     for key, item in value.items():
         if not isinstance(key, str) or not key.strip():
             raise ProviderConfigError(f"{field_name} keys must be non-empty strings")
@@ -2216,6 +2647,9 @@ def _validate_string_dict(value: dict[str, str], field_name: str) -> None:
 
 
 def _validate_json_object(value: dict[str, Any], field_name: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires non-empty string keys and JSON-compatible values; raises
+    # ProviderConfigError.
     for key, item in value.items():
         if not isinstance(key, str) or not key.strip():
             raise ProviderConfigError(f"{field_name} keys must be non-empty strings")
@@ -2223,6 +2657,9 @@ def _validate_json_object(value: dict[str, Any], field_name: str) -> None:
 
 
 def _validate_json_value(value: object, field_name: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: recursively accepts null, strings, numbers, booleans, lists and
+    # string-keyed mappings; raises ProviderConfigError otherwise.
     if value is None or isinstance(value, str | int | float | bool):
         return
     if isinstance(value, list):
@@ -2239,6 +2676,8 @@ def _validate_json_value(value: object, field_name: str) -> None:
 
 
 def _reject_codex_legacy_compat(compat: dict[str, Any]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: raises ProviderConfigError when a legacy Codex record has compat.
     if compat:
         raise ProviderConfigError("OpenAI Codex legacy provider compat is not supported")
 
@@ -2247,6 +2686,11 @@ _HF_INFERENCE_PROVIDER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def validate_huggingface_inference_provider(value: str) -> str:
+    # [FUNCTION DOC]
+    # Strips and validates an explicit Hugging Face inference provider suffix:
+    # must start alphanumeric and contain only letters, digits, dot, underscore
+    # or dash, and must not be a routing policy (fastest, cheapest, preferred).
+    # Output: the normalized value. Raises ProviderConfigError.
     """Return a normalized explicit Hugging Face provider suffix."""
     normalized = value.strip()
     if not _HF_INFERENCE_PROVIDER_PATTERN.fullmatch(normalized):
@@ -2265,6 +2709,10 @@ def _validate_inference_providers(
     models: tuple[str, ...],
     inference_providers: dict[str, str],
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: inference routes are allowed only for the huggingface provider;
+    # each must reference a configured model and be a valid explicit route.
+    # Raises ProviderConfigError.
     if inference_providers and provider_name != "huggingface":
         raise ProviderConfigError(
             "inference_providers preferences are only supported for the huggingface provider"
@@ -2278,6 +2726,9 @@ def _validate_inference_providers(
 
 
 def _validate_thinking_defaults(thinking_defaults: dict[str, ThinkingLevel]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires non-empty model keys and valid thinking level names;
+    # raises ProviderConfigError.
     for model, thinking_level in thinking_defaults.items():
         if not isinstance(model, str) or not model.strip():
             raise ProviderConfigError("Provider thinking_defaults keys must be non-empty strings")
@@ -2294,6 +2745,12 @@ def _validate_thinking_config(
     thinking_default: ThinkingLevel | None,
     thinking_parameter: ThinkingParameter | None,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: when levels are unset, other thinking fields must be unset too;
+    # otherwise levels must already be normalized, thinking models non-empty
+    # strings, the default among the levels and the parameter one of
+    # reasoning_effort, reasoning.effort or anthropic.thinking. Raises
+    # ProviderConfigError.
     if thinking_levels is None:
         if thinking_models or thinking_default is not None or thinking_parameter is not None:
             raise ProviderConfigError(
@@ -2327,11 +2784,17 @@ def _reject_unimplemented_thinking_config(
     provider_type: str,
     thinking_levels: tuple[ThinkingLevel, ...] | None,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: raises ProviderConfigError when thinking levels are set for a
+    # provider type without thinking support. Currently unused in this module.
     if thinking_levels is not None:
         raise ProviderConfigError(f"{provider_type} thinking controls are not implemented yet")
 
 
 def _optional_provider_api(value: object, field_name: str) -> ProviderApi | None:
+    # [FUNCTION DOC]
+    # HELPER: returns none or a supported API name; raises ProviderConfigError
+    # for anything else.
     if value is None:
         return None
     if value in {
@@ -2347,6 +2810,9 @@ def _optional_provider_api(value: object, field_name: str) -> ProviderApi | None
 
 
 def _optional_string(value: object, field_name: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: returns none or the stripped non-empty string; raises
+    # ProviderConfigError otherwise.
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
@@ -2355,12 +2821,18 @@ def _optional_string(value: object, field_name: str) -> str | None:
 
 
 def _string(value: object, field_name: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: returns the stripped non-empty string or raises
+    # ProviderConfigError naming the field.
     if not isinstance(value, str) or not value.strip():
         raise ProviderConfigError(f"Provider field must be a non-empty string: {field_name}")
     return value.strip()
 
 
 def _string_tuple(value: object, field_name: str) -> tuple[str, ...]:
+    # [FUNCTION DOC]
+    # HELPER: requires a non-empty list of non-blank strings; returns them
+    # stripped. Raises ProviderConfigError.
     if not isinstance(value, list) or not value:
         raise ProviderConfigError(f"Provider field must be a non-empty string list: {field_name}")
     items = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
@@ -2370,6 +2842,9 @@ def _string_tuple(value: object, field_name: str) -> tuple[str, ...]:
 
 
 def _optional_string_tuple(value: object, field_name: str) -> tuple[str, ...]:
+    # [FUNCTION DOC]
+    # HELPER: none gives an empty tuple; otherwise requires a list of non-blank
+    # strings and returns them stripped. Raises ProviderConfigError.
     if value is None:
         return ()
     if not isinstance(value, list):
@@ -2384,6 +2859,9 @@ def _optional_thinking_levels(
     value: object,
     field_name: str,
 ) -> tuple[ThinkingLevel, ...] | None:
+    # [FUNCTION DOC]
+    # HELPER: none or a normalized tuple of levels from a list; raises
+    # ProviderConfigError for non-lists or invalid levels.
     if value is None:
         return None
     if not isinstance(value, list):
@@ -2395,6 +2873,9 @@ def _optional_thinking_levels(
 
 
 def _optional_thinking_level(value: object, field_name: str) -> ThinkingLevel | None:
+    # [FUNCTION DOC]
+    # HELPER: none or a normalized level from a string; raises
+    # ProviderConfigError otherwise.
     if value is None:
         return None
     if not isinstance(value, str):
@@ -2409,6 +2890,9 @@ def _optional_thinking_parameter(
     value: object,
     field_name: str,
 ) -> ThinkingParameter | None:
+    # [FUNCTION DOC]
+    # HELPER: none or one of the three supported thinking parameter names;
+    # raises ProviderConfigError otherwise.
     if value is None:
         return None
     if value == "reasoning_effort":
@@ -2424,6 +2908,9 @@ def _optional_thinking_parameter(
 
 
 def _string_dict(value: object, field_name: str) -> dict[str, str]:
+    # [FUNCTION DOC]
+    # HELPER: parses a mapping of non-blank strings to non-blank strings,
+    # stripping keys and values; raises ProviderConfigError.
     if not isinstance(value, dict):
         raise ProviderConfigError(f"Provider field must be a string object: {field_name}")
     items: dict[str, str] = {}
@@ -2437,6 +2924,9 @@ def _string_dict(value: object, field_name: str) -> dict[str, str]:
 
 
 def _json_dict(value: object, field_name: str) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: parses a mapping with non-blank string keys (stripped) and
+    # JSON-compatible values; raises ProviderConfigError.
     if not isinstance(value, dict):
         raise ProviderConfigError(f"Provider field must be an object: {field_name}")
     items: dict[str, Any] = {}
@@ -2453,6 +2943,11 @@ def _model_metadata_dict(
     models: tuple[str, ...],
     field_name: str,
 ) -> dict[str, ProviderModelMetadata]:
+    # [FUNCTION DOC]
+    # HELPER: parses legacy model metadata objects keyed by configured model,
+    # validating each field (name, API, base URL, reasoning, input, cost, cost
+    # tiers, context window, max tokens, headers, compat, level map). Output: a
+    # mapping of model to metadata. Raises ProviderConfigError.
     if not isinstance(value, dict):
         raise ProviderConfigError(f"Provider field must be an object: {field_name}")
     model_names = set(models)
@@ -2490,6 +2985,11 @@ def _model_metadata_dict(
 
 
 def _cost_tiers(value: object, field_name: str) -> tuple[ModelCostTier, ...]:
+    # [FUNCTION DOC]
+    # HELPER: parses a list of cost tier objects with only known fields;
+    # input/output/cacheRead/cacheWrite are required non-negative numbers,
+    # cacheWrite1h optional, max_input_tokens optional positive. Validates tier
+    # ordering. Raises ProviderConfigError.
     if not isinstance(value, list):
         raise ProviderConfigError(f"Provider field must be an array: {field_name}")
     tiers: list[ModelCostTier] = []
@@ -2532,6 +3032,9 @@ def _thinking_level_map_dict(
     value: object,
     field_name: str,
 ) -> dict[ThinkingLevel, str | None]:
+    # [FUNCTION DOC]
+    # HELPER: parses a mapping of level name to non-blank string (stripped) or
+    # null; raises ProviderConfigError.
     if not isinstance(value, dict):
         raise ProviderConfigError(f"Provider field must be an object: {field_name}")
     items: dict[ThinkingLevel, str | None] = {}
@@ -2548,6 +3051,9 @@ def _thinking_level_map_dict(
 
 
 def _float_dict(value: object, field_name: str) -> dict[str, float]:
+    # [FUNCTION DOC]
+    # HELPER: parses a mapping of non-blank keys (stripped) to non-negative
+    # numbers converted to floats; raises ProviderConfigError.
     if not isinstance(value, dict):
         raise ProviderConfigError(f"Provider field must be a number object: {field_name}")
     items: dict[str, float] = {}
@@ -2561,6 +3067,8 @@ def _float_dict(value: object, field_name: str) -> dict[str, float]:
 
 
 def _optional_bool(value: object, field_name: str) -> bool | None:
+    # [FUNCTION DOC]
+    # HELPER: none or a boolean; raises ProviderConfigError otherwise.
     if value is None:
         return None
     if not isinstance(value, bool):
@@ -2569,6 +3077,8 @@ def _optional_bool(value: object, field_name: str) -> bool | None:
 
 
 def _optional_positive_int(value: object, field_name: str) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: none or a positive non-boolean integer; raises ProviderConfigError.
     if value is None:
         return None
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -2577,6 +3087,9 @@ def _optional_positive_int(value: object, field_name: str) -> int | None:
 
 
 def _context_window_dict(value: object, field_name: str) -> dict[str, int]:
+    # [FUNCTION DOC]
+    # HELPER: parses a mapping of non-blank keys (stripped) to positive integers;
+    # raises ProviderConfigError.
     if not isinstance(value, dict):
         raise ProviderConfigError(f"Provider field must be an integer object: {field_name}")
     items: dict[str, int] = {}
@@ -2592,6 +3105,9 @@ def _context_window_dict(value: object, field_name: str) -> dict[str, int]:
 
 
 def _positive_float(value: object, field_name: str) -> float:
+    # [FUNCTION DOC]
+    # HELPER: numeric non-boolean value greater than 0 converted to float; raises
+    # ProviderConfigError.
     if not isinstance(value, int | float) or isinstance(value, bool):
         raise ProviderConfigError(f"Provider field must be a positive number: {field_name}")
     converted = float(value)
@@ -2601,6 +3117,8 @@ def _positive_float(value: object, field_name: str) -> float:
 
 
 def _non_negative_int(value: object, field_name: str) -> int:
+    # [FUNCTION DOC]
+    # HELPER: non-boolean integer of 0 or more; raises ProviderConfigError.
     if not isinstance(value, int) or isinstance(value, bool):
         raise ProviderConfigError(f"Provider field must be a non-negative integer: {field_name}")
     if value < 0:
@@ -2609,6 +3127,9 @@ def _non_negative_int(value: object, field_name: str) -> int:
 
 
 def _non_negative_float(value: object, field_name: str) -> float:
+    # [FUNCTION DOC]
+    # HELPER: numeric non-boolean value of 0 or more converted to float; raises
+    # ProviderConfigError.
     if not isinstance(value, int | float) or isinstance(value, bool):
         raise ProviderConfigError(f"Provider field must be a non-negative number: {field_name}")
     converted = float(value)
