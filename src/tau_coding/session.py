@@ -1,3 +1,19 @@
+# [MODULE DOC]
+# The coding-agent environment (Pi's AgentSession) for tau_coding. CodingSession
+# wraps the reusable AgentHarness (the in-memory agent brain) with everything that
+# makes it a coding session:
+# - durable, append-only session entries (JSONL storage) with a session tree,
+#   branching, labels, and replay into harness state on load;
+# - provider/model selection (built-in catalog providers and extension-registered
+#   dynamic providers), thinking levels, model-limit and catalog discovery;
+# - Tau resources: skills, prompt templates, project context files, custom/append
+#   system prompts, all gated by project trust;
+# - extensions (runtime, tools, commands, providers) including reload;
+# - context-window estimation, manual and automatic compaction, branch summaries;
+# - auto-retry of transient provider errors, steering/follow-up queues, terminal
+#   ("!" / "!!") commands, session naming, export, stats, and diagnostics logging.
+# It emits coding-session events (agent events plus Tau-specific events) for
+# frontends to render; it does not depend on any UI toolkit.
 """Persistent coding-session wrapper built on AgentHarness."""
 
 from __future__ import annotations
@@ -180,6 +196,12 @@ TREE_RUNNING_MESSAGE = "Tau is still working. Press Escape to interrupt before u
 async def _await_cleanup_completion[CleanupResult](
     task: asyncio.Task[CleanupResult],
 ) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: Await a cleanup task through a shield so caller cancellation is not
+    # forwarded into it. Repeated cancellations are absorbed until the task is done.
+    # Any exception from the task is swallowed (its owner inspects the result).
+    # Input: the cleanup task. Output: True if the caller was cancelled while waiting.
+    # Cancellation is reported, not re-raised; callers decide whether to propagate it.
     """Wait through caller cancellation without forwarding it into cleanup.
 
     Returns whether cancellation was observed. Repeated requests remain
@@ -200,6 +222,11 @@ async def _await_cleanup_completion[CleanupResult](
 
 
 async def _finish_adopted_runtime_close(runtime: ExtensionRuntime) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Close an outgoing extension runtime after a new one was published: run
+    # its async close in a named task, wait for it without propagating cancellation,
+    # and retrieve and discard its result or error so adoption never fails because of
+    # cleanup.
     """Finish outgoing cleanup after publication without failing adoption."""
     task = asyncio.create_task(
         runtime.aclose(),
@@ -213,6 +240,10 @@ async def _finish_adopted_runtime_close(runtime: ExtensionRuntime) -> None:
 
 
 async def _finish_aborted_session_close(session: CodingSession) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Close a coding session that was prepared but never published (e.g. a
+    # failed reload or switch): run its close in a task, wait without propagating
+    # cancellation, and discard any error so the original failure stays primary.
     """Discharge an unpublished session's resources without masking its abort."""
     task = asyncio.create_task(
         session.aclose(),
@@ -227,6 +258,8 @@ async def _finish_aborted_session_close(session: CodingSession) -> None:
 
 @dataclass(frozen=True, slots=True)
 class ModelChoice:
+    # [CLASS DOC]
+    # Immutable pair of provider name and model id that the user can select.
     """A selectable model and the provider that serves it."""
 
     provider_name: str
@@ -235,6 +268,9 @@ class ModelChoice:
 
 @dataclass(frozen=True, slots=True)
 class ModelSelectionResult:
+    # [CLASS DOC]
+    # Immutable result of a model selection: the chosen provider/model and whether the
+    # active selection actually changed.
     """Result of a candidate-first provider/model selection."""
 
     choice: ModelChoice
@@ -243,6 +279,10 @@ class ModelSelectionResult:
 
 @dataclass(frozen=True, slots=True)
 class TerminalCommandResult:
+    # [CLASS DOC]
+    # Immutable result of an input-bar shell command: command text, captured output,
+    # exit code (None if cancelled/unknown), success flag, and whether the output was
+    # added to the model context.
     """Result of an input-bar terminal command."""
 
     command: str
@@ -254,6 +294,10 @@ class TerminalCommandResult:
 
 @dataclass(frozen=True, slots=True)
 class SessionTreeChoice:
+    # [CLASS DOC]
+    # Immutable row for the session tree picker: entry id, display label, whether it is
+    # the active leaf, whether it represents a tool call, optional bookmark label and
+    # the label's timestamp.
     """One branchable entry in the active session tree."""
 
     entry_id: str
@@ -266,6 +310,9 @@ class SessionTreeChoice:
 
 @dataclass(frozen=True, slots=True)
 class SessionTreeBranchResult:
+    # [CLASS DOC]
+    # Immutable result of moving the active leaf: a status message and optional text to
+    # prefill into the input bar (e.g. the text of a user message branched from).
     """Result of moving the active session tree leaf."""
 
     message: str
@@ -274,6 +321,9 @@ class SessionTreeBranchResult:
 
 @dataclass(frozen=True, slots=True)
 class TerminalCommandRequest:
+    # [CLASS DOC]
+    # Immutable parsed shell command from the input bar: the command and whether its
+    # output should be added to context ("!" adds, "!!" does not).
     """Parsed input-bar terminal command request."""
 
     command: str
@@ -282,6 +332,11 @@ class TerminalCommandRequest:
 
 @dataclass(frozen=True, slots=True)
 class SessionResources:
+    # [CLASS DOC]
+    # Immutable bundle of Tau-owned resources loaded for a session: skills, prompt
+    # templates, context files, custom system prompt text and path, combined append
+    # system prompt text plus the individual append prompts and their paths, and
+    # resource diagnostics.
     """Tau-owned resources loaded around a coding session."""
 
     skills: tuple[Skill, ...]
@@ -297,6 +352,9 @@ class SessionResources:
 
 @dataclass(frozen=True, slots=True)
 class CompactionPlan:
+    # [CLASS DOC]
+    # Immutable plan for a compaction run: id of the first entry kept verbatim, number
+    # of entries being replaced, and the messages to summarize.
     """Prepared active-context entries for a compaction run."""
 
     first_kept_entry_id: str
@@ -306,6 +364,9 @@ class CompactionPlan:
 
 @dataclass(frozen=True, slots=True)
 class _GeneratedSummary:
+    # [CLASS DOC]
+    # HELPER: Immutable summary text plus the usage spent producing it and the
+    # provider/model (and upstream response provider) that produced it, for accounting.
     """Summary text paired with the provider usage spent producing it."""
 
     text: str
@@ -317,6 +378,9 @@ class _GeneratedSummary:
 
 @dataclass(frozen=True, slots=True)
 class ManualCompactionResult:
+    # [CLASS DOC]
+    # Immutable outcome of /compact: summary text, first kept entry id, estimated tokens
+    # before, estimated tokens after, and the number of entries replaced.
     """Structured result from one manual compaction."""
 
     summary: str
@@ -328,6 +392,9 @@ class ManualCompactionResult:
 
 @dataclass(frozen=True, slots=True)
 class _PendingMessageWrite:
+    # [CLASS DOC]
+    # HELPER: Immutable pairing of a message and the stable session entry created for
+    # it, kept so a failed persistence attempt can be retried with the same entry id.
     """Stable entry retained while a message persistence attempt is retried."""
 
     message: AgentMessage
@@ -336,6 +403,20 @@ class _PendingMessageWrite:
 
 @dataclass(frozen=True, slots=True)
 class CodingSessionConfig:
+    # [CLASS DOC]
+    # Immutable configuration for creating or loading a coding session: initial
+    # provider instance (may be None to build from settings), model id, session
+    # storage, cwd, base system prompt and custom/append prompt overrides, explicit
+    # context files, built-in tool override, resource paths, session id/manager,
+    # command registry, provider name plus Hugging Face inference provider and mode,
+    # requested provider/model from the CLI, provider name recorded in the session,
+    # provider settings, runtime model catalogs and runtime provider config, an
+    # optional dynamic provider, whether the session owns (must close) the initial
+    # provider, auto-compaction threshold and enable flag, thinking level and a one-shot
+    # override, whether to index the session on first persist, a shell command prefix,
+    # skills enable flag, tool allow-list, extension paths and enable flags, an
+    # optional prebuilt extension runtime, project trust coordinator and policy inputs,
+    # and whether authoritative writes are deferred until a prepared session is adopted.
     """Configuration for a persistent coding session."""
 
     provider: ModelProvider | None
@@ -415,6 +496,11 @@ class CodingSessionConfig:
 
 
 class CodingSession:
+    # [CLASS DOC]
+    # Tau's coding-agent environment wrapper around AgentHarness. Owns durable session
+    # entries, tools, resources, providers, extensions, compaction, and commands, and
+    # streams coding-session events to frontends. Instances are created via the async
+    # load class method, used for prompts/commands, and must be closed with aclose.
     """Tau's coding-agent environment wrapper.
 
     `AgentHarness` owns the in-memory agent brain. `CodingSession` owns the
@@ -444,6 +530,21 @@ class CodingSession:
         image_support: ImageSupportState | None = None,
         project_trust_resolution: ProjectTrustResolution | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Construct a session from already-prepared parts (normally called only by load).
+        # Inputs: the config; keyword replayed session state, the harness, last parent
+        # entry id for appends, loaded resources (skills, templates, context files, system
+        # prompt pieces and paths), resource diagnostics, command registry (defaults to the
+        # built-in registry), initial entries not yet written to storage, extension runtime
+        # (default empty runtime), image support state, and the project trust resolution.
+        # Initializes provider/inference-provider state (mode defaults to "fixed" when an
+        # inference provider is given, else "automatic"), provider settings (current and
+        # durable copies), runtime catalogs, resource paths bound to the cwd, compaction
+        # settings, preview state, thinking level from replayed state or the active model's
+        # default, caches, owned-provider list, diagnostic logger, credential store, model
+        # limit tracking, trust-commit flag, and message persistence bookkeeping, then
+        # subscribes the persistence listener to harness events.
+        # Side effects: subscribes to the harness; creates logger/store objects (no I/O).
         self._config = config
         self._state = state
         self._harness = harness
@@ -507,6 +608,36 @@ class CodingSession:
 
     @classmethod
     async def load(cls, config: CodingSessionConfig) -> CodingSession:
+        # [FUNCTION DOC]
+        # Create a ready-to-use session from storage (async class method).
+        # Steps:
+        # 1. Read all entries. If empty, synthesize staged initial entries (session info
+        #    with cwd, model change with initial model/provider, thinking level change);
+        #    otherwise detach entries whose parents are missing. Replay into state.
+        # 2. Build a fresh extension runtime bound to Tau paths (reusing injected
+        #    credentials, environment, built-in credentials/HTTP client from a previous
+        #    runtime if given) and load user/extra extensions (never project ones yet).
+        # 3. Resolve project trust (extensions may decide; not cached; persisted unless
+        #    writes are deferred), canonicalize cwd, gate resource paths by trust, load
+        #    resources, and add a trust diagnostic when protected inputs exist. If trusted
+        #    and project extensions are enabled, load project extensions.
+        # 4. Seed the Codex runtime catalog from the on-disk cache when available, then pick
+        #    the provider/model (CLI request, then replayed state, then session provider)
+        #    and build the provider if none was given or the Codex model must be
+        #    rediscovered (closing a replaced owned initial provider), updating staged
+        #    initial entries to the final selection.
+        # 5. Determine image support, compose tools (built-ins or override, plus extension
+        #    tools, then the allow-list), build the system prompt (unless an explicit system
+        #    was given), create the harness with replayed messages, carry over the UI bridge,
+        #    and construct the session; record provider ownership; persist the Codex catalog
+        #    if discovered.
+        # 6. Persist tool-history repairs, apply catalogs, thinking override and sync, refresh
+        #    runtime provider and model limits, bind extensions and attach their harness
+        #    listener, and mark session_start and trust commit as pending.
+        # Output: the session. Raises provider/config/trust/storage errors; on failure after
+        # construction the session is closed before re-raising.
+        # Side effects: storage reads/writes, network discovery, extension loading/imports,
+        # possible trust prompts.
         """Load a coding session from append-only storage."""
         entries = await config.storage.read_all()
         pending_initial_entries: tuple[SessionEntry, ...] = ()
@@ -819,11 +950,15 @@ class CodingSession:
 
     @property
     def cwd(self) -> Path:
+        # [FUNCTION DOC]
+        # Property: the canonical session working directory.
         """Return the session working directory."""
         return self._config.cwd
 
     @property
     def model(self) -> str:
+        # [FUNCTION DOC]
+        # Property: the active model id, or the previewed model while a preview is active.
         """Return the active model for this session."""
         if self._preview_model is not None:
             return self._preview_model.model
@@ -831,6 +966,8 @@ class CodingSession:
 
     @property
     def provider_name(self) -> str:
+        # [FUNCTION DOC]
+        # Property: the active provider name, or the previewed provider during a preview.
         """Return the active provider name."""
         if self._preview_model is not None:
             return self._preview_model.provider_name
@@ -838,21 +975,30 @@ class CodingSession:
 
     @property
     def provider(self) -> ModelProvider:
+        # [FUNCTION DOC]
+        # Property: the runtime model provider currently configured on the harness.
         """Return the currently active runtime provider."""
         return self._harness.config.provider
 
     @property
     def inference_provider(self) -> str | None:
+        # [FUNCTION DOC]
+        # Property: the pinned Hugging Face backing provider name, or None.
         """Return the pinned Hugging Face backing provider, if any."""
         return self._inference_provider
 
     @property
     def inference_provider_mode(self) -> InferenceProviderMode:
+        # [FUNCTION DOC]
+        # Property: "automatic" or "fixed" Hugging Face routing mode.
         """Return whether Hugging Face routing is automatic or explicitly fixed."""
         return self._inference_provider_mode
 
     @property
     def _active_dynamic_provider(self) -> DynamicProvider | None:
+        # [FUNCTION DOC]
+        # HELPER: Property: the effective dynamic provider definition registered for the
+        # active provider name, or None if the active provider is not dynamic.
         effective = self._provider_registry.effective(self.provider_name)
         if effective is None or not isinstance(effective.definition, DynamicProvider):
             return None
@@ -860,6 +1006,9 @@ class CodingSession:
 
     @property
     def _active_dynamic_model(self) -> ProviderModel | None:
+        # [FUNCTION DOC]
+        # HELPER: Property: the dynamic provider's model entry matching the active model id,
+        # or None.
         dynamic = self._active_dynamic_provider
         if dynamic is None:
             return None
@@ -867,6 +1016,10 @@ class CodingSession:
 
     @property
     def available_providers(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Property: provider names that can be used: configured providers with usable
+        # credentials, then dynamic providers that have models (or are the current
+        # provider), without duplicates. Falls back to just the current provider name.
         """Return provider names Tau can call with available credentials."""
         names: list[str] = []
         if self._provider_settings is not None:
@@ -881,6 +1034,10 @@ class CodingSession:
         return tuple(names) or (self._provider_name,)
 
     def provider_config(self, provider_name: str) -> ProviderConfig | None:
+        # [FUNCTION DOC]
+        # Return the configuration for a provider name from the provider settings (None if
+        # unknown); without settings, return the runtime provider config only for the active
+        # provider.
         """Return configured metadata for a provider available to this session."""
         if self._provider_settings is None:
             return self._runtime_provider_config if provider_name == self.provider_name else None
@@ -891,6 +1048,10 @@ class CodingSession:
 
     @property
     def available_models(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Property: model ids for the active provider: the dynamic provider's models; just
+        # the current model without settings or for an unknown provider; an empty tuple if
+        # the configured provider has no usable credentials; else its configured models.
         """Return model names for the active provider when it is usable."""
         dynamic = self._active_dynamic_provider
         if dynamic is not None:
@@ -907,6 +1068,10 @@ class CodingSession:
 
     @property
     def available_model_choices(self) -> tuple[ModelChoice, ...]:
+        # [FUNCTION DOC]
+        # Property: all selectable provider/model pairs: every dynamic provider's models
+        # first, then usable configured providers' models (skipping names shadowed by
+        # dynamic providers). Without settings and no choices, returns the current pair.
         """Return provider/model choices from the effective runtime view."""
         choices: list[ModelChoice] = []
         dynamic_ids: set[str] = set()
@@ -928,6 +1093,10 @@ class CodingSession:
 
     @property
     def scoped_model_choices(self) -> tuple[ModelChoice, ...]:
+        # [FUNCTION DOC]
+        # Property: the user's saved scoped models (from settings) that are currently
+        # available, plus references to trusted built-in providers with stable scoped
+        # references even if not currently available. Empty without settings.
         """Return scoped references, including inert trusted built-in references."""
         if self._provider_settings is None:
             return ()
@@ -941,6 +1110,9 @@ class CodingSession:
 
     @property
     def has_stale_active_model(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: True when the committed provider/model pair is no longer among the
+        # available choices.
         """Whether the committed runtime model disappeared from the picker snapshot."""
         return ModelChoice(self._provider_name, self._harness.config.model) not in (
             self.available_model_choices
@@ -948,11 +1120,16 @@ class CodingSession:
 
     @property
     def unavailable_scoped_model_choices(self) -> tuple[ModelChoice, ...]:
+        # [FUNCTION DOC]
+        # Property: scoped choices that are not currently available (inert stable refs).
         """Return persisted references that have no current provider snapshot row."""
         available = set(self.available_model_choices)
         return tuple(choice for choice in self.scoped_model_choices if choice not in available)
 
     def _stable_dynamic_scoped_provider(self, provider_name: str) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: True if any registry layer for the provider comes from a built-in source
+        # and opts into stable scoped references.
         return any(
             layer.token.source_id.startswith("built-in:")
             and layer.provider.stable_scoped_references
@@ -960,6 +1137,9 @@ class CodingSession:
         )
 
     def _effective_stable_dynamic_scoped_provider(self, provider_name: str) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: True if the provider's effective (winning) registration is a built-in
+        # dynamic provider that opts into stable scoped references.
         effective = self._provider_registry.effective(provider_name)
         return bool(
             effective is not None
@@ -970,29 +1150,44 @@ class CodingSession:
 
     @property
     def tools(self) -> tuple[AgentTool, ...]:
+        # [FUNCTION DOC]
+        # Property: tuple of the agent tools currently configured on the harness.
         """Return the tools available to the agent."""
         return tuple(self._harness.config.tools)
 
     @property
     def extension_tool_sources(self) -> dict[str, str]:
+        # [FUNCTION DOC]
+        # Property: mapping from active extension-provided tool name to owning extension.
         """Map active extension-provided tools to their owning extension."""
         return self._extension_runtime.extension_tool_sources
 
     @property
     def messages(self) -> tuple[AgentMessage, ...]:
+        # [FUNCTION DOC]
+        # Property: the current in-memory transcript held by the harness.
         """Return the restored/current transcript."""
         return self._harness.messages
 
     @property
     def state(self) -> SessionState:
+        # [FUNCTION DOC]
+        # Property: the last replayed durable session state.
         """Return the last replayed durable session state."""
         return self._state
 
     async def session_entries(self) -> tuple[SessionEntry, ...]:
+        # [FUNCTION DOC]
+        # Return all stored session entries (async read) as a tuple for inspection.
         """Return append-only entries for frontend session inspection."""
         return tuple(await self._read_session_entries())
 
     async def tree_choices(self) -> tuple[SessionTreeChoice, ...]:
+        # [FUNCTION DOC]
+        # Build rows for the session tree picker from stored entries: lay out entries in
+        # tree order with branch indentation, resolve bookmark labels and their timestamps,
+        # mark the branchable entry representing the active leaf, flag tool-call rows, and
+        # keep only branchable entries. Returns a tuple of choices. Side effects: storage read.
         """Return branchable session entries for a tree picker."""
         entries = await self._read_session_entries()
         ordered_entries, branch_indents = _tree_layout(entries)
@@ -1012,6 +1207,13 @@ class CodingSession:
         )
 
     async def set_label(self, target_id: str, label: str | None) -> LabelEntry:
+        # [FUNCTION DOC]
+        # Set or clear a bookmark label on an existing entry by appending a label entry on
+        # the active path (blank or None label clears it). Requires the session to be idle
+        # (RuntimeError otherwise) and flushes pending message writes first.
+        # Inputs: target entry id, label text or None. Output: the appended label entry.
+        # Raises ValueError for an unknown target id. Side effects: storage append, parent
+        # chain advance, state replay.
         """Set or clear the bookmark on an existing session entry."""
         if self._harness.is_running:
             raise RuntimeError(TREE_RUNNING_MESSAGE)
@@ -1038,6 +1240,21 @@ class CodingSession:
         custom_instructions: str | None = None,
         replace_instructions: bool = False,
     ) -> SessionTreeBranchResult:
+        # [FUNCTION DOC]
+        # Move the active leaf to an earlier entry without deleting history.
+        # Inputs: entry id; keyword summarize flag, custom summary instructions, and whether
+        # they replace the default instructions.
+        # Behavior: requires idle (RuntimeError), flushes pending writes, validates the
+        # entry exists and is branchable (ValueError otherwise). With summarize, messages on
+        # the active path after the entry are summarized by the model and stored as a
+        # branch summary entry child of the target, which becomes the new leaf. Without
+        # summarize, choosing a user message moves to its parent and returns its text as an
+        # input prefill (so the user can edit and resend). Clears previews, replays state
+        # for the new leaf, repairs/persists tool history or replaces harness messages,
+        # resets context cache, recomputes thinking level for the active model, and
+        # refreshes the runtime provider.
+        # Output: a result with a status message and optional prefill.
+        # Side effects: possible model call and storage append; harness and state mutation.
         """Move the active leaf to a previous entry, preserving existing history."""
         if self._harness.is_running:
             raise RuntimeError(TREE_RUNNING_MESSAGE)
@@ -1109,6 +1326,8 @@ class CodingSession:
 
     @property
     def thinking_level(self) -> ThinkingLevel:
+        # [FUNCTION DOC]
+        # Property: the active thinking level, or the previewed level during a preview.
         """Return the active thinking mode for future turns."""
         if self._preview_thinking is not None:
             return self._preview_thinking
@@ -1116,6 +1335,11 @@ class CodingSession:
 
     @property
     def available_thinking_levels(self) -> tuple[ThinkingLevel, ...]:
+        # [FUNCTION DOC]
+        # Property: thinking levels supported by the active provider/model: the dynamic
+        # model's declared levels (empty if unknown or undeclared); all levels when there
+        # are no provider settings; empty if the provider config is missing; otherwise the
+        # levels the provider config allows for the model.
         """Return thinking modes supported by the active provider/model."""
         dynamic = self._active_dynamic_provider
         if dynamic is not None:
@@ -1132,6 +1356,10 @@ class CodingSession:
 
     @property
     def thinking_unavailable_reason(self) -> str | None:
+        # [FUNCTION DOC]
+        # Property: None when thinking levels are available; otherwise a human explanation
+        # (dynamic model metadata missing, levels undeclared or empty, provider settings
+        # unavailable, or the provider config's own reason).
         """Return why thinking controls are unavailable for the active model."""
         if self.available_thinking_levels:
             return None
@@ -1153,6 +1381,8 @@ class CodingSession:
 
     @property
     def storage(self) -> SessionStorage:
+        # [FUNCTION DOC]
+        # Property: the backing session storage.
         """Return the backing session storage."""
         return self._config.storage
 
@@ -1162,6 +1392,14 @@ class CodingSession:
         *,
         format: str | None = None,
     ) -> Path:
+        # [FUNCTION DOC]
+        # Export the session to a file artifact and return its path.
+        # Inputs: optional destination path; keyword format (otherwise inferred from the
+        # destination suffix, default "html"; normalized and validated).
+        # Reads all entries, resolves the output path (default location derived from the
+        # session file and cwd), and writes the artifact with a title, source (session file
+        # path or id) and the current system prompt. Raises on invalid format or I/O errors.
+        # Side effects: storage read and file write.
         """Export the current session to a user-facing artifact."""
         entries = await self._read_session_entries()
         session_path = _storage_path(self._config.storage)
@@ -1185,21 +1423,30 @@ class CodingSession:
 
     @property
     def skills(self) -> tuple[Skill, ...]:
+        # [FUNCTION DOC]
+        # Property: loaded skills (empty when skills are disabled or untrusted).
         """Return loaded skills."""
         return self._skills
 
     @property
     def prompt_templates(self) -> tuple[PromptTemplate, ...]:
+        # [FUNCTION DOC]
+        # Property: loaded prompt templates.
         """Return loaded prompt templates."""
         return self._prompt_templates
 
     @property
     def context_files(self) -> tuple[ProjectContextFile, ...]:
+        # [FUNCTION DOC]
+        # Property: active project context files.
         """Return active project context files."""
         return self._context_files
 
     @property
     def system_prompt_files(self) -> tuple[Path, ...]:
+        # [FUNCTION DOC]
+        # Property: discovered custom system prompt path (if any) followed by append system
+        # prompt paths.
         """Return active discovered system-prompt resource files."""
         custom_paths = (
             (self._custom_system_prompt_path,)
@@ -1210,16 +1457,23 @@ class CodingSession:
 
     @property
     def context_token_estimate(self) -> int:
+        # [FUNCTION DOC]
+        # Property: estimated total tokens of the active provider context.
         """Return the best available token count for the active provider context."""
         return self.context_usage.total_tokens
 
     @property
     def has_provider_context_usage(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: whether the estimate is anchored by real provider-reported usage.
         """Return whether valid provider usage anchors the active context count."""
         return self.context_usage.uses_provider_usage
 
     @property
     def context_usage(self) -> ContextUsageEstimate:
+        # [FUNCTION DOC]
+        # Property: structured context usage estimate for the harness system prompt,
+        # messages and tools; computed lazily and cached until invalidated.
         """Return structured context accounting for the active provider context."""
         if self._context_usage_cache is None:
             self._context_usage_cache = estimate_context_usage(
@@ -1231,11 +1485,18 @@ class CodingSession:
 
     @property
     def system_prompt(self) -> str:
+        # [FUNCTION DOC]
+        # Property: the effective system prompt currently configured on the harness.
         """Return the effective system prompt sent to the model."""
         return self._harness.config.system
 
     @property
     def system_prompt_inspection(self) -> SystemPromptInspection:
+        # [FUNCTION DOC]
+        # Property: the effective prompt with source attribution. With an explicit system
+        # override, returns a single "system" source. Otherwise rebuilds the inspection from
+        # current resources and extension sections; if its text differs from the live
+        # prompt (e.g. modified at runtime), returns a single "runtime" source instead.
         """Return the effective prompt with source attribution for local inspection."""
         if self._config.system is not None:
             return SystemPromptInspection(
@@ -1289,6 +1550,10 @@ class CodingSession:
 
     @property
     def auto_compact_token_threshold(self) -> int | None:
+        # [FUNCTION DOC]
+        # Property: the auto-compaction token threshold, or None when disabled. Uses the
+        # configured threshold, else the live model limits' effective limit (if they belong
+        # to the active provider/model), else a value derived from the context window.
         """Return the effective automatic compaction threshold, if any."""
         if not self._auto_compact_enabled:
             return None
@@ -1301,17 +1566,26 @@ class CodingSession:
         return auto_compaction_threshold_for_context_window(self.context_window_tokens)
 
     def set_auto_compaction_enabled(self, enabled: bool) -> None:
+        # [FUNCTION DOC]
+        # Enable or disable automatic compaction for future turns; updates both the flag
+        # and the stored config.
         """Enable or disable automatic compaction for future turns."""
         self._auto_compact_enabled = enabled
         self._config = replace(self._config, auto_compact_enabled=enabled)
 
     @property
     def auto_compaction_enabled(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: whether automatic compaction is enabled.
         """Return whether automatic compaction is enabled."""
         return self._auto_compact_enabled
 
     @property
     def context_window_tokens(self) -> int:
+        # [FUNCTION DOC]
+        # Property: the active model's context window: live discovered limits when they
+        # match the active provider/model, else the provider config's per-model value, else
+        # the default context window.
         """Return the active model's discovered or configured context window."""
         if self._runtime_model_limits_key == (self.provider_name, self.model):
             limits = self._runtime_model_limits
@@ -1324,6 +1598,9 @@ class CodingSession:
 
     @property
     def context_window_source(self) -> str:
+        # [FUNCTION DOC]
+        # Property: "provider live catalog" when live limits apply, else "configured
+        # catalog".
         """Return where the active context-window limit came from."""
         if (
             self._runtime_model_limits_key == (self.provider_name, self.model)
@@ -1334,26 +1611,37 @@ class CodingSession:
 
     @property
     def model_limits_discovery_error(self) -> str | None:
+        # [FUNCTION DOC]
+        # Property: the last non-fatal live model-limit discovery error message, or None.
         """Return the last non-fatal live model-limit discovery error."""
         return self._model_limits_discovery_error
 
     @property
     def command_registry(self) -> CommandRegistry:
+        # [FUNCTION DOC]
+        # Property: the slash-command registry.
         """Return the slash-command registry used by this session."""
         return self._command_registry
 
     @property
     def project_trust_resolution(self) -> ProjectTrustResolution | None:
+        # [FUNCTION DOC]
+        # Property: the project trust resolution for this cwd, or None.
         """Return this cwd's completed project-input trust resolution."""
         return self._project_trust_resolution
 
     @property
     def theme_dirs(self) -> tuple[Path, ...]:
+        # [FUNCTION DOC]
+        # Property: theme directories allowed by the trust-filtered resource paths.
         """Return theme directories permitted by this session's trust snapshot."""
         return self._resource_paths.themes_dirs
 
     @property
     def resource_diagnostics(self) -> tuple[ResourceDiagnostic, ...]:
+        # [FUNCTION DOC]
+        # Property: resource diagnostics, plus each trust resolution diagnostic as an
+        # error-severity "project-trust" diagnostic, plus extension runtime diagnostics.
         """Return non-fatal resource and extension diagnostics."""
         trust_diagnostics: tuple[ResourceDiagnostic, ...] = ()
         if self._project_trust_resolution is not None:
@@ -1365,16 +1653,23 @@ class CodingSession:
 
     @property
     def extension_runtime(self) -> ExtensionRuntime:
+        # [FUNCTION DOC]
+        # Property: the bound extension runtime.
         """Return the extension runtime bound to this session."""
         return self._extension_runtime
 
     @property
     def extension_names(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Property: loaded extension names in load order.
         """Return loaded extension names in load order."""
         return self._extension_runtime.extension_names
 
     @property
     def session_stats(self) -> SessionStats:
+        # [FUNCTION DOC]
+        # Property: cumulative activity and billed usage statistics for the active branch,
+        # cached while the state and config objects are unchanged (identity check).
         """Return cumulative activity and billed usage for the active branch."""
         cached = self._session_stats_cache
         if cached is not None and cached[0] is self._state and cached[1] is self._config:
@@ -1389,6 +1684,11 @@ class CodingSession:
         model: str,
         input_tokens: int,
     ) -> dict[str, float] | None:
+        # [FUNCTION DOC]
+        # HELPER: Pricing callback for stats: find the provider config for the name and the
+        # model's metadata; return the cost of the first cost tier whose input-token cap
+        # covers the request (or is uncapped), else the base cost, else None. Returns a new
+        # mapping from cost component to price.
         provider = _provider_config_for_name(self._config, provider_name)
         if (
             provider is None
@@ -1405,6 +1705,10 @@ class CodingSession:
         return dict(metadata.cost) if metadata.cost else None
 
     async def emit_pending_session_start(self) -> None:
+        # [FUNCTION DOC]
+        # Emit the deferred extension "session_start" event (reason "startup") once, then
+        # commit the staged project trust resolution. No-op if nothing is pending.
+        # Side effects: runs extension handlers, may write the trust store.
         """Emit the `session_start` deferred by `load`, once per session.
 
         Hosts call this after installing their UI bridge so `session_start`
@@ -1419,6 +1723,9 @@ class CodingSession:
         self._session_start_pending = False
 
     def _commit_project_trust_resolution(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: If a trust commit is pending, publish the resolution through the
+        # coordinator for the cwd (writing deferred decisions), then clear the flag.
         """Publish staged trust only after the session becomes live."""
         if not self._project_trust_commit_pending:
             return
@@ -1435,6 +1742,9 @@ class CodingSession:
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Queue a message to steer the current run: a custom message when a custom type is
+        # given (with optional details), else a user message. Side effects: harness queue.
         """Queue a steering user message (extension runtime seam)."""
         message: AgentMessage = (
             CustomMessage(custom_type=custom_type, content=content, details=details)
@@ -1450,6 +1760,9 @@ class CodingSession:
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Queue a follow-up message delivered after the current run finishes: custom or
+        # user message as above. Side effects: harness queue.
         """Queue a follow-up user message (extension runtime seam)."""
         message: AgentMessage = (
             CustomMessage(custom_type=custom_type, content=content, details=details)
@@ -1459,6 +1772,10 @@ class CodingSession:
         self._harness.follow_up_message(message)
 
     async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
+        # [FUNCTION DOC]
+        # Persist an extension-owned custom data entry on the active branch (advancing the
+        # parent chain so it is replayed on resume) and refresh state.
+        # Inputs: namespace and JSON data. Side effects: storage append, state replay.
         """Persist an extension-owned custom entry on the active branch path.
 
         The entry advances the append-only tree parent chain so it stays on the
@@ -1472,11 +1789,16 @@ class CodingSession:
 
     @property
     def session_id(self) -> str | None:
+        # [FUNCTION DOC]
+        # Property: the session manager id, if the session is indexed.
         """Return this session's manager id, if indexed."""
         return self._config.session_id
 
     @property
     def session_title(self) -> str | None:
+        # [FUNCTION DOC]
+        # Property: the indexed title from the session manager, or None if not indexed,
+        # no manager, or no record. Side effects: manager lookup.
         """Return this session's indexed human-friendly title, if named."""
         if self._config.session_id is None or self._config.session_manager is None:
             return None
@@ -1487,20 +1809,28 @@ class CodingSession:
 
     @property
     def session_name(self) -> str | None:
+        # [FUNCTION DOC]
+        # Property: alias of session_title.
         """Return this session's indexed human-friendly name, if named."""
         return self.session_title
 
     @property
     def session_manager(self) -> SessionManager | None:
+        # [FUNCTION DOC]
+        # Property: the session manager, if any.
         """Return the session manager, if available."""
         return self._config.session_manager
 
     @property
     def is_running(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: whether an agent run is active.
         """Return whether this session currently has an active agent run."""
         return self._harness.is_running
 
     def _require_idle(self, operation: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Raise RuntimeError naming the operation if an agent run is active.
         """Reject replacement-like operations until an active turn is drained."""
         if self._harness.is_running:
             raise RuntimeError(
@@ -1510,30 +1840,43 @@ class CodingSession:
 
     @property
     def queued_message_count(self) -> int:
+        # [FUNCTION DOC]
+        # Property: number of queued steering plus follow-up messages.
         """Return the number of queued steering and follow-up messages."""
         return self._harness.pending_message_count
 
     @property
     def queued_messages(self) -> QueuedMessages:
+        # [FUNCTION DOC]
+        # Property: the harness's queued steering and follow-up messages.
         """Return queued steering and follow-up messages."""
         return self._harness.queued_messages
 
     @property
     def queued_steering_messages(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Property: visible text of each queued steering message, for UI display.
         """Return queued steering message text for UI display."""
         return tuple(message_text(message) for message in self._harness.queued_messages.steering)
 
     @property
     def queued_follow_up_messages(self) -> tuple[str, ...]:
+        # [FUNCTION DOC]
+        # Property: visible text of each queued follow-up message, for UI display.
         """Return queued follow-up message text for UI display."""
         return tuple(message_text(message) for message in self._harness.queued_messages.follow_up)
 
     @property
     def last_diagnostic_log_path(self) -> Path | None:
+        # [FUNCTION DOC]
+        # Property: path of the last agent-call diagnostic log written, or None.
         """Return the last diagnostic log path written by this session."""
         return self._last_diagnostic_log_path
 
     def set_project_trust_prompt(self, prompt: TrustPrompt) -> None:
+        # [FUNCTION DOC]
+        # Install the frontend's trust prompt and mark trust resolution as interactive for
+        # later reloads/replacements. Mutates the stored config.
         """Install the active frontend's trust prompt for reload/replacement."""
         self._config = replace(
             self._config,
@@ -1542,10 +1885,14 @@ class CodingSession:
         )
 
     def cancel(self) -> None:
+        # [FUNCTION DOC]
+        # Request cancellation of the running agent turn, if any (delegates to harness).
         """Cancel the currently running agent turn, if any."""
         self._harness.cancel()
 
     def queue_update_event(self) -> QueueUpdateEvent:
+        # [FUNCTION DOC]
+        # Return a queue-update event carrying the current steering and follow-up texts.
         """Return the current queue state as a coding-session event."""
         return QueueUpdateEvent(
             steering=self.queued_steering_messages,
@@ -1553,20 +1900,35 @@ class CodingSession:
         )
 
     def clear_queued_messages(self) -> QueuedMessages:
+        # [FUNCTION DOC]
+        # Clear both message queues and return what was removed.
         """Clear queued steering and follow-up messages."""
         return self._harness.clear_queues()
 
     def pop_latest_follow_up_message(self) -> str | None:
+        # [FUNCTION DOC]
+        # Remove the most recently queued follow-up and return its text, or None.
         """Remove and return the most recently queued follow-up message."""
         message = self._harness.pop_latest_follow_up()
         return None if message is None else message_text(message)
 
     def pop_latest_steering_message(self) -> str | None:
+        # [FUNCTION DOC]
+        # Remove the most recently queued steering message and return its text, or None.
         """Remove and return the most recently queued steering message."""
         message = self._harness.pop_latest_steering()
         return None if message is None else message_text(message)
 
     def set_model(self, model: str) -> None:
+        # [FUNCTION DOC]
+        # Synchronously switch the active model within the current provider: validate it
+        # against the provider config (ProviderConfigError if not configured), set it on the
+        # harness, recompute the Hugging Face inference provider and mode, coerce the
+        # thinking level, rebuild the runtime provider, update image support, save it as the
+        # default model in settings, and update the session index record.
+        # Side effects: settings file write, session index write, provider construction.
+        # KNOWN ISSUE: unlike the async selection path, no model-change entry is appended to
+        # the session transcript, so resuming the session may restore the previous model.
         """Switch the active model for future turns and make it the default."""
         provider = self._active_provider_config()
         if provider is not None:
@@ -1589,6 +1951,12 @@ class CodingSession:
             )
 
     async def apply_startup_model_override(self, model: str) -> None:
+        # [FUNCTION DOC]
+        # Activate an explicit startup model (e.g. from the CLI) before the next turn:
+        # validate it, return early if already active, otherwise set it on the harness,
+        # recompute inference routing, sync thinking level, rebuild the runtime provider,
+        # update image support, and append a model-change entry (refreshing state). Does not
+        # change saved defaults. Raises ProviderConfigError for invalid models.
         """Activate and persist an explicit startup model before the next turn."""
         provider = self._active_provider_config()
         if provider is not None:
@@ -1614,6 +1982,23 @@ class CodingSession:
     async def select_provider_model(
         self, choice: ModelChoice, *, persist_default: bool = True
     ) -> ModelSelectionResult:
+        # [FUNCTION DOC]
+        # Switch provider and model with candidate-first publication.
+        # Inputs: the choice; keyword persist_default (save as default for configured
+        # providers). Raises RuntimeError while running. Returns unchanged when already
+        # active.
+        # Behavior: build a candidate provider first (dynamic provider via its factory with
+        # thinking level clamped to the model's first declared level and image support from
+        # its modalities; or a configured provider validated against settings, with
+        # inference routing, coerced thinking level and a response-header observer for
+        # Hugging Face), then append a provider-aware model-change entry. If anything fails
+        # before the entry is committed, the candidate is closed and the error propagates.
+        # After commit, synchronously swap the harness provider/model, session fields,
+        # config, thinking level, image support and parent id; invalidate caches; refresh
+        # state (index failures become a warning diagnostic); close the replaced provider
+        # (errors ignored); persist the default if requested.
+        # Output: selection result with changed=True. Side effects: storage, settings,
+        # provider lifecycle.
         """Switch provider/model with candidate-first durable publication.
 
         No active state changes until the candidate runtime exists and the
@@ -1750,6 +2135,12 @@ class CodingSession:
         return ModelSelectionResult(choice, changed=True)
 
     def set_inference_provider(self, route: str | None) -> str:
+        # [FUNCTION DOC]
+        # Pin (or reset to automatic with None) the Hugging Face backing provider for this
+        # session. Requires the active provider to be "huggingface" (ProviderConfigError
+        # otherwise); validates the route, builds a new runtime provider, updates the session
+        # index, stores routing state, and activates the provider.
+        # Output: the pinned route name or a message describing automatic routing.
         """Select or reset the active Hugging Face session route."""
         if self.provider_name != "huggingface":
             raise ProviderConfigError(
@@ -1781,6 +2172,9 @@ class CodingSession:
         return normalized or "automatic (will pin after the next successful response)"
 
     def set_model_choice(self, choice: ModelChoice) -> None:
+        # [FUNCTION DOC]
+        # Synchronously switch to a provider/model pair: same provider uses set_model,
+        # another provider uses the internal provider switch.
         """Switch provider/model as one operation."""
         if choice.provider_name == self.provider_name:
             self.set_model(choice.model)
@@ -1788,10 +2182,22 @@ class CodingSession:
         self._set_provider_model(choice.provider_name, choice.model)
 
     def is_scoped_model(self, choice: ModelChoice) -> bool:
+        # [FUNCTION DOC]
+        # Return whether the pair is in the current scoped model choices.
         """Return whether a provider/model pair is in the scoped model list."""
         return choice in self.scoped_model_choices
 
     def toggle_scoped_model(self, choice: ModelChoice) -> tuple[ModelChoice, ...]:
+        # [FUNCTION DOC]
+        # Add or remove a provider/model pair in the persisted scoped model list.
+        # Requires provider settings (ProviderConfigError). For dynamic providers only
+        # trusted built-in providers with stable references are allowed, and the model must
+        # be available unless it is being removed; for configured providers it must be
+        # available. Uses the regular toggle for configured catalog models and the stable
+        # reference toggle otherwise. Updates durable settings and re-applies runtime
+        # catalogs (or, for lightweight session doubles without durable settings, the
+        # settings directly), resyncs thinking level, and returns the new scoped choices.
+        # Side effects: settings file write.
         """Add or remove a model from the persisted scoped model list."""
         if self._provider_settings is None:
             raise ProviderConfigError("Provider settings are not available for this session")
@@ -1844,10 +2250,17 @@ class CodingSession:
 
     @property
     def has_pending_selection(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: whether a previewed model or thinking level is waiting to be committed.
         """Whether a TUI selection has not yet been committed to history."""
         return self._preview_model is not None or self._preview_thinking is not None
 
     def preview_model_choice(self, choice: ModelChoice) -> None:
+        # [FUNCTION DOC]
+        # Select a model for the next turn without constructing or persisting anything.
+        # Raises RuntimeError while running and ProviderConfigError if unavailable. Also
+        # previews thinking "off" when the new model has no levels, or its first level when
+        # the current level is unsupported. Invalidates live model limits.
         """Select a model for the next turn without constructing or persisting a provider."""
         if self._harness.is_running:
             raise RuntimeError("Cannot switch models while Tau is working")
@@ -1864,6 +2277,10 @@ class CodingSession:
         self._invalidate_runtime_model_limits()
 
     def preview_thinking_level(self, level: str) -> str:
+        # [FUNCTION DOC]
+        # Preview a thinking level for the next turn after normalizing and validating it
+        # against the (previewed) model's levels. Raises ValueError if unavailable.
+        # Returns a "Thinking mode: <level>" message.
         """Select a thinking level for the next turn without touching durable settings."""
         normalized = normalize_thinking_level(level)
         levels = self.available_thinking_levels
@@ -1877,11 +2294,18 @@ class CodingSession:
         return f"Thinking mode: {normalized}"
 
     def preview_cycle_thinking_level(self) -> str:
+        # [FUNCTION DOC]
+        # Preview the next supported thinking level after the current one. Returns the
+        # status message; raises ValueError like preview_thinking_level.
         return self.preview_thinking_level(
             next_thinking_level(self.thinking_level, available=self.available_thinking_levels)
         )
 
     def preview_cycle_scoped_model(self, *, reverse: bool = False) -> ModelChoice:
+        # [FUNCTION DOC]
+        # Preview the next (or previous with reverse) available scoped model, wrapping
+        # around; if the current model is not scoped, starts from the first (or last).
+        # Raises ProviderConfigError when no scoped models are available. Returns the choice.
         """Cycle through available scoped choices without changing durable state."""
         available = set(self.available_model_choices)
         scoped = tuple(choice for choice in self.scoped_model_choices if choice in available)
@@ -1897,6 +2321,13 @@ class CodingSession:
         return choice
 
     async def _commit_preview(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Before the next accepted user turn, commit pending previews: clear them,
+        # select the previewed model (without saving defaults), then apply the previewed
+        # thinking level: force "off" for models without levels, otherwise set it (without
+        # saving preference), or, if a model switch already produced that level, record a
+        # thinking-level entry and emit the change event. On any error the previews are
+        # restored and the error re-raised.
         """Commit the final pending selection before the next accepted user turn."""
         choice, thinking = self._preview_model, self._preview_thinking
         if choice is None and thinking is None:
@@ -1930,6 +2361,9 @@ class CodingSession:
             raise
 
     def cycle_scoped_model(self, *, reverse: bool = False) -> ModelChoice:
+        # [FUNCTION DOC]
+        # Synchronously switch to the next (or previous) available scoped model, wrapping
+        # around. Raises ProviderConfigError if none. Returns the chosen pair.
         """Switch to the next currently available configured scoped model."""
         available = set(self.available_model_choices)
         scoped = tuple(choice for choice in self.scoped_model_choices if choice in available)
@@ -1946,6 +2380,9 @@ class CodingSession:
         return choice
 
     def set_provider(self, provider_name: str, *, persist_default: bool = True) -> None:
+        # [FUNCTION DOC]
+        # Switch to a configured provider using its default model (requires provider
+        # settings; ProviderConfigError otherwise), optionally saving it as default.
         """Switch the active provider and reset to that provider's default model."""
         if self._provider_settings is None:
             raise ProviderConfigError("Provider settings are not available for this session")
@@ -1963,6 +2400,14 @@ class CodingSession:
         *,
         persist_default: bool = True,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Synchronously switch provider and model: requires settings and a model
+        # configured for the provider (ProviderConfigError), coerces the thinking level,
+        # builds the runtime provider (RuntimeError converted to ProviderConfigError),
+        # records ownership, swaps it onto the harness, updates provider/routing state,
+        # invalidates live limits, updates image support, optionally persists defaults, and
+        # updates the session index. Old providers are closed only when the session closes.
+        # KNOWN ISSUE: no model-change entry is written to the transcript.
         """Switch active provider/model without constructing an intermediate provider."""
         if self._provider_settings is None:
             raise ProviderConfigError("Provider settings are not available for this session")
@@ -2013,6 +2458,14 @@ class CodingSession:
             )
 
     async def set_thinking_level(self, level: str, *, persist_preference: bool = True) -> str:
+        # [FUNCTION DOC]
+        # Set and persist the thinking level for future turns.
+        # Normalizes the level and validates it against the active model (ValueError if
+        # unavailable or unsupported). If unchanged, returns immediately. Otherwise rebuilds
+        # the runtime provider (restoring the previous level on ProviderConfigError), appends
+        # a thinking-level entry, optionally saves the preference in settings, refreshes
+        # state, and emits a thinking-level-changed extension event.
+        # Output: "Thinking mode: <level>".
         """Persist and activate a thinking mode for future turns."""
         normalized = normalize_thinking_level(level)
         available = self.available_thinking_levels
@@ -2049,6 +2502,8 @@ class CodingSession:
         return f"Thinking mode: {normalized}"
 
     async def cycle_thinking_level(self) -> str:
+        # [FUNCTION DOC]
+        # Set the next supported thinking level after the current one (persisted).
         """Cycle to the next supported thinking mode and persist it."""
         return await self.set_thinking_level(
             next_thinking_level(
@@ -2058,6 +2513,10 @@ class CodingSession:
         )
 
     def _selected_provider_config(self) -> ProviderConfig | None:
+        # [FUNCTION DOC]
+        # HELPER: Provider config used for displayed capabilities: the active config when no
+        # model preview exists; otherwise the previewed provider's config from settings
+        # (None if settings are missing or the provider is unknown).
         """Resolve displayed capabilities without changing the committed runtime."""
         if self._preview_model is None:
             return self._active_provider_config()
@@ -2069,6 +2528,11 @@ class CodingSession:
             return None
 
     def _active_provider_config(self) -> ProviderConfig | None:
+        # [FUNCTION DOC]
+        # HELPER: The committed provider's config from settings (None without settings or
+        # for unknown providers). For Codex, when the committed model is missing from the
+        # settings view but present in the runtime config, returns the runtime config so a
+        # selected account-specific model stays valid.
         if self._provider_settings is None:
             return None
         try:
@@ -2088,6 +2552,12 @@ class CodingSession:
         return provider
 
     def _apply_thinking_level_override(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Apply the one-shot startup thinking override during load. For dynamic
+        # providers it must be one of the active model's declared levels (ProviderConfigError
+        # otherwise). Without a provider config it is applied as is. Otherwise it is resolved
+        # via the startup resolver, which may validate strictly and raise or return None (no
+        # change).
         """Apply the one-shot startup thinking override to the loaded session.
 
         Runs once during :meth:`load`, after session state is replayed and
@@ -2124,6 +2594,10 @@ class CodingSession:
             self._thinking_level = resolved
 
     def _sync_thinking_level_to_active_model(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Coerce the current thinking level to one valid for the committed model of
+        # the active provider config, preferring the provider's remembered per-model
+        # default. No-op when there is no provider config.
         provider = self._active_provider_config()
         if provider is None:
             return
@@ -2136,6 +2610,9 @@ class CodingSession:
         )
 
     def _sync_image_support(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Update the shared image-support state from the active (or runtime)
+        # provider config for the committed model; None when unknown.
         provider = self._active_provider_config() or self._runtime_provider_config
         self._image_support.supported = (
             provider_model_supports_images(provider, self._harness.config.model)
@@ -2144,6 +2621,12 @@ class CodingSession:
         )
 
     def _persist_default_model_choice(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Save the active provider/model as the default in durable settings, but
+        # only for models listed in the durable catalog (account-specific models are not
+        # written); then re-apply runtime catalogs and resync thinking. Side effect:
+        # settings write. May raise ProviderConfigError if the provider is unknown to the
+        # durable settings.
         if self._durable_provider_settings is None:
             return
         durable_provider = self._durable_provider_settings.get_provider(self.provider_name)
@@ -2160,6 +2643,10 @@ class CodingSession:
         self._sync_thinking_level_to_active_model()
 
     def _persist_thinking_level_choice(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Save the current thinking level as the per-model preference in durable
+        # settings when it is valid for the active provider/model; ProviderConfigError is
+        # ignored. Re-applies runtime catalogs on success.
         if self._provider_settings is None:
             return
         provider = self._active_provider_config()
@@ -2181,6 +2668,12 @@ class CodingSession:
             return
 
     def _observe_response_headers(self, headers: Mapping[str, str]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Response-header observer for Hugging Face in automatic routing with no
+        # pinned route: reads the x-inference-provider header (case-insensitive), validates
+        # it, builds a provider pinned to that route (tracking ownership), updates the
+        # session index, stores the route in session state/config, and activates the new
+        # provider. Invalid or missing headers are ignored.
         if (
             self.provider_name != "huggingface"
             or self._inference_provider_mode != "automatic"
@@ -2221,6 +2714,10 @@ class CodingSession:
         self._activate_runtime_provider(provider, provider_config)
 
     def will_auto_retry(self, message: AssistantMessage) -> bool:
+        # [FUNCTION DOC]
+        # Return whether the session will automatically retry after this assistant error:
+        # context-overflow errors (handled by compaction) or retryable errors on an
+        # automatically pinned Hugging Face route.
         """Return whether session orchestration will retry this assistant error."""
         return is_context_overflow_error(message) or self._should_auto_failover_huggingface_route(
             message
@@ -2230,6 +2727,9 @@ class CodingSession:
         self,
         message: AssistantMessage,
     ) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: True when using Hugging Face in automatic mode with a pinned route and the
+        # error is a retryable route error.
         return (
             self.provider_name == "huggingface"
             and self._inference_provider_mode == "automatic"
@@ -2238,6 +2738,11 @@ class CodingSession:
         )
 
     def _reset_automatic_inference_provider_for_failover(self) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Drop the automatically pinned Hugging Face route: build an unpinned
+        # provider, track it, update the session index, clear the route in state/config, and
+        # activate it. Returns the failed route name. Raises ProviderConfigError if no route
+        # was pinned.
         failed_route = self._inference_provider
         if failed_route is None:
             raise ProviderConfigError("Hugging Face failover requires a pinned route")
@@ -2266,6 +2771,14 @@ class CodingSession:
         *,
         context: AgentCallDiagnosticContext,
     ) -> AsyncIterator[CodingSessionEvent]:
+        # [FUNCTION DOC]
+        # HELPER: Async generator that retries the interrupted run once without a pinned
+        # route. Emits (to extensions and caller) an auto-retry-start event, continues the
+        # harness and forwards its events (wrapping agent-end as a session agent-end with
+        # will_retry false, invalidating context cache on tool ends), records the final
+        # error from any error/aborted assistant message and logs assistant errors, closes
+        # the event stream, logs the failover outcome, and finally emits an auto-retry-end
+        # event with success and final error.
         """Retry the interrupted run once through unsuffixed Hugging Face routing."""
         failed_route = self._reset_automatic_inference_provider_for_failover()
         retry_start = AutoRetryStartEvent(
@@ -2332,6 +2845,12 @@ class CodingSession:
         *,
         inference_provider: str | None,
     ) -> tuple[ClosableModelProvider, ProviderConfig]:
+        # [FUNCTION DOC]
+        # HELPER: Build a new runtime provider for the committed model using the active (or
+        # runtime) provider config, current thinking level and the given inference route
+        # (with the header observer for Hugging Face). Returns the provider and the config
+        # used. Raises ProviderConfigError if no runtime config exists, the model is invalid,
+        # or construction fails (RuntimeError converted).
         if self._runtime_provider_config is None:
             raise ProviderConfigError("Runtime provider configuration is unavailable")
         provider_config = self._active_provider_config() or self._runtime_provider_config
@@ -2359,11 +2878,18 @@ class CodingSession:
         provider: ClosableModelProvider,
         provider_config: ProviderConfig,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Install the provider on the harness, record its config, and invalidate
+        # live model limits. Does not close the previous provider.
         self._harness.config.provider = provider
         self._runtime_provider_config = provider_config
         self._invalidate_runtime_model_limits()
 
     def _refresh_runtime_provider(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Rebuild and activate the runtime provider with the current inference route
+        # (e.g. after thinking or model changes), tracking ownership. No-op without a
+        # runtime provider config.
         if self._runtime_provider_config is None:
             return
         provider, provider_config = self._build_runtime_provider(
@@ -2373,11 +2899,22 @@ class CodingSession:
         self._activate_runtime_provider(provider, provider_config)
 
     def _invalidate_runtime_model_limits(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Forget live model limits, their key, and the last discovery error.
         self._runtime_model_limits = None
         self._runtime_model_limits_key = None
         self._model_limits_discovery_error = None
 
     async def _refresh_runtime_model_limits(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Discover live limits for the active provider/model once per key. Skipped
+        # for Codex catalog providers when TAU_OFFLINE is set. For Codex with a cached
+        # catalog, uses that catalog's model limits. Otherwise, catalog-capable providers
+        # discover their model catalog (published to runtime catalogs and, for Codex,
+        # persisted to disk), and limit-capable providers discover limits for the model.
+        # Any exception is recorded as a non-fatal discovery error (and per-provider
+        # catalog error); static configuration remains the fallback.
+        # Side effects: network calls, file writes, state mutation.
         key = (self.provider_name, self.model)
         if self._runtime_model_limits_key == key:
             return
@@ -2411,6 +2948,27 @@ class CodingSession:
                 self._model_catalog_discovery_errors[self.provider_name] = error
 
     async def reload(self) -> CodingReloadSummary:
+        # [FUNCTION DOC]
+        # Reload resources and extensions by staging a complete replacement and publishing
+        # it atomically (Pi's /reload).
+        # Requires idle (RuntimeError). Captures signatures of current resources, tools,
+        # guidelines and prompt sections; stages a fresh extension runtime (user/extra
+        # extensions only), re-resolves project trust with refresh and no caching (a
+        # cancelled decision raises ValueError and keeps everything), loads resources under
+        # the staged trust, adds a trust diagnostic, loads project extensions if trusted and
+        # enabled, composes and filters tools, builds the command registry, and rebuilds the
+        # system prompt only if its inputs changed (and no explicit system override).
+        # Then emits session_shutdown to the old runtime, clears its UI components, binds
+        # and starts the staged runtime (session_start "reload"); afterwards synchronously
+        # commits trust, retires the old runtime and swaps all session fields, harness tools
+        # and system prompt, attaches extension listeners, and closes the old runtime.
+        # Output: a summary of changes per category (see the continuation below).
+        # Side effects: filesystem scans, extension imports and lifecycle events, trust
+        # store writes, possible prompts.
+        # KNOWN ISSUE: if a failure occurs after staging the runtime but before publication
+        # (e.g. a cancelled trust decision or an error in the staged session_start), the
+        # staged runtime is not closed; and if staged session_start fails, the old runtime
+        # has already received session_shutdown and had its UI cleared while staying active.
         """Stage and atomically publish a complete replacement snapshot."""
         self._require_idle("reload")
         before_skills = _skill_signatures(self._skills)
@@ -2631,6 +3189,11 @@ class CodingSession:
         )
 
     async def refresh_model_catalogs(self, *, force: bool = False) -> ModelsDevRefreshResult:
+        # [FUNCTION DOC]
+        # Refresh the public models.dev catalog (optionally forced) and reload provider
+        # settings, then always refresh the authenticated Codex catalog. If the public
+        # refresh failed, its error is raised after the Codex refresh. Returns the public
+        # refresh result. Side effects: network, cache files, settings reload.
         """Refresh public and authenticated catalogs and publish them to this session."""
         public_error: Exception | None = None
         result: ModelsDevRefreshResult | None = None
@@ -2649,6 +3212,13 @@ class CodingSession:
         return result
 
     async def _refresh_codex_model_catalog(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Refresh the account-specific Codex model inventory using a temporary fresh
+        # provider (so newly released models are discovered even when Codex is active):
+        # skipped when TAU_OFFLINE is set, without durable settings, without a Codex config,
+        # or without usable credentials. Publishes the catalog to runtime catalogs (not to
+        # catalog settings) and persists it to the per-account cache; errors are recorded
+        # as discovery errors. The temporary provider is always closed.
         """Refresh the account-specific Codex inventory without making it durable."""
         if environ.get("TAU_OFFLINE") is not None or self._durable_provider_settings is None:
             return
@@ -2690,6 +3260,11 @@ class CodingSession:
         catalog: RuntimeModelCatalog,
         provider_config: OpenAICodexProviderConfig | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Save a Codex catalog to the per-account on-disk cache. The Codex config
+        # comes from the argument or the runtime config; the account id from the provider
+        # object or stored credentials. Skips silently without config or account id;
+        # OS/type/value errors while saving are ignored.
         config = provider_config or (
             self._runtime_provider_config
             if isinstance(self._runtime_provider_config, OpenAICodexProviderConfig)
@@ -2715,6 +3290,10 @@ class CodingSession:
         provider_name: str,
         catalog: RuntimeModelCatalog,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Store a discovered catalog for a provider, clear its discovery error,
+        # invalidate live limits, and re-apply catalogs to the effective settings.
+        # Raises ValueError if the catalog has no models.
         if not catalog.models:
             raise ValueError("provider returned an empty model catalog")
         self._runtime_model_catalogs[provider_name] = catalog
@@ -2723,6 +3302,9 @@ class CodingSession:
         self._apply_runtime_model_catalogs()
 
     def _apply_runtime_model_catalogs(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Recompute effective provider settings by overlaying each runtime catalog
+        # onto the durable settings' providers (None when there are no durable settings).
         settings = self._durable_provider_settings
         if settings is None:
             self._provider_settings = None
@@ -2737,6 +3319,12 @@ class CodingSession:
         self._provider_settings = replace(settings, providers=providers)
 
     def reload_provider_settings(self) -> None:
+        # [FUNCTION DOC]
+        # Reload provider settings from disk (e.g. after login) and re-apply runtime
+        # catalogs. If the committed model is still valid for the active provider, resync
+        # thinking level, rebuild the runtime provider and image support; on
+        # ProviderConfigError restore the previous settings and thinking level and re-raise.
+        # No-op when the session has no provider settings. Side effects: settings read.
         """Reload provider settings for login and model-selection flows."""
         if self._provider_settings is None:
             return
@@ -2761,6 +3349,17 @@ class CodingSession:
             raise
 
     async def resume(self, session_id: str) -> str:
+        # [FUNCTION DOC]
+        # Replace this session's active state with another indexed session (/resume).
+        # Requires idle, flushes pending writes, requires a session manager and a known
+        # record (ValueError otherwise). Determines the destination provider/model from the
+        # record: dynamic providers, unknown providers, missing settings or live-only Codex
+        # models are re-resolved in a freshly built runtime ("dynamic resume", deferring
+        # authoritative writes); configured providers are validated and reuse the current
+        # provider object. Loads the destination session (new cwd, storage, trust,
+        # extensions) with this session's settings and options; for legacy records without
+        # a provider, carries over the current model. Then adopts the replacement (closing
+        # it on any failure). Output: "Resumed session: <id>".
         """Replace this session's active state with another indexed session."""
         self._require_idle("resume")
         await self._flush_pending_message_writes(context=self._diagnostic_context())
@@ -2876,6 +3475,10 @@ class CodingSession:
         return f"Resumed session: {record.id}"
 
     async def set_session_name(self, name: str) -> str:
+        # [FUNCTION DOC]
+        # Normalize and persist a session name (indexing the session if necessary); if it
+        # changed, emit a session-info-changed extension event. Returns the persisted (or
+        # normalized, if unchanged) name. Raises ValueError without a session manager/id.
         """Persist a session name and notify extensions after it changes."""
         normalized = normalize_session_name(name)
         persisted = self._persist_session_name(
@@ -2895,6 +3498,13 @@ class CodingSession:
         only_if_unnamed: bool,
         index_if_missing: bool,
     ) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: Write a normalized title to the session index. Requires manager and id
+        # (ValueError). Optionally indexes a missing record first. Returns None when no
+        # record exists, when only_if_unnamed and a title already exists, or when the title
+        # is unchanged; otherwise touches the record with the current model/provider and
+        # title and returns the stored title. Raises ValueError if the update fails while
+        # indexing was requested.
         """Persist and return a changed name; return None for a no-op."""
         normalized = normalize_session_name(name)
         manager = self._config.session_manager
@@ -2924,6 +3534,15 @@ class CodingSession:
         return updated.title or normalized
 
     async def new_session(self) -> str:
+        # [FUNCTION DOC]
+        # Replace this session with a fresh, not-yet-indexed session in the same cwd (/new).
+        # Requires idle, flushes pending writes, requires a session manager. Chooses the
+        # default provider/model from settings (thinking coerced), or keeps the current
+        # ones; for dynamic providers picks the same model if offered, else the provider
+        # default or first model. Prepares a session record (with inference routing when
+        # pinned), loads a replacement with a fresh provider when settings exist, index on
+        # first persist, and deferred writes for dynamic providers, then adopts it.
+        # Output: "Started new session: <id>".
         """Replace this session's active state with a pending unindexed session."""
         self._require_idle("start a new session")
         await self._flush_pending_message_writes(context=self._diagnostic_context())
@@ -3021,6 +3640,18 @@ class CodingSession:
         *,
         reason: Literal["new", "resume", "branch"],
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Adopt a freshly loaded replacement session into this object.
+        # Pre-publication (cancellable; on any failure the replacement is closed and the
+        # error re-raised): reject a cancelled trust decision (ValueError), commit the
+        # replacement's staged entries to storage, emit session_shutdown to the old runtime
+        # and clear its UI, emit session_start on the new runtime, commit trust, and clear
+        # the pending start flag. Publication (synchronous): retire the old runtime, copy all
+        # state fields (config, state, harness, resources, provider state, catalogs, caches,
+        # pending writes, runtime, credentials, logger, image support, trust), move
+        # persistence listening to this object, take over provider ownership, rebind the
+        # extension runtime to this session and attach its harness listener; finally close
+        # the old runtime with cancellation contained.
         """Adopt a replacement session's state and re-bind the extension runtime.
 
         The extension runtime is long-lived and shared with the replacement; it
@@ -3114,6 +3745,13 @@ class CodingSession:
         await _finish_adopted_runtime_close(old_runtime)
 
     async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult:
+        # [FUNCTION DOC]
+        # Manually compact older context (/compact) while keeping a recent-entry boundary.
+        # Flushes pending writes, builds a plan (ValueError if there is not enough context),
+        # estimates tokens before, generates a summary with optional custom instructions,
+        # appends a compaction entry (rebuilding active context), and returns a structured
+        # result with before/after token estimates. Side effects: model call, storage
+        # append.
         """Compact older context while preserving a real recent-entry boundary."""
         await self._flush_pending_message_writes(context=self._diagnostic_context())
         plan = self._recent_preserving_compaction_plan()
@@ -3142,11 +3780,18 @@ class CodingSession:
         )
 
     async def compact(self, instructions: str | None = None) -> str:
+        # [FUNCTION DOC]
+        # Run manual compaction and return "Compacted <n> context entries.".
         """Generate a manual compaction summary and rebuild active context."""
         result = await self.compact_detailed(instructions)
         return f"Compacted {result.replaced_entry_count} context entries."
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # Close all owned extension runtime and provider resources exactly once. Starts (or
+        # reuses) a durable close task, waits for it without letting cancellation interrupt
+        # it, then re-raises a caller cancellation (as CancelledError) or the close task's
+        # error. Later calls observe the same task idempotently.
         """Close every owned extension/provider resource exactly once.
 
         Caller cancellation is remembered but cannot cancel the durable close
@@ -3173,6 +3818,11 @@ class CodingSession:
             raise error
 
     async def _close_owned_resources(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: The single close pass: emit session_shutdown ("quit") if the extension
+        # runtime is active, clear its UI components, close the runtime, then close every
+        # owned provider (each removed from the ledger before its one close attempt). Each
+        # step runs even if earlier ones fail; the first error is re-raised at the end.
         """Run the sole close pass, continuing after individual failures."""
         error: BaseException | None = None
         try:
@@ -3212,6 +3862,10 @@ class CodingSession:
             raise error
 
     def handle_command(self, text: str) -> CommandResult:
+        # [FUNCTION DOC]
+        # Handle a slash command synchronously. Prompt-template commands are reported as not
+        # handled (they are expanded later by prompt); everything else goes to the command
+        # registry. Returns the command result.
         """Handle coding-session slash commands.
 
         Prompt-template slash commands are expansion directives, so they remain
@@ -3222,6 +3876,11 @@ class CodingSession:
         return self._command_registry.execute(self, text)
 
     def ensure_session_indexed(self) -> None:
+        # [FUNCTION DOC]
+        # Add the session to the resume index if it has an id and manager and no record
+        # exists yet (recording cwd, model, provider and routing), clear the
+        # index-on-first-persist flag, and write any pending initial session-file entries.
+        # Side effects: index and session file writes.
         """Persist pending session metadata and add this session to the resume index."""
         if self._config.session_id is None or self._config.session_manager is None:
             return
@@ -3238,6 +3897,10 @@ class CodingSession:
         self._ensure_session_file_initialized()
 
     def expand_prompt_text(self, text: str) -> str:
+        # [FUNCTION DOC]
+        # Expand input text using prompt templates first (slash template commands), then
+        # skill commands (/skill:name); return the text unchanged if neither matches.
+        # May raise ResourceError from expansion.
         """Expand prompt text using loaded markdown resources."""
         expanded_prompt = expand_prompt_template_command(text, self._prompt_templates)
         if expanded_prompt is not None:
@@ -3251,6 +3914,14 @@ class CodingSession:
         *,
         add_to_context: bool,
     ) -> TerminalCommandResult:
+        # [FUNCTION DOC]
+        # Run a shell command from the input bar in the session cwd using the bash tool
+        # (with the configured command prefix). Raises ValueError for empty commands.
+        # Extracts an integer exit code from the tool details. When add_to_context is set,
+        # flushes pending writes and appends a user message describing the command and its
+        # output to the harness and storage.
+        # Output: a terminal command result (ok means exit code 0).
+        # Side effects: process execution, optional transcript/storage writes.
         """Run a shell command in the session cwd, optionally adding output to context."""
         normalized_command = command.strip()
         if not normalized_command:
@@ -3295,6 +3966,27 @@ class CodingSession:
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> AsyncIterator[CodingSessionEvent]:
+        # [FUNCTION DOC]
+        # Main async-generator entry for a user turn; yields coding-session events.
+        # Inputs: content; keyword streaming behavior ("steer"/"follow_up" for queuing while
+        # running), source ("interactive" or "extension") for input hooks, optional custom
+        # message type and details.
+        # Behavior: run extension input hooks (a handled input may show a notification and
+        # ends without events); expand templates/skills (unexpected errors are logged).
+        # If already running: queue as steering or follow-up and yield a queue-update
+        # event, or raise RuntimeError without a streaming behavior. Otherwise flush pending
+        # writes, commit previews, refresh model limits, possibly auto-compact first, then
+        # prompt the harness with a user or custom message and forward its events: tool
+        # ends invalidate context accounting, assistant errors are logged and classified
+        # as context overflow or Hugging Face route failure, agent-end is wrapped as a
+        # session agent-end with will_retry, and after the first user message-end the
+        # session may be auto-named. On overflow: emit compaction start/end events, compact,
+        # and if successful emit auto-retry start, continue the harness once, forward its
+        # events, and emit auto-retry end. On route failure: run the failover retry. Else:
+        # try auto-compaction after the prompt. Unexpected exceptions are logged and
+        # re-raised. Finally the event stream is closed, missing message persists are
+        # retried, and an agent-settled event is emitted (to extensions and yielded).
+        # Side effects: model calls, storage writes, extension events, logs.
         """Append a user prompt, run the agent, and persist new messages.
 
         ``custom_type``/``details`` attach custom-message render metadata to the
@@ -3485,6 +4177,13 @@ class CodingSession:
             yield settled_event
 
     async def continue_(self) -> AsyncIterator[CodingSessionEvent]:
+        # [FUNCTION DOC]
+        # Async generator that continues the agent from the restored transcript (no new
+        # user message). Flushes pending writes, refreshes model limits, forwards harness
+        # continue events (logging assistant errors, wrapping agent-end, invalidating
+        # context accounting on tool ends), runs Hugging Face route failover if needed, then
+        # tries auto-compaction. Errors are logged and re-raised. Finally reconciles
+        # persistence and yields an agent-settled event.
         """Continue the agent from restored state and persist new messages."""
         context = self._diagnostic_context()
         await self._flush_pending_message_writes(context=context)
@@ -3541,12 +4240,17 @@ class CodingSession:
             yield settled_event
 
     async def _dispatch_agent_settled(self) -> AgentSettledEvent:
+        # [FUNCTION DOC]
+        # HELPER: Create an agent-settled event, emit it to extensions, and return it.
         """Dispatch and return the final session event for one started run."""
         event = AgentSettledEvent()
         await self._extension_runtime.emit_event(event)
         return event
 
     def _diagnostic_context(self) -> AgentCallDiagnosticContext:
+        # [FUNCTION DOC]
+        # HELPER: Build a diagnostics context (provider, model, cwd, session id, and a fresh
+        # run id) for logging one agent call.
         return AgentCallDiagnosticContext(
             provider_name=self._provider_name,
             model=self.model,
@@ -3556,6 +4260,15 @@ class CodingSession:
         )
 
     async def _persist_active_tool_history_repairs(self) -> ToolHistoryRepair | None:
+        # [FUNCTION DOC]
+        # HELPER: Detect malformed tool history on the active path (e.g. tool calls without
+        # results) and write one complete repair branch: a "tau.session-history-repair"
+        # custom entry with diagnostic data, the repaired message suffix, a model-change
+        # entry (if a model is known), a thinking-level entry, and copies of other custom
+        # entries that were after the repair point. With deferred writes the entries are
+        # staged in memory and state is replayed from them; otherwise they are appended and
+        # state refreshed. Replaces harness messages and invalidates context accounting.
+        # Returns the repair description, or None when nothing needed repair.
         """Stage or append one complete repair branch for malformed history."""
         plan = _tool_history_repair_plan(
             self._state.messages,
@@ -3626,6 +4339,10 @@ class CodingSession:
         return repair
 
     def _attach_persistence_listener(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: (Re-)subscribe the message-end persistence callback to the current harness,
+        # unsubscribing any previous subscription. Harness stubs without subscribe are
+        # tolerated.
         """(Re-)attach push persistence to the current harness.
 
         Persistence subscribes to harness events rather than running in the
@@ -3640,11 +4357,21 @@ class CodingSession:
             self._persistence_unsubscribe = subscribe(self._persist_on_message_end)
 
     async def _persist_on_message_end(self, event: AgentEvent) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Harness listener: on message-end events, record the message identity as
+        # ended and persist it.
         if isinstance(event, MessageEndEvent):
             self._ended_message_ids.add(id(event.message))
             await self._persist_message(event.message)
 
     async def _persist_message(self, message: AgentMessage) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Persist one completed message at the active branch tip idempotently. The
+        # entry is created once per message object (keyed by object identity) and reused on
+        # retries; on retry, storage is read to skip re-appending an entry that already
+        # reached disk. Advances the parent id, refreshes state, records the message as
+        # persisted, drops the pending record, and invalidates context accounting.
+        # Raises storage errors (leaving the pending record for a later retry).
         """Persist one completed message at the active branch tip, idempotently.
 
         Message lifecycle events are the durable-message boundary. A stable entry
@@ -3677,6 +4404,10 @@ class CodingSession:
         *,
         context: AgentCallDiagnosticContext,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: At the end of a run: close the event stream (errors ignored), then retry
+        # persisting every transcript message that ended but was not persisted (failures are
+        # logged, not raised, to avoid masking cancellation), and clear the tracking sets.
         """Close a run and retry failed persists still present in the transcript.
 
         Keyed on message identity, not counts: the loop emits an assistant's
@@ -3704,6 +4435,10 @@ class CodingSession:
         self._persisted_message_ids.clear()
 
     async def _flush_pending_message_writes(self, *, context: AgentCallDiagnosticContext) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Before storage-dependent actions, retry every pending message write,
+        # re-appending the message to the harness transcript first if it is missing there.
+        # Failures are logged and re-raised.
         """Finish earlier partial writes before another storage-dependent action."""
         harness_message_ids = {id(message) for message in self._harness.messages}
         for pending in tuple(self._pending_message_writes.values()):
@@ -3719,6 +4454,9 @@ class CodingSession:
     def _log_persistence_failure(
         self, *, context: AgentCallDiagnosticContext, exc: BaseException
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Log a persistence exception to the diagnostic logger (logging errors are
+        # ignored) and remember the log path.
         with suppress(Exception):
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
@@ -3727,10 +4465,15 @@ class CodingSession:
             )
 
     def _invalidate_context_usage_cache(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Mark the cached context usage estimate dirty.
         """Mark context accounting dirty after transcript/system/tool changes."""
         self._context_usage_cache = None
 
     async def _refresh_persisted_state(self, *, leaf_id: str | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Re-read storage, replay state for the given leaf, and touch the session
+        # index record with the current model, provider and routing (when indexed).
         entries = await self._read_session_entries()
         self._state = SessionState.from_entries(entries, leaf_id=leaf_id)
         if self._config.session_id is not None and self._config.session_manager is not None:
@@ -3744,10 +4487,18 @@ class CodingSession:
             )
 
     async def _read_session_entries(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # HELPER: Read all stored entries and detach parents that point to missing entries
+        # (e.g. imported external history), returning a list.
         """Read stored entries, detaching roots imported from external history."""
         return _detach_missing_parents(await self._config.storage.read_all())
 
     async def _commit_prepared_entries(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: When writes were deferred, append the staged entries not already on disk
+        # (as one batch when the storage supports it, else one by one), clear staged and
+        # pending initial entries, stop deferring writes, and index the session if
+        # requested (index errors become a warning diagnostic). No-op when not deferred.
         """Durably commit the staged startup/repair batch exactly once."""
         if not self._config.defer_authoritative_writes:
             return
@@ -3772,11 +4523,16 @@ class CodingSession:
             self._record_session_index_diagnostic(exc)
 
     async def _append_session_entry(self, entry: SessionEntry) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Ensure initial/staged entries are written, then append one entry.
         """Append one durable entry after flushing deferred session metadata."""
         await self._ensure_session_initialized()
         await self._config.storage.append(entry)
 
     async def _append_session_batch(self, entries: Sequence[SessionEntry]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Ensure initialization, then append several entries atomically via the
+        # storage batch method, falling back to sequential appends for legacy storage.
         """Append entries as one storage transaction, with legacy fallback."""
         await self._ensure_session_initialized()
         append_batch = getattr(self._config.storage, "append_batch", None)
@@ -3787,6 +4543,9 @@ class CodingSession:
         await append_batch(tuple(entries))
 
     async def _close_replaced_provider(self, provider: ModelProvider) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Close a provider replaced by a committed switch, only if this session owns
+        # it (removing it from the ledger first). Errors propagate to the caller.
         """Close a Tau-owned provider once after a committed publication."""
         if provider not in self._owned_providers:
             return
@@ -3796,6 +4555,10 @@ class CodingSession:
             await close()
 
     async def _ensure_session_initialized(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Before the first durable write: commit staged entries when writes are
+        # deferred; otherwise write pending initial entries and index the session if
+        # requested (index errors recorded as diagnostics).
         if self._config.defer_authoritative_writes and self._prepared_entries:
             await self._commit_prepared_entries()
             return
@@ -3809,6 +4572,9 @@ class CodingSession:
                 self._record_session_index_diagnostic(exc)
 
     async def _write_pending_initial_entries(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Append the pending initial entries not already present in storage (batch
+        # when supported) and clear them.
         durable_ids = {entry.id for entry in await self._config.storage.read_all()}
         missing = tuple(
             entry for entry in self._pending_initial_entries if entry.id not in durable_ids
@@ -3823,6 +4589,11 @@ class CodingSession:
         self._pending_initial_entries = ()
 
     def _ensure_session_file_initialized(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Synchronously append any pending initial entries to the storage file and
+        # clear them (used by the synchronous index path).
+        # KNOWN ISSUE: unlike the async path, it does not check which entries are already
+        # on disk, and it ignores staged entries when writes are deferred.
         if not self._pending_initial_entries:
             return
         for entry in self._pending_initial_entries:
@@ -3830,6 +4601,8 @@ class CodingSession:
         self._pending_initial_entries = ()
 
     def _record_session_index_diagnostic(self, exc: BaseException) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Add a warning "session-index" diagnostic naming the exception type.
         self._resource_diagnostics = (
             *self._resource_diagnostics,
             ResourceDiagnostic(
@@ -3840,6 +4613,11 @@ class CodingSession:
         )
 
     def _index_current_session(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Create a session index record for this session if it has an id and
+        # manager and no record exists yet.
+        # KNOWN ISSUE: the inference provider mode is not passed, unlike the equivalent call
+        # in ensure_session_indexed, so the index may record the default mode.
         if self._config.session_id is None or self._config.session_manager is None:
             return
         existing = self._config.session_manager.get_session(self._config.session_id)
@@ -3859,6 +4637,10 @@ class CodingSession:
         context: AgentCallDiagnosticContext,
         phase: str,
     ) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Run automatic compaction if needed; any exception is logged with the
+        # given phase and reported as False so the turn is not lost. Returns whether
+        # compaction happened.
         try:
             return await self._maybe_auto_compact()
         except Exception as exc:  # noqa: BLE001 - automatic compaction must not lose a turn
@@ -3874,6 +4656,9 @@ class CodingSession:
         *,
         context: AgentCallDiagnosticContext,
     ) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Compact after a context-overflow error using the recent-preserving plan.
+        # Returns False when no plan exists or on any exception (logged); True on success.
         try:
             plan = self._recent_preserving_compaction_plan()
             if plan is None:
@@ -3904,6 +4689,10 @@ class CodingSession:
         *,
         context: AgentCallDiagnosticContext,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: After the first user message, name an unnamed indexed session: ask the
+        # model for a short title (errors logged), fall back to a heuristic name from the
+        # message, persist it only if still unnamed, and emit a session-info-changed event.
         if not self._should_auto_name_session():
             return
         try:
@@ -3928,6 +4717,9 @@ class CodingSession:
             await self._extension_runtime.emit_event(SessionInfoChangedEvent(name=persisted))
 
     def _should_auto_name_session(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: True when the session is indexed-capable, its record (if any) has no
+        # title, and the transcript contains exactly one user message.
         if self._config.session_id is None or self._config.session_manager is None:
             return False
         record = self._config.session_manager.get_session(self._config.session_id)
@@ -3936,6 +4728,11 @@ class CodingSession:
         return sum(isinstance(message, UserMessage) for message in self._harness.messages) == 1
 
     async def _generate_session_name(self, first_message: str) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: Ask the active provider (no tools, naming system prompt) for a session
+        # name for the first message; collect text deltas or the final message text and
+        # sanitize it. Returns the name or None. Raises RuntimeError on a provider error
+        # event. Side effect: a model request.
         prompt = (
             "Create a concise session name for this first user message. "
             "Use at most four words.\n\n"
@@ -3960,12 +4757,18 @@ class CodingSession:
         return _sanitize_session_name(final_text if final_text is not None else "".join(text_parts))
 
     def _provider_is_usable(self, provider: ProviderConfig) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Whether the provider config has usable credentials in the session's
+        # credential store (or environment).
         return provider_has_usable_credentials(
             provider,
             credential_reader=self._credential_store,
         )
 
     def _usable_provider_configs(self) -> tuple[ProviderConfig, ...]:
+        # [FUNCTION DOC]
+        # HELPER: Tuple of configured providers with usable credentials (empty without
+        # settings).
         if self._provider_settings is None:
             return ()
         return tuple(
@@ -3975,6 +4778,11 @@ class CodingSession:
         )
 
     async def _maybe_auto_compact(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Automatically compact when enabled, the active context has at least two
+        # entries, and the context estimate exceeds the threshold, using the
+        # recent-preserving plan. Returns whether a compaction entry was appended.
+        # Raises on summarization or storage failure.
         threshold = self.auto_compact_token_threshold
         if threshold is None or threshold <= 0:
             return False
@@ -4004,6 +4812,12 @@ class CodingSession:
         *,
         custom_instructions: str | None = None,
     ) -> _GeneratedSummary:
+        # [FUNCTION DOC]
+        # HELPER: Ask the active model (summarization system prompt, no tools) to summarize
+        # messages with optional custom instructions. Uses the final message text or
+        # concatenated deltas, stripped. Returns the summary with summed usage, provider,
+        # model and upstream provider. Raises RuntimeError on provider error events or an
+        # empty summary.
         prompt = build_compaction_summary_prompt(
             messages,
             custom_instructions=custom_instructions,
@@ -4048,6 +4862,10 @@ class CodingSession:
         custom_instructions: str | None = None,
         replace_instructions: bool = False,
     ) -> _GeneratedSummary:
+        # [FUNCTION DOC]
+        # HELPER: Summarize abandoned branch messages with the model (custom instructions
+        # optionally replacing defaults); any failure or empty result falls back to a local
+        # heuristic summary without usage or provider attribution.
         try:
             result = await summarize_branch_messages_with_model(
                 provider=self._harness.config.provider,
@@ -4073,6 +4891,10 @@ class CodingSession:
         )
 
     def _recent_preserving_compaction_plan(self) -> CompactionPlan | None:
+        # [FUNCTION DOC]
+        # HELPER: Plan a compaction that keeps roughly the most recent configured token
+        # budget verbatim, cutting at a user-message boundary when possible. Returns None if
+        # fewer than two context rows exist or the cut would keep everything or nothing.
         rows = self._active_context_rows()
         if len(rows) < 2:
             return None
@@ -4095,6 +4917,9 @@ class CodingSession:
         )
 
     def _active_context_rows(self) -> tuple[tuple[str, AgentMessage], ...]:
+        # [FUNCTION DOC]
+        # HELPER: Pair each active context entry id with its message (strict zip; raises
+        # ValueError on length mismatch).
         return tuple(zip(self._state.context_entry_ids, self._state.messages, strict=True))
 
     async def _append_compaction(
@@ -4108,6 +4933,11 @@ class CodingSession:
         model: str | None = None,
         response_provider: str | None = None,
     ) -> CompactionEntry:
+        # [FUNCTION DOC]
+        # HELPER: Append a compaction entry (summary, first kept entry id, tokens before,
+        # usage and attribution) at the active tip, refresh state, replace harness messages
+        # with the compacted context, and invalidate accounting. Returns the entry.
+        # Raises ValueError if the first kept entry is not in the active context.
         if first_kept_entry_id not in self._state.context_entry_ids:
             raise ValueError("First kept entry is not in the active context")
 
@@ -4135,6 +4965,13 @@ def _first_recent_context_index(
     *,
     keep_recent_tokens: int,
 ) -> int:
+    # [FUNCTION DOC]
+    # HELPER: Choose the index of the first context row to keep. Walking backwards,
+    # accumulate estimated tokens until the keep budget is reached; if never reached,
+    # return 0 (keep everything). If the boundary row is a user message, keep from it
+    # (or, at index 0, from the next user message, else 0). Otherwise keep from the next
+    # user message after it, else from the first non-tool-result row at or after it,
+    # else the end. A non-positive budget returns the row count.
     if keep_recent_tokens <= 0:
         return len(rows)
 
@@ -4172,6 +5009,8 @@ def _next_user_message_index(
     *,
     start: int,
 ) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: Index of the first user-role row at or after start, or None.
     for index in range(start, len(rows)):
         if rows[index][1].role == "user":
             return index
@@ -4179,6 +5018,10 @@ def _next_user_message_index(
 
 
 def is_context_overflow_error(message: AssistantMessage) -> bool:
+    # [FUNCTION DOC]
+    # Return True when an assistant error message contains any common context-overflow
+    # phrase (case-insensitive), e.g. "context length", "prompt is too long",
+    # "token limit". Pure heuristic.
     """Return True when an assistant error looks like a context overflow."""
     text = message.error_message or ""
     normalized = text.lower()
@@ -4200,6 +5043,10 @@ def is_context_overflow_error(message: AssistantMessage) -> bool:
 
 
 def is_retryable_huggingface_route_error(message: AssistantMessage) -> bool:
+    # [FUNCTION DOC]
+    # Return True when an assistant error produced no content and its first
+    # provider_error diagnostic with an integer status code has status 408, 409, 425,
+    # 429 or any 5xx, meaning rerouting is safe. Pure.
     """Return whether a pre-output Hugging Face HTTP failure is safe to reroute."""
     if message.content:
         return False
@@ -4215,6 +5062,10 @@ def is_retryable_huggingface_route_error(message: AssistantMessage) -> bool:
 def _session_entry_for_message(
     *, parent_id: str | None, message: AgentMessage
 ) -> MessageEntry | CustomMessageEntry:
+    # [FUNCTION DOC]
+    # HELPER: Build the persisted entry for a completed message: custom messages become
+    # custom-message entries (timestamp converted from milliseconds to seconds, with
+    # type, content, display flag and details); all others become message entries.
     """Build the canonical persisted entry for one completed runtime message."""
     if isinstance(message, CustomMessage):
         return CustomMessageEntry(
@@ -4229,6 +5080,9 @@ def _session_entry_for_message(
 
 
 def _detach_missing_parents(entries: list[SessionEntry]) -> list[SessionEntry]:
+    # [FUNCTION DOC]
+    # HELPER: Return a new list where entries whose parent id refers to a missing entry
+    # get a None parent (copied); other entries unchanged.
     """Return entries with dangling parent pointers detached from external history."""
     entry_ids = {entry.id for entry in entries}
     return [
@@ -4240,6 +5094,9 @@ def _detach_missing_parents(entries: list[SessionEntry]) -> list[SessionEntry]:
 
 
 def _last_parent_id_from_state(state: SessionState) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: The parent for the next append: the active leaf id, else the last entry's
+    # id, else None.
     if state.active_leaf_id is not None:
         return state.active_leaf_id
     if state.entries:
@@ -4250,6 +5107,10 @@ def _last_parent_id_from_state(state: SessionState) -> str | None:
 def _active_branchable_entry_id(
     entries: list[SessionEntry], active_leaf_id: str | None
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: The id of the nearest branchable entry on the path from root to the active
+    # leaf (searching from the leaf back). Returns None without a leaf or match; if the
+    # path cannot be built, returns the leaf id itself.
     if active_leaf_id is None:
         return None
     try:
@@ -4260,6 +5121,9 @@ def _active_branchable_entry_id(
 
 
 def _resolved_labels(entries: list[SessionEntry]) -> tuple[dict[str, str], dict[str, float]]:
+    # [FUNCTION DOC]
+    # HELPER: Walk label entries in storage order and return two mappings keyed by target
+    # entry id: the latest non-blank label and its timestamp (blank labels clear).
     """Resolve the latest label change for every target in storage order."""
     labels: dict[str, str] = {}
     timestamps: dict[str, float] = {}
@@ -4277,6 +5141,9 @@ def _resolved_labels(entries: list[SessionEntry]) -> tuple[dict[str, str], dict[
 
 
 def _is_branchable_tree_entry(entry: SessionEntry) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: Compaction and branch-summary entries, and message entries holding user or
+    # assistant messages, are branchable; everything else is not.
     if entry.type in {"compaction", "branch_summary"}:
         return True
     if entry.type != "message":
@@ -4285,21 +5152,36 @@ def _is_branchable_tree_entry(entry: SessionEntry) -> bool:
 
 
 def _tree_choice_label(entry: SessionEntry, *, branch_indent: int = 0) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Prefix the entry's display title with two spaces per indent level.
     prefix = "  " * branch_indent
     return f"{prefix}{_tree_entry_title(entry)}"
 
 
 def _tree_branch_indents(entries: list[SessionEntry]) -> dict[str, int]:
+    # [FUNCTION DOC]
+    # HELPER: Return just the per-entry indentation mapping from the tree layout.
     return _tree_layout(entries)[1]
 
 
 def _ordered_tree_entries(entries: list[SessionEntry]) -> tuple[SessionEntry, ...]:
+    # [FUNCTION DOC]
+    # HELPER: Return just the display-ordered entries from the tree layout.
     return _tree_layout(entries)[0]
 
 
 def _tree_layout(
     entries: list[SessionEntry],
 ) -> tuple[tuple[SessionEntry, ...], dict[str, int]]:
+    # [FUNCTION DOC]
+    # HELPER: Compute the session tree display order and indentation without recursion.
+    # Ignores "leaf" entries. Computes each entry's longest path length to a leaf
+    # bottom-up (cycles keep a finite fallback). Children are ordered longest branch
+    # first (stable for ties); the longest child continues at the parent's indent (main
+    # branch) while shorter siblings are emitted first, indented one level deeper. Uses
+    # a depth-first stack with a seen set; entries unreachable from roots (e.g. cycles)
+    # are appended afterwards as their own subtrees.
+    # Output: the ordered entries and a mapping from entry id to indent level.
     tree_entries = [entry for entry in entries if entry.type != "leaf"]
     children_by_parent: dict[str | None, list[SessionEntry]] = {}
     entries_by_id: dict[str, SessionEntry] = {}
@@ -4326,6 +5208,8 @@ def _tree_layout(
             pending.append(parent_id)
 
     def ordered_children(parent_id: str | None) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # HELPER: Children of a parent id sorted by descending branch length.
         return sorted(
             children_by_parent.get(parent_id, ()),
             key=lambda child: branch_lengths.get(child.id, 1),
@@ -4339,6 +5223,10 @@ def _tree_layout(
     def child_stack_items(
         children: list[SessionEntry], parent_indent: int
     ) -> list[tuple[SessionEntry, int]]:
+        # [FUNCTION DOC]
+        # HELPER: Turn a sorted child list into stack items (entry, indent) so that, when
+        # popped, the shorter alternate siblings come out first at indent+1 and the main
+        # (longest) child last at the parent's indent.
         if not children:
             return []
         main_child, *alternate_children = children
@@ -4353,6 +5241,10 @@ def _tree_layout(
         # immediately after their parent, indented one level, before continuing
         # down the main branch. Stable length sorting preserves storage order
         # when histories have equal lengths.
+        # [FUNCTION DOC]
+        # HELPER: Depth-first traversal from the given children, appending each unseen entry
+        # to the ordered list with its indent and pushing its own children. Mutates the
+        # enclosing ordered list, indent mapping and seen set.
         stack = child_stack_items(children, parent_indent)
         while stack:
             entry, indent = stack.pop()
@@ -4371,6 +5263,8 @@ def _tree_layout(
 
 
 def _is_tool_call_tree_entry(entry: SessionEntry) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: True for message entries holding an assistant message with tool calls.
     return (
         entry.type == "message"
         and isinstance(entry.message, AssistantMessage)
@@ -4379,6 +5273,10 @@ def _is_tool_call_tree_entry(entry: SessionEntry) -> bool:
 
 
 def _tree_entry_title(entry: SessionEntry) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Display title for a tree entry: "tool call: <names>" for text-less
+    # assistant tool-call messages, "<role>: <preview>" for other messages, "custom:",
+    # "compaction summary:" and "branch summary:" previews, or the entry type otherwise.
     match entry.type:
         case "message":
             message = entry.message
@@ -4401,10 +5299,17 @@ def _tree_entry_title(entry: SessionEntry) -> str:
 
 
 def _message_text_preview(message: AgentMessage) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Short whitespace-collapsed preview of a message's visible text.
     return _short_preview(message_text(message))
 
 
 def _short_preview(text: str, *, limit: int = 72) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Collapse whitespace; return it if within the limit (default 72), "(empty)"
+    # if blank, else truncate to limit-1 characters plus "...".
+    # KNOWN ISSUE: truncated previews are limit+2 characters long, slightly exceeding
+    # the limit.
     normalized = " ".join(text.split())
     if len(normalized) <= limit:
         return normalized or "(empty)"
@@ -4416,6 +5321,10 @@ def _messages_after_entry_on_active_path(
     entry_id: str,
     active_leaf_id: str | None,
 ) -> tuple[AgentMessage, ...]:
+    # [FUNCTION DOC]
+    # HELPER: Messages (including custom messages rebuilt from entries) that follow the
+    # given entry on the path from root to the active leaf; empty if there is no leaf,
+    # the path is invalid, or the entry is not on it.
     if active_leaf_id is None:
         return ()
     try:
@@ -4438,6 +5347,9 @@ def _messages_after_entry_on_active_path(
 
 
 def _custom_message_from_entry(entry: CustomMessageEntry) -> CustomMessage:
+    # [FUNCTION DOC]
+    # HELPER: Rebuild a custom message from a custom-message entry, converting the
+    # timestamp from seconds to rounded milliseconds.
     return CustomMessage(
         custom_type=entry.custom_type,
         content=entry.content,
@@ -4448,6 +5360,8 @@ def _custom_message_from_entry(entry: CustomMessageEntry) -> CustomMessage:
 
 
 def _storage_path(storage: SessionStorage) -> Path | None:
+    # [FUNCTION DOC]
+    # HELPER: The storage's file path attribute if it is a Path, else None.
     path = getattr(storage, "path", None)
     return path if isinstance(path, Path) else None
 
@@ -4459,6 +5373,12 @@ def _resolve_export_destination(
     session_path: Path | None,
     format: str,
 ) -> Path:
+    # [FUNCTION DOC]
+    # HELPER: Choose the export file path. No destination: default artifact path next to
+    # the cwd derived from the session file, or "<cwd>/tau-session.<format>". Relative
+    # destinations are resolved against the cwd; a path with a suffix is used as is;
+    # otherwise it is treated as a directory and a default file name (session file stem
+    # or "tau-session") is placed inside it.
     if destination is None:
         if session_path is not None:
             return default_session_export_artifact_path(
@@ -4480,6 +5400,9 @@ def _resolve_export_destination(
 
 
 def _session_export_title(session: CodingSession) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Export title: the indexed session title if any, else "Tau session <id>",
+    # else "Tau Session Export".
     manager = session.session_manager
     session_id = session.session_id
     if manager is not None and session_id is not None:
@@ -4491,6 +5414,11 @@ def _session_export_title(session: CodingSession) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _PreparedProvider:
+    # [CLASS DOC]
+    # HELPER: Immutable provider candidate built during load after trust/extension
+    # staging: provider instance, provider name, model, Hugging Face routing and mode,
+    # runtime provider config (None for dynamic), dynamic provider definition, and an
+    # optionally discovered runtime model catalog.
     """A runtime candidate built after the destination environment is trusted."""
 
     provider: ClosableModelProvider
@@ -4510,6 +5438,21 @@ async def _prepare_provider_selection(
     provider_registry: DynamicProviderRegistry,
     credential_store: FileCredentialStore | None = None,
 ) -> _PreparedProvider:
+    # [FUNCTION DOC]
+    # HELPER: Resolve and construct the startup provider.
+    # Provider name comes from the CLI request, replayed state, or the session's
+    # provider. If that name is an effective dynamic provider: the model is the request,
+    # the state's model (same provider), the provider default, or the only model; if
+    # still unknown or not offered and the provider can refresh (and the choice was
+    # explicit or resumed), refresh it with network (5 s timeout) and retry defaults.
+    # Raises ProviderConfigError if no model or model unavailable; builds it via the
+    # dynamic factory (errors converted to ProviderConfigError).
+    # Otherwise requires provider settings (ProviderConfigError), and for a Codex model
+    # not in the static list (unless TAU_OFFLINE) attempts live catalog discovery with a
+    # temporary provider (errors ignored, provider always closed) overlaying the
+    # catalog. Then resolves the provider/model selection, routing and mode, and builds
+    # the runtime provider with the startup thinking level (RuntimeError converted).
+    # Output: a prepared provider. Side effects: network discovery, provider creation.
     """Resolve and construct the provider after extension/project staging."""
     requested_provider = config.requested_provider
     requested_model = config.requested_model
@@ -4661,6 +5604,10 @@ def _session_inference_provider(
     provider_name: str,
     model: str,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Hugging Face routing to use: None for other providers; the configured
+    # route when resuming the same provider/model; otherwise the provider config's
+    # per-model inference provider (or None).
     """Preserve HF routing only for the same logical provider/model."""
     if provider_name != "huggingface":
         return None
@@ -4681,6 +5628,10 @@ def _session_inference_provider_mode(
     model: str,
     inference_provider: str | None,
 ) -> InferenceProviderMode:
+    # [FUNCTION DOC]
+    # HELPER: Routing mode: "automatic" for non-Hugging Face; for the same resumed
+    # provider/model the configured mode (or "fixed" if a route exists); else the mode
+    # configured for the model.
     """Preserve automatic/fixed HF routing for the same resumed model."""
     if provider.name != "huggingface":
         return "automatic"
@@ -4694,6 +5645,9 @@ def _session_inference_provider_mode(
 def _filter_tools(
     tools: Sequence[AgentTool], allowed_tool_names: frozenset[str] | None
 ) -> list[AgentTool]:
+    # [FUNCTION DOC]
+    # HELPER: Apply the allow-list to a composed tool list (by name); None keeps all.
+    # Returns a new list.
     """Apply ``CodingSessionConfig.allowed_tool_names`` to a composed tool list."""
     if allowed_tool_names is None:
         return list(tools)
@@ -4701,6 +5655,10 @@ def _filter_tools(
 
 
 def _configured_model_supports_images(config: CodingSessionConfig, model: str) -> bool | None:
+    # [FUNCTION DOC]
+    # HELPER: Whether the configured model accepts images: from the dynamic model's
+    # modalities (None if unknown), else from the runtime or settings provider config,
+    # else None.
     if config.dynamic_provider is not None:
         selected = next((item for item in config.dynamic_provider.models if item.id == model), None)
         if selected is None or selected.input_modalities is None:
@@ -4716,6 +5674,10 @@ def _configured_model_supports_images(config: CodingSessionConfig, model: str) -
 
 
 def _initial_model_for_config(config: CodingSessionConfig) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Model for a brand-new session: the configured model, or the provider's
+    # default if the configured model is not valid for it (only when both settings and
+    # a runtime config exist).
     if config.provider_settings is None or config.runtime_provider_config is None:
         return config.model
     provider = _provider_config_for_name(config, config.provider_name)
@@ -4729,6 +5691,10 @@ def _initial_model_for_config(config: CodingSessionConfig) -> str:
 
 
 def _runtime_model_for_state(config: CodingSessionConfig, state: SessionState) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Model to run after replay: the config model for dynamic providers; else the
+    # replayed state model (or config model), replaced by the config model or provider
+    # default when not valid for the provider.
     state_model = state.model or config.model
     if config.dynamic_provider is not None:
         return config.model
@@ -4749,6 +5715,10 @@ def _initial_thinking_level_for_config(
     *,
     model: str,
 ) -> ThinkingLevel:
+    # [FUNCTION DOC]
+    # HELPER: Thinking level for a brand-new session: a startup override (resolved
+    # against the provider when known), else the provider's preferred level for the
+    # model, else the configured level.
     provider = _provider_config_for_name(config, config.provider_name)
     if config.thinking_level_override is not None:
         if provider is None:
@@ -4773,6 +5743,11 @@ def _provider_config_for_name(
     config: CodingSessionConfig,
     provider_name: str,
 ) -> ProviderConfig | None:
+    # [FUNCTION DOC]
+    # HELPER: Provider config for a name: a matching Codex runtime config first (keeps
+    # live models), then settings, then the runtime config regardless of name, else None.
+    # KNOWN ISSUE: the final fallback returns the runtime config even when its name
+    # does not match; callers like pricing must re-check the name.
     if (
         isinstance(config.runtime_provider_config, OpenAICodexProviderConfig)
         and config.runtime_provider_config.name == provider_name
@@ -4792,6 +5767,9 @@ def _state_thinking_level(
     state: SessionState,
     default: ThinkingLevel,
 ) -> ThinkingLevel:
+    # [FUNCTION DOC]
+    # HELPER: The replayed state's thinking level, normalized, or the given default when
+    # the state has none (tolerates state objects without the attribute).
     thinking_level = getattr(state, "thinking_level", None)
     if thinking_level is None:
         return default
@@ -4807,6 +5785,11 @@ def _create_runtime_provider(
     inference_provider: str | None,
     response_headers_observer: Callable[[Mapping[str, str]], None] | None = None,
 ) -> ClosableModelProvider:
+    # [FUNCTION DOC]
+    # HELPER: Build a runtime provider from a provider config with the credential store,
+    # model and thinking level, passing the Hugging Face inference route and the
+    # response-header observer only when they are set. Propagates provider factory
+    # errors (ProviderConfigError or RuntimeError).
     if inference_provider is None and response_headers_observer is None:
         return create_model_provider(
             provider,
@@ -4836,6 +5819,9 @@ def _configured_inference_provider(
     provider: ProviderConfig | None,
     model: str,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: The configured Hugging Face route for a model (only for the
+    # OpenAI-compatible "huggingface" provider), else None.
     if not isinstance(provider, OpenAICompatibleProviderConfig) or provider.name != "huggingface":
         return None
     return provider.inference_providers.get(model)
@@ -4845,10 +5831,16 @@ def _configured_inference_provider_mode(
     provider: ProviderConfig | None,
     model: str,
 ) -> InferenceProviderMode:
+    # [FUNCTION DOC]
+    # HELPER: "fixed" when a route is configured for the model, else "automatic".
     return "fixed" if _configured_inference_provider(provider, model) is not None else "automatic"
 
 
 def _default_thinking_level_for_active_model(session: CodingSession) -> ThinkingLevel:
+    # [FUNCTION DOC]
+    # HELPER: Default thinking level for the session's active model: the provider's
+    # preferred level, falling back to the configured level (also used when no provider
+    # config is available).
     provider = session._active_provider_config()
     if provider is None:
         return session._config.thinking_level
@@ -4865,6 +5857,10 @@ def _preferred_thinking_level_for_model(
     model: str,
     fallback: ThinkingLevel,
 ) -> ThinkingLevel:
+    # [FUNCTION DOC]
+    # HELPER: Choose a thinking level for a model: the remembered per-model default if
+    # supported; else the fallback if supported or if the model lists no levels; else the
+    # provider's default level for the model, else the first supported level.
     levels = provider_thinking_levels(provider, model=model)
     preferred = provider.thinking_defaults.get(model)
     if preferred in levels:
@@ -4882,6 +5878,10 @@ def _coerced_thinking_level(
     current: ThinkingLevel,
     preferred: ThinkingLevel | None = None,
 ) -> ThinkingLevel:
+    # [FUNCTION DOC]
+    # HELPER: Keep the current level if supported (or if no levels exist); else use the
+    # preferred level if supported; else the provider default for the model, else the
+    # first supported level.
     levels = provider_thinking_levels(provider, model=model)
     if not levels or current in levels:
         return current
@@ -4892,6 +5892,9 @@ def _coerced_thinking_level(
 
 
 def _unavailable_thinking_message(session: CodingSession) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Error text "Thinking controls are unavailable for <provider>:<model>",
+    # with the specific reason appended when known.
     message = f"Thinking controls are unavailable for {session.provider_name}:{session.model}"
     reason = session.thinking_unavailable_reason
     if reason:
@@ -4900,6 +5903,10 @@ def _unavailable_thinking_message(session: CodingSession) -> str:
 
 
 def _sanitize_session_name(text: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Normalize model or user text into a session name: collapse whitespace,
+    # strip surrounding quotes and punctuation, strip punctuation/quotes from each word,
+    # drop empty words, and keep at most four words. Returns None if nothing remains.
     cleaned = " ".join(text.split()).strip()
     cleaned = cleaned.strip("\"'`“”‘’")
     cleaned = cleaned.strip(string.punctuation + " ")
@@ -4911,10 +5918,16 @@ def _sanitize_session_name(text: str) -> str | None:
 
 
 def _fallback_session_name(first_message: str) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Heuristic session name from the first user message (sanitized, first four
+    # words) or None.
     return _sanitize_session_name(first_message)
 
 
 def _terminal_command_context_message(command: str, output: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Markdown text telling the model the user ran a terminal command, with the
+    # command in a bash code block and the output in a text code block.
     return (
         "Terminal command executed by the user.\n\n"
         f"Command:\n```bash\n{command}\n```\n\n"
@@ -4923,6 +5936,10 @@ def _terminal_command_context_message(command: str, output: str) -> str:
 
 
 def parse_terminal_command(text: str) -> TerminalCommandRequest | None:
+    # [FUNCTION DOC]
+    # Parse input-bar shell syntax: "!!cmd" runs without adding output to context,
+    # "!cmd" runs and adds it; leading/trailing whitespace is ignored. Returns a request,
+    # or None for other text or an empty command.
     """Parse input-bar terminal command syntax."""
     stripped = text.strip()
     if stripped.startswith("!!"):
@@ -4942,6 +5959,9 @@ def _category_summary(
     before: tuple[tuple[object, ...], ...],
     after: tuple[tuple[object, ...], ...],
 ) -> ReloadCategorySummary:
+    # [FUNCTION DOC]
+    # HELPER: Build a reload category summary with before/after counts and whether the
+    # signature tuples differ.
     return ReloadCategorySummary(
         before=len(before),
         after=len(after),
@@ -4950,6 +5970,9 @@ def _category_summary(
 
 
 def _skill_signatures(skills: tuple[Skill, ...]) -> tuple[tuple[object, ...], ...]:
+    # [FUNCTION DOC]
+    # HELPER: Comparable tuples (name, path, description, content, model-invocation
+    # flag) for each skill, used to detect reload changes.
     return tuple(
         (
             skill.name,
@@ -4965,6 +5988,8 @@ def _skill_signatures(skills: tuple[Skill, ...]) -> tuple[tuple[object, ...], ..
 def _prompt_template_signatures(
     prompt_templates: tuple[PromptTemplate, ...],
 ) -> tuple[tuple[object, ...], ...]:
+    # [FUNCTION DOC]
+    # HELPER: Comparable tuples (name, path, description, content) for each template.
     return tuple(
         (template.name, str(template.path), template.description, template.content)
         for template in prompt_templates
@@ -4974,12 +5999,16 @@ def _prompt_template_signatures(
 def _context_file_signatures(
     context_files: tuple[ProjectContextFile, ...],
 ) -> tuple[tuple[object, ...], ...]:
+    # [FUNCTION DOC]
+    # HELPER: Comparable (path, content) pairs for context files.
     return tuple((context_file.path, context_file.content) for context_file in context_files)
 
 
 def _diagnostic_signatures(
     diagnostics: tuple[ResourceDiagnostic, ...],
 ) -> tuple[tuple[object, ...], ...]:
+    # [FUNCTION DOC]
+    # HELPER: Comparable tuples (kind, message, path, name, severity) for diagnostics.
     return tuple(
         (
             diagnostic.kind,
@@ -4993,6 +6022,8 @@ def _diagnostic_signatures(
 
 
 def _extension_signatures(runtime: ExtensionRuntime) -> tuple[tuple[object, ...], ...]:
+    # [FUNCTION DOC]
+    # HELPER: One-element tuples of loaded extension names (order-sensitive).
     return tuple((name,) for name in runtime.extension_names)
 
 
@@ -5005,6 +6036,11 @@ def _system_prompt_resource_signatures(
     append_system_prompt: str | None,
     append_system_prompt_paths: tuple[Path, ...],
 ) -> tuple[object, ...]:
+    # [FUNCTION DOC]
+    # HELPER: Comparable snapshot of every resource input that affects the system prompt:
+    # skills sorted by name (name, path, description, invocation flag; content
+    # excluded), context file signatures, custom prompt text and path, combined append
+    # prompt text, and append prompt paths.
     prompt_skills = tuple(
         (skill.name, str(skill.path), skill.description, skill.disable_model_invocation)
         for skill in sorted(skills, key=lambda item: item.name)
@@ -5023,6 +6059,9 @@ def _provider_config_or_none(
     settings: ProviderSettings | None,
     provider_name: str | None,
 ) -> ProviderConfig | None:
+    # [FUNCTION DOC]
+    # HELPER: Look up a provider config, returning None when settings or name are
+    # missing or the provider is unknown.
     if settings is None or provider_name is None:
         return None
     try:
@@ -5035,6 +6074,10 @@ def _codex_account_id(
     provider: OpenAICodexProviderConfig,
     credential_store: FileCredentialStore,
 ) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: Codex account id from the stored OAuth credential (if a credential name is
+    # configured), else decoded from an access token in the provider's API-key
+    # environment variable, else None.
     if provider.credential_name:
         credential = credential_store.get_oauth(provider.credential_name)
         if credential is not None and credential.account_id:
@@ -5046,6 +6089,9 @@ def _provider_settings_with_runtime_catalogs(
     settings: ProviderSettings | None,
     catalogs: Mapping[str, RuntimeModelCatalog],
 ) -> ProviderSettings | None:
+    # [FUNCTION DOC]
+    # HELPER: Return settings with each provider overlaid by its runtime catalog (or the
+    # input unchanged when there are no settings or catalogs).
     if settings is None or not catalogs:
         return settings
     providers = tuple(
@@ -5059,6 +6105,14 @@ def _provider_with_runtime_model_catalog(
     provider: ProviderConfig,
     catalog: RuntimeModelCatalog | None,
 ) -> ProviderConfig:
+    # [FUNCTION DOC]
+    # HELPER: Overlay a live account-specific catalog onto a Codex provider config (other
+    # providers unchanged): models from the catalog, default model kept if present else
+    # the first catalog model, context windows from live limits or existing config,
+    # per-model metadata merged, thinking models, and thinking defaults. Does not touch
+    # durable settings.
+    # KNOWN ISSUE: an empty catalog (e.g. a stale on-disk cache) would make choosing the
+    # first model fail with an index error.
     """Overlay one account-specific catalog without changing durable settings."""
     if catalog is None or not isinstance(provider, OpenAICodexProviderConfig):
         return provider
@@ -5091,6 +6145,9 @@ def _runtime_model_thinking_defaults(
     provider: OpenAICodexProviderConfig,
     catalog: RuntimeModelCatalog,
 ) -> dict[str, ThinkingLevel]:
+    # [FUNCTION DOC]
+    # HELPER: Mapping from model id to thinking default: the user's remembered default,
+    # else the catalog's default level, omitted when neither exists.
     defaults: dict[str, ThinkingLevel] = {}
     for model in catalog.models:
         default = provider.thinking_defaults.get(model.id) or model.default_thinking_level
@@ -5103,6 +6160,11 @@ def _runtime_provider_model_metadata(
     provider: OpenAICodexProviderConfig,
     model: RuntimeModel,
 ) -> ProviderModelMetadata:
+    # [FUNCTION DOC]
+    # HELPER: Merge a live catalog model into existing per-model metadata: display name,
+    # reasoning flag (true if any thinking levels), input modalities, context window and
+    # max output tokens from live limits when available, and a thinking-level map where
+    # supported levels map to themselves ("off" maps to "none") and others to None.
     existing = provider.model_metadata.get(model.id, ProviderModelMetadata())
     supported = set(model.thinking_levels)
     thinking_level_map = {
@@ -5134,6 +6196,12 @@ def _load_session_resources(
     system_prompt_enabled: bool = True,
     custom_system_prompt_explicit: bool = False,
 ) -> SessionResources:
+    # [FUNCTION DOC]
+    # HELPER: Load all resources for the given (trust-filtered) paths: skills (unless
+    # disabled), prompt templates, project context files (merged after explicit ones),
+    # and custom/append system prompt files (discovery disabled when an explicit system
+    # prompt is used; an explicit custom prompt suppresses the file). Collects all
+    # diagnostics. Returns a SessionResources bundle. Side effects: filesystem reads.
     loaded_skills: list[Skill]
     skill_diagnostics: list[ResourceDiagnostic]
     if skills_enabled:
@@ -5176,6 +6244,9 @@ def _append_prompt_sections(
     paths: tuple[Path, ...],
     explicit_prompt: str | None,
 ) -> tuple[PromptSection, ...]:
+    # [FUNCTION DOC]
+    # HELPER: Build prompt sections pairing each append prompt with its source file path
+    # (strict pairing), followed by the CLI-provided append prompt if any.
     """Pair append content with its file or CLI origin in composition order."""
     sections = [
         PromptSection(title=None, body=prompt, source=str(path))
@@ -5193,6 +6264,9 @@ def _append_prompt_sections(
 
 
 def _custom_prompt_source(*, explicit: bool, path: Path | None) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Source label for the custom prompt: "CLI --system-prompt" when explicit,
+    # else the file path, else "runtime configuration".
     if explicit:
         return "CLI --system-prompt"
     return str(path) if path is not None else "runtime configuration"
@@ -5202,6 +6276,9 @@ def _merge_context_files(
     explicit: tuple[ProjectContextFile, ...],
     discovered: tuple[ProjectContextFile, ...],
 ) -> tuple[ProjectContextFile, ...]:
+    # [FUNCTION DOC]
+    # HELPER: Concatenate explicit then discovered context files, dropping later
+    # duplicates by path.
     merged: list[ProjectContextFile] = []
     seen: set[str] = set()
     for context_file in (*explicit, *discovered):
@@ -5218,6 +6295,11 @@ def _tool_history_repair_plan(
     context_entry_ids: tuple[str, ...],
     entries: tuple[SessionEntry, ...],
 ) -> tuple[str | None, tuple[AgentMessage, ...], ToolHistoryRepair] | None:
+    # [FUNCTION DOC]
+    # HELPER: Run tool-history repair on the active messages. If nothing changed, return
+    # None. Otherwise find the longest unchanged message prefix and return the parent id
+    # to branch from (the last unchanged entry, or the first context entry's parent when
+    # no prefix is unchanged), the repaired message suffix, and the repair record.
     repair = repair_tool_history(messages)
     if not repair.changed:
         return None
@@ -5241,16 +6323,25 @@ def _tool_history_repair_plan(
 
 
 def default_session_path(cwd: Path) -> Path:
+    # [FUNCTION DOC]
+    # Return Tau's default per-project session file path under the user's Tau home for
+    # the given cwd.
     """Return Tau's default user-home session path for a project cwd."""
     return TauPaths().default_session_path(cwd)
 
 
 def jsonl_session_storage(path: str | Path) -> JsonlSessionStorage:
+    # [FUNCTION DOC]
+    # Create JSONL append-only session storage for a file path.
     """Convenience factory for local JSONL coding-session storage."""
     return JsonlSessionStorage(path)
 
 
 def _append_session_entry_sync(storage: SessionStorage, entry: SessionEntry) -> None:
+    # [FUNCTION DOC]
+    # HELPER: Synchronously append one entry as a JSON line to JSONL storage (creating
+    # parent directories). Raises RuntimeError for other storage types.
+    # Side effect: file write.
     """Append an entry synchronously for slash commands that cannot await storage."""
     if isinstance(storage, JsonlSessionStorage):
         storage.path.parent.mkdir(parents=True, exist_ok=True)

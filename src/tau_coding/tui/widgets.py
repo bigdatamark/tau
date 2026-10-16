@@ -1,3 +1,14 @@
+# [MODULE DOC]
+# Textual widgets and Rich renderers for Tau's interactive TUI. Contains the
+# session sidebar (summary sections, clickable context/skill/prompt file lists,
+# extensions, brand) and its compact one-line variant; themed Markdown widgets
+# and fences; system prompt source rendering; transcript message widgets
+# (static and streaming) and the windowed, auto-following TranscriptView that
+# renders TuiState chat items; selection-text extraction; chat item, tool
+# invocation, tool batch and patch rendering; themed Markdown/code renderables;
+# completion suggestion rendering; and many formatting helpers (token counts,
+# costs, paths, git branch lookup). Module constants set the sidebar logo, list
+# limits and transcript DOM window sizes. Textual-only; not used by the core harness.
 """Small Textual widgets for Tau's interactive TUI."""
 
 from __future__ import annotations
@@ -65,76 +76,125 @@ SIDEBAR_COMMA_LIST_MAX_LINES = 3
 
 @dataclass(frozen=True, slots=True)
 class TranscriptLine:
+    # [CLASS DOC]
+    # Frozen single plain-text transcript line used by compatibility/inspection helpers.
     """Plain transcript line used by compatibility inspection helpers."""
 
     text: str
 
 
 class SessionSummarySource(Protocol):
+    # [CLASS DOC]
+    # Protocol of session attributes the sidebar and compact info display: cwd,
+    # model, provider, tools, skills, prompt templates, context files, system prompt
+    # files, token estimate and provider-usage flag, auto compact threshold, context
+    # window, thinking level, title, extension names and session stats.
     """Session attributes displayed by the sidebar."""
 
     @property
     def cwd(self) -> Path: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's cwd value shown in the sidebar.
 
     @property
     def model(self) -> str: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's model value shown in the sidebar.
 
     @property
     def provider_name(self) -> str: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's provider name value shown in the sidebar.
 
     @property
     def tools(self) -> Sequence[AgentTool]: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's tools value shown in the sidebar.
 
     @property
     def skills(self) -> Sequence[Skill]: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's skills value shown in the sidebar.
 
     @property
     def prompt_templates(self) -> Sequence[PromptTemplate]: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's prompt templates value shown in the sidebar.
 
     @property
     def context_files(self) -> Sequence[ProjectContextFile]: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's context files value shown in the sidebar.
 
     @property
     def system_prompt_files(self) -> Sequence[Path]: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's system prompt files value shown in the sidebar.
 
     @property
     def context_token_estimate(self) -> int: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's context token estimate value shown in the sidebar.
 
     @property
     def has_provider_context_usage(self) -> bool: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's has provider context usage value shown in the sidebar.
 
     @property
     def auto_compact_token_threshold(self) -> int | None: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's auto compact token threshold value shown in the sidebar.
 
     @property
     def context_window_tokens(self) -> int: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's context window tokens value shown in the sidebar.
 
     @property
     def thinking_level(self) -> str: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's thinking level value shown in the sidebar.
 
     @property
     def session_title(self) -> str | None: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's session title value shown in the sidebar.
 
     @property
     def extension_names(self) -> Sequence[str]: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's extension names value shown in the sidebar.
 
     @property
     def session_stats(self) -> SessionStats: ...
+        # [FUNCTION DOC]
+        # Protocol property: the session's session stats value shown in the sidebar.
 
 
 class SidebarFileItem(Static):
+    # [CLASS DOC]
+    # Focusable static row representing one file in the sidebar (bullet plus label,
+    # tooltip with full path); click or Enter posts an OpenRequested message.
     """One keyboard- and mouse-openable file in the session sidebar."""
 
     can_focus = True
 
     class OpenRequested(Message):
+        # [CLASS DOC]
+        # Message asking the app to open the item's file in the main area; carries the item.
         """Request opening this item's file in the main area."""
 
         def __init__(self, item: SidebarFileItem) -> None:
+            # [FUNCTION DOC]
+            # Store the originating sidebar item.
             super().__init__()
             self.item = item
 
     def __init__(self, label: str, *, path: Path, kind: str, bullet: str = "•") -> None:
+        # [FUNCTION DOC]
+        # Render "  <bullet> <label>" without markup and store path, kind, label and a
+        # path tooltip.
         super().__init__(f"  {bullet} {label}", classes="sidebar-file-item", markup=False)
         self.path = path
         self.kind = kind
@@ -142,12 +202,16 @@ class SidebarFileItem(Static):
         self.tooltip = str(path)
 
     def on_click(self, event: Any) -> None:
+        # [FUNCTION DOC]
+        # On primary (button 1) click, stop the event and post OpenRequested.
         """Open the represented file on a primary click."""
         if event.button == 1:
             event.stop()
             self.post_message(self.OpenRequested(self))
 
     def on_key(self, event: Any) -> None:
+        # [FUNCTION DOC]
+        # On Enter, stop and prevent default handling and post OpenRequested.
         """Open the represented file from keyboard focus."""
         if event.key == "enter":
             event.stop()
@@ -156,9 +220,18 @@ class SidebarFileItem(Static):
 
 
 class SessionSidebar(Vertical):
+    # [CLASS DOC]
+    # Vertical sidebar: scrollable summary content, a "context" file list, more
+    # summary sections, collapsible skills and prompts file lists, extensions text
+    # and extension-contributed sections, and pinned branding at the bottom.
+    # Caches a fingerprint to skip redundant redraws.
     """Compact sidebar with collapsible resource lists and pinned branding."""
 
     def compose(self) -> Any:
+        # [FUNCTION DOC]
+        # Yield the scroll container with placeholders, separators (dark theme until
+        # updated), the context list, the collapsed skills and prompts sections and the
+        # extensions containers, then the brand static.
         with VerticalScroll(id="sidebar-scroll"):
             yield Static("", id="sidebar-content")
             yield Static(_sidebar_separator(theme=TAU_DARK_THEME), classes="sidebar-separator")
@@ -199,6 +272,13 @@ class SessionSidebar(Vertical):
         *,
         theme: TuiTheme = TAU_DARK_THEME,
     ) -> None:
+        # [FUNCTION DOC]
+        # Skip if the session fingerprint is unchanged; otherwise build sidebar content
+        # and update: summary sections 0-3 above context, context file widgets,
+        # summary sections from index 5 below context, skills title and files, prompts
+        # title and files, extensions, separators and brand, all in the given theme.
+        # Note: summary section index 4 is intentionally not rendered here (the context
+        # list widgets replace it). Mutates widgets.
         """Redraw the sidebar only when displayed session metadata changed."""
         fingerprint = _session_summary_fingerprint(session, theme=theme)
         if fingerprint == self._summary_fingerprint:
@@ -244,6 +324,8 @@ class SessionSidebar(Vertical):
 
 
 class CompactSessionInfo(Static):
+    # [CLASS DOC]
+    # Single-line session metadata static for narrow layouts, with fingerprint caching.
     """Single-line session metadata for narrow TUI layouts."""
 
     _summary_fingerprint: tuple[object, ...] | None = None
@@ -254,6 +336,8 @@ class CompactSessionInfo(Static):
         *,
         theme: TuiTheme = TAU_DARK_THEME,
     ) -> None:
+        # [FUNCTION DOC]
+        # Re-render the compact info only when the session fingerprint changed.
         """Redraw compact session metadata only when its inputs changed."""
         fingerprint = _session_summary_fingerprint(session, theme=theme)
         if fingerprint == self._summary_fingerprint:
@@ -263,11 +347,16 @@ class CompactSessionInfo(Static):
 
 
 def _sidebar_resource_title(label: str, detail: str, *, theme: TuiTheme) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Textual markup "label (detail)" with a bold label and muted detail.
     """Style a resource label separately from its quieter summary."""
     return f"[bold {theme.prompt_text}]{label}[/] [{theme.completion_description}]({detail})[/]"
 
 
 def _skill_section_title(session: SessionSummarySource, *, theme: TuiTheme) -> str:
+    # [FUNCTION DOC]
+    # HELPER: skills title with count and the estimated token footprint of the
+    # skills prompt block (zero when no read tool is active, matching prompt gating).
     """Summarize skill count and estimated system-prompt footprint."""
     skill_prompt = (
         format_skills_for_prompt(session.skills)
@@ -287,6 +376,10 @@ def _session_summary_fingerprint(
     *,
     theme: TuiTheme,
 ) -> tuple[object, ...]:
+    # [FUNCTION DOC]
+    # HELPER: tuple of every displayed input (theme, cwd, provider, model, thinking,
+    # token figures, title, stats, extensions, tool names, skill/template/context
+    # identities, system prompt files) used to detect changes.
     return (
         theme.name,
         session.cwd,
@@ -312,6 +405,9 @@ def _session_summary_fingerprint(
 
 
 class TauMarkdownBlock(MarkdownParagraph):
+    # [CLASS DOC]
+    # Markdown paragraph block that applies Tau's link color to clickable spans and
+    # guards selection on unmounted blocks.
     """Markdown paragraph that applies Tau's themed inline link color.
 
     Subclasses ``MarkdownParagraph`` (not ``MarkdownBlock``) so paragraph
@@ -328,6 +424,8 @@ class TauMarkdownBlock(MarkdownParagraph):
 
     @property
     def allow_select(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: selectable only once mounted (has a parent) to avoid a Textual crash.
         """Only allow native selection once Textual has mounted the block.
 
         Textual may hit freshly-created Markdown blocks during a mouse-down before
@@ -338,6 +436,9 @@ class TauMarkdownBlock(MarkdownParagraph):
         return self.parent is not None and super().allow_select
 
     def _token_to_content(self, token: Any) -> Any:
+        # [FUNCTION DOC]
+        # HELPER: convert a token via Textual, then, inside a themed Markdown widget,
+        # prefix the link style onto spans carrying click metadata. Returns new content.
         content = super()._token_to_content(token)
         markdown = self._markdown
         if not isinstance(markdown, ThemedMarkdownWidget):
@@ -353,6 +454,8 @@ class TauMarkdownBlock(MarkdownParagraph):
 
 
 class TauMarkdownFence(MarkdownFence):
+    # [CLASS DOC]
+    # Code fence that repairs highlighter output containing out-of-range spans.
     """Code fence that discards invalid spans produced by Textual's highlighter."""
 
     @classmethod
@@ -363,6 +466,9 @@ class TauMarkdownFence(MarkdownFence):
         ansi: bool = False,
         dark: bool = False,
     ) -> Content:
+        # [FUNCTION DOC]
+        # Highlight via Textual; if any span lies outside the text, clamp spans to the
+        # text bounds and drop empty ones. Returns content.
         content = super().highlight(code, language, ansi=ansi, dark=dark)
         text_length = len(content.plain)
         if all(0 <= span.start < span.end <= text_length for span in content.spans):
@@ -376,10 +482,15 @@ class TauMarkdownFence(MarkdownFence):
 
 
 class ThemedMarkdownWidget(TextualMarkdown):
+    # [CLASS DOC]
+    # Textual Markdown widget with Tau block classes (paragraph, fence, code block)
+    # and themed CSS variables for headings, inline code, bullets, fences and tables.
     """Textual Markdown widget reserved for Tau transcript streaming."""
 
     @property
     def allow_select(self) -> bool:
+        # [FUNCTION DOC]
+        # Property: selectable only while attached to a parent.
         """Ignore stale mouse hits after a transcript widget is detached.
 
         Textual's selection startup dereferences the selected widget's parent.
@@ -445,6 +556,8 @@ class ThemedMarkdownWidget(TextualMarkdown):
         theme: TuiTheme,
         classes: str | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Remember the theme's link style and initialize the Markdown widget.
         self.tau_link_style = theme.markdown_link
         super().__init__(markdown, classes=classes)
 
@@ -459,6 +572,9 @@ TRANSCRIPT_WINDOW_OVERSCAN_ITEMS = 40
 
 
 class TranscriptWindowBoundary(Static):
+    # [CLASS DOC]
+    # One-line non-selectable sentinel telling how many transcript items are hidden
+    # earlier or later outside the DOM window.
     """Small paging sentinel shown when transcript items are outside the DOM window."""
 
     ALLOW_SELECT = False
@@ -473,20 +589,29 @@ class TranscriptWindowBoundary(Static):
     """
 
     def __init__(self, direction: Literal["earlier", "later"], count: int) -> None:
+        # [FUNCTION DOC]
+        # Store the direction and render the label for the count.
         self.direction = direction
         super().__init__(self._label(count), classes=f"transcript-window-{direction}")
 
     def update_count(self, count: int) -> None:
+        # [FUNCTION DOC]
+        # Update the label text without triggering layout.
         """Update the hidden-item count without scheduling a layout pass."""
         self.update(self._label(count), layout=False)
 
     def _label(self, count: int) -> str:
+        # [FUNCTION DOC]
+        # HELPER: "arrow Scroll for N earlier/later message(s)".
         noun = "message" if count == 1 else "messages"
         arrow = "↑" if self.direction == "earlier" else "↓"
         return f"{arrow} Scroll for {count} {self.direction} {noun}"
 
 
 class SystemPromptSectionWidget(Vertical):
+    # [CLASS DOC]
+    # Block for one system prompt source: numbered colored name, source origin and
+    # Markdown body over a faint tinted background with a colored left border.
     """One prompt source with a matching accent and faint background."""
 
     DEFAULT_CSS = """
@@ -522,6 +647,9 @@ class SystemPromptSectionWidget(Vertical):
         index: int,
         theme: TuiTheme,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store source, index and theme, pick the kind color and set background blend
+        # (8 percent) and left border.
         self.source = source
         self.index = index
         self._theme = theme
@@ -535,6 +663,8 @@ class SystemPromptSectionWidget(Vertical):
         self.styles.border_left = ("tall", self.source_color)
 
     def compose(self) -> Any:
+        # [FUNCTION DOC]
+        # Yield the name line, origin line and Markdown body (protected-escaped content).
         name = Text()
         name.append(f"{self.index:02d} · ", style=self._theme.muted_text)
         name.append(self.source.label, style=f"bold {self.source_color}")
@@ -550,6 +680,8 @@ class SystemPromptSectionWidget(Vertical):
 
 
 class SystemPromptSourcesWidget(Vertical):
+    # [CLASS DOC]
+    # Container rendering a "/system" heading followed by one section per source.
     """Structured rendering for a sourced system prompt."""
 
     DEFAULT_CSS = """
@@ -566,11 +698,15 @@ class SystemPromptSourcesWidget(Vertical):
     """
 
     def __init__(self, sources: tuple[SystemPromptSource, ...], *, theme: TuiTheme) -> None:
+        # [FUNCTION DOC]
+        # Store sources and theme.
         self.sources = sources
         self._theme = theme
         super().__init__()
 
     def compose(self) -> Any:
+        # [FUNCTION DOC]
+        # Yield the heading and numbered section widgets starting at 1.
         yield Static(
             Text("/system", style=f"bold {self._theme.accent}"), classes="system-prompt-title"
         )
@@ -579,6 +715,8 @@ class SystemPromptSourcesWidget(Vertical):
 
 
 def _system_prompt_source_color(source: SystemPromptSource, *, theme: TuiTheme) -> str:
+    # [FUNCTION DOC]
+    # HELPER: map a source kind to a theme color. Raises KeyError for unknown kinds.
     """Choose a stable theme color for one prompt-source kind."""
     return {
         "default": theme.accent,
@@ -592,6 +730,11 @@ def _system_prompt_source_color(source: SystemPromptSource, *, theme: TuiTheme) 
 
 
 class TranscriptMessageWidget(Horizontal):
+    # [CLASS DOC]
+    # One transcript message: computes selection text and Markdown, chooses a role
+    # style, and renders either system prompt sources, a custom-markup body, a plain
+    # Rich body, or a themed Markdown body. Non-borderless roles get a left border
+    # and background.
     """One selectable transcript message rendered as a full-height role block."""
 
     DEFAULT_CSS = """
@@ -623,6 +766,11 @@ class TranscriptMessageWidget(Horizontal):
         invocation: str | None = None,
         result_markup: str | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Store item and role-specific options (custom markup only for custom role,
+        # invocation and result markup only for tool role), precompute selection text,
+        # Markdown and a plain render key, then set padding, border and background
+        # according to the role.
         self.item = item
         self._custom_markup = custom_markup if item.role == "custom" else None
         self._show_tool_results = show_tool_results
@@ -662,9 +810,16 @@ class TranscriptMessageWidget(Horizontal):
                 self.styles.background = background
 
     def compose(self) -> Any:
+        # [FUNCTION DOC]
+        # Yield the body widget.
         yield self._body_widget()
 
     def _body_widget(self) -> Widget:
+        # [FUNCTION DOC]
+        # HELPER: build the body: a system prompt sources widget when present; a plain
+        # static with custom markup for custom items; a plain Rich body for roles that
+        # use plain rendering; otherwise a themed Markdown widget. Applies the role's
+        # foreground and background colors. Returns the widget.
         body: Static | ThemedMarkdownWidget
         if self.item.system_prompt_sources is not None:
             return SystemPromptSourcesWidget(self.item.system_prompt_sources, theme=self._theme)
@@ -709,6 +864,9 @@ class TranscriptMessageWidget(Horizontal):
         return body
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        # [FUNCTION DOC]
+        # Return the selected portion of the plain selection text (not the rendered
+        # markup) with a newline separator, or nothing when the selection is empty.
         """Return selected plain text from this message, not rendered Markdown markup."""
         selected_text = _extract_text_selection(self.selection_text, selection)
         if not selected_text:
@@ -722,6 +880,15 @@ class TranscriptMessageWidget(Horizontal):
         invocation: str | None = None,
         result_markup: str | None = None,
     ) -> bool:
+        # [FUNCTION DOC]
+        # Re-render a plain-body (non-custom) row in place for frequent updates such as
+        # spinners and progress. Recomputes role style and selection text; if the render
+        # key is unchanged returns true without work. Otherwise updates cached state,
+        # border, background and Markdown text and updates the plain body static.
+        # Returns false when the item is custom, not plain-rendered, or the body widget
+        # is missing (caller should remount).
+        # KNOWN ISSUE: unlike the constructor, this always applies the left border and
+        # background, even for borderless roles or system prompt items.
         """Re-render a plain-body row's text in place; False when unsupported.
 
         Used for high-frequency updates (spinner frames, live tool progress)
@@ -784,6 +951,10 @@ class TranscriptMessageWidget(Horizontal):
 
 
 class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
+    # [CLASS DOC]
+    # Markdown widget for an assistant or thinking block that receives streamed
+    # fragments through a Textual MarkdownStream, with streaming/finalized CSS
+    # states (fences do not scroll horizontally while streaming).
     """One assistant or thinking Markdown block that accepts streamed fragments."""
 
     DEFAULT_CSS = """
@@ -810,6 +981,10 @@ class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
     """
 
     def __init__(self, item: ChatItem, *, theme: TuiTheme) -> None:
+        # [FUNCTION DOC]
+        # Raise ValueError unless the item is assistant or thinking. Store item and
+        # selection text, initialize the Markdown, add streaming classes and apply the
+        # role foreground color.
         if item.role not in {"assistant", "thinking"}:
             raise ValueError("Streaming transcript widgets only support assistant/thinking items")
         self.item = item
@@ -827,11 +1002,16 @@ class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
 
     @property
     def stream(self) -> MarkdownStream:
+        # [FUNCTION DOC]
+        # Property: lazily create and return the Markdown stream for this widget.
         if self._stream is None:
             self._stream = self.get_stream(self)
         return self._stream
 
     async def append_fragment(self, fragment: str) -> None:
+        # [FUNCTION DOC]
+        # Ignore empty fragments; otherwise append the text to the item and selection
+        # text (mutating the item) and write it to the stream.
         """Append streamed markdown without reparsing the full accumulated message."""
         if not fragment:
             return
@@ -840,6 +1020,8 @@ class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
         await self.stream.write(fragment)
 
     async def _stop_stream(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: detach and stop the stream (flushing pending fragments) if one exists.
         """Stop the Textual markdown stream, flushing pending fragments first."""
         stream = self._stream
         if stream is None:
@@ -848,6 +1030,8 @@ class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
         await stream.stop()
 
     async def replace_text(self, text: str) -> None:
+        # [FUNCTION DOC]
+        # Stop streaming, set item and selection text and re-render the Markdown fully.
         """Replace the current markdown text, usually with corrected final content."""
         await self._stop_stream()
         self.item.text = text
@@ -855,6 +1039,9 @@ class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
         await self.update(text)
 
     async def finalize(self, text: str | None = None) -> None:
+        # [FUNCTION DOC]
+        # If a differing final text is given, replace the content; else adopt it (if
+        # given) and stop the stream. Then switch CSS classes to finalized.
         """Mark the streamed message complete and restore finalized Markdown chrome."""
         if text is not None and text != self.selection_text:
             await self.replace_text(text)
@@ -868,10 +1055,14 @@ class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
         self.add_class("-finalized")
 
     async def on_unmount(self) -> None:
+        # [FUNCTION DOC]
+        # Stop the stream when removed mid-stream.
         """Cancel the markdown stream task if the widget is removed mid-stream."""
         await self._stop_stream()
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        # [FUNCTION DOC]
+        # Return the selected portion of the accumulated text, or nothing.
         """Return selected text from this streamed message block."""
         selected_text = _extract_text_selection(self.selection_text, selection)
         if not selected_text:
@@ -880,9 +1071,20 @@ class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
 
 
 class TranscriptView(VerticalScroll):
+    # [CLASS DOC]
+    # Scrollable transcript showing a bounded window (up to 200 items) of
+    # TuiState chat items as message widgets with "earlier/later" boundary
+    # sentinels, paging by 80 items near the edges while preserving an anchor
+    # message, following output until the user scrolls up, collapsing runs of hidden
+    # thinking into a placeholder, and hosting the live streaming assistant and
+    # thinking widgets. Maps item identity to mounted widgets for in-place updates.
     """Scrollable transcript view backed by individual selectable message widgets."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # [FUNCTION DOC]
+        # Drop legacy log options (wrap, highlight, markup), apply an optional minimum
+        # width, and initialize render state, theme, active streaming widgets, follow
+        # flags, window bounds and the item-to-widget map.
         for legacy_option in ("wrap", "highlight", "markup"):
             kwargs.pop(legacy_option, None)
         min_width = kwargs.pop("min_width", None)
@@ -908,22 +1110,32 @@ class TranscriptView(VerticalScroll):
         self._bottom_boundary: TranscriptWindowBoundary | None = None
 
     def on_mount(self) -> None:
+        # [FUNCTION DOC]
+        # Enable follow mode on mount.
         """Follow new transcript content until the user scrolls away."""
         self.follow_output()
 
     def follow_output(self) -> None:
+        # [FUNCTION DOC]
+        # Re-enable follow mode, anchor the scroll to the bottom and force a scroll to
+        # the end after the next refresh.
         """Return to follow mode for a user-driven turn or explicit jump to bottom."""
         self._follow_output = True
         self.anchor(True)
         self._request_follow_scroll(force=True)
 
     def _request_follow_scroll(self, *, force: bool = False) -> None:
+        # [FUNCTION DOC]
+        # HELPER: schedule (once, unless forced) a scroll to the end after layout,
+        # performed only if forced, following, or already at the bottom.
         """Scroll to the bottom after layout if follow mode is still active."""
         if self._follow_scroll_pending and not force:
             return
         self._follow_scroll_pending = True
 
         def scroll_if_still_following() -> None:
+            # [FUNCTION DOC]
+            # HELPER: clear the pending flag and scroll to the end if still appropriate.
             self._follow_scroll_pending = False
             if force or self._follow_output or self.is_vertical_scroll_end:
                 self.scroll_end(animate=False, immediate=True)
@@ -932,10 +1144,16 @@ class TranscriptView(VerticalScroll):
 
     @property
     def _should_follow_output(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER property: true when following or currently scrolled to the end.
         """Return whether new content should keep the viewport pinned to the bottom."""
         return self._follow_output or self.is_vertical_scroll_end
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        # [FUNCTION DOC]
+        # Scroll watcher: scrolling up disables follow; reaching the bottom of the
+        # latest window re-enables it. Near the top with earlier items hidden, or near
+        # the bottom with later items hidden, schedules a window shift.
         """Track follow mode and page the bounded transcript window near its edges."""
         super().watch_scroll_y(old_value, new_value)
         if new_value < old_value:
@@ -954,16 +1172,25 @@ class TranscriptView(VerticalScroll):
 
     @property
     def _window_is_latest(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER property: true when no state exists or the window reaches the last item.
         state = self._render_state
         return state is None or self._window_end >= len(state.items)
 
     def _schedule_window_shift(self, direction: Literal["earlier", "later"]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: schedule one window shift in the given direction unless one is pending.
         if self._window_shift_pending:
             return
         self._window_shift_pending = True
         self.call_later(self._shift_window, direction)
 
     async def _shift_window(self, direction: Literal["earlier", "later"]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: page the window earlier or later by the page size (keeping at most
+        # the window size), remember an anchor item at the old edge, redraw preserving
+        # the window, then after refresh scroll so the anchor stays in place and clear
+        # the pending flag.
         """Move the mounted window while keeping one existing message as the anchor."""
         state = self._render_state
         if state is None or not state.items:
@@ -991,6 +1218,9 @@ class TranscriptView(VerticalScroll):
         self._redraw(scroll_end=False, preserve_window=True)
 
         def restore_anchor() -> None:
+            # [FUNCTION DOC]
+            # HELPER: scroll to the anchor widget (top-aligned when paging earlier) and
+            # always clear the pending flag.
             try:
                 if anchor_item is None:
                     return
@@ -1009,10 +1239,14 @@ class TranscriptView(VerticalScroll):
         self.call_after_refresh(restore_anchor)
 
     async def finish_thinking_message(self) -> None:
+        # [FUNCTION DOC]
+        # Finalize the active streaming thinking block, if any.
         """Close a thinking block at its explicit stream boundary."""
         await self._finalize_active_thinking_message()
 
     async def _finalize_active_thinking_message(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: finalize and forget the active thinking widget.
         """Stop streaming for a completed thinking block before another block starts."""
         widget = self._active_thinking_widget
         if widget is None:
@@ -1021,6 +1255,8 @@ class TranscriptView(VerticalScroll):
         self._active_thinking_widget = None
 
     async def _finalize_active_assistant_message(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: finalize and forget the active assistant widget.
         """Stop streaming for a completed assistant block before another block starts."""
         widget = self._active_assistant_widget
         if widget is None:
@@ -1034,6 +1270,10 @@ class TranscriptView(VerticalScroll):
         *,
         theme: TuiTheme = TAU_DARK_THEME,
     ) -> None:
+        # [FUNCTION DOC]
+        # Render a TuiState. A new state object (or one with no mounted items) resets
+        # to follow mode and the latest window; the same state keeps the window when
+        # not following. Stores state and theme and redraws.
         """Render display state while keeping the mounted transcript DOM bounded."""
         same_state = self._render_state is state
         retained_projection = same_state and any(
@@ -1056,6 +1296,13 @@ class TranscriptView(VerticalScroll):
         *,
         theme: TuiTheme = TAU_DARK_THEME,
     ) -> None:
+        # [FUNCTION DOC]
+        # Rebuild only thinking rows in the current window after the show-thinking
+        # toggle: remove mounted thinking widgets, then walk window items inserting
+        # either full thinking widgets or one placeholder per consecutive hidden run
+        # before the next non-thinking widget (remaining ones before the bottom
+        # boundary). Updates the item map and placeholder flag, refreshes layout, and
+        # either follows output or restores the previous scroll offset.
         """Update thinking rows in the mounted window without touching unrelated widgets."""
         self._render_state = state
         self._render_theme = theme
@@ -1082,6 +1329,9 @@ class TranscriptView(VerticalScroll):
         hidden_run = False
 
         def flush(before: Widget | None) -> None:
+            # [FUNCTION DOC]
+            # HELPER: mount pending thinking widgets before the given widget and record them
+            # in the item map.
             nonlocal pending
             if not pending:
                 return
@@ -1141,6 +1391,15 @@ class TranscriptView(VerticalScroll):
             )
 
     def _redraw(self, *, scroll_end: bool, preserve_window: bool = False) -> None:
+        # [FUNCTION DOC]
+        # HELPER: full redraw of the window. Resets to the latest window unless
+        # preserving a valid window (then clamps it to the size limit). Removes all
+        # message and boundary widgets, clears active and map state, then mounts a top
+        # boundary, item widgets (hidden thinking runs share one placeholder; tool
+        # results expanded per state or item; custom markup, invocation and result
+        # resolved through the state), and either a bottom boundary or, at the latest
+        # window, a streaming widget for any buffered assistant text. Optionally
+        # requests a follow scroll.
         state = self._render_state
         if state is None:
             return
@@ -1240,6 +1499,14 @@ class TranscriptView(VerticalScroll):
         invocation: str | None = None,
         result_markup: str | None = None,
     ) -> TranscriptMessageWidget | StreamingTranscriptMessageWidget:
+        # [FUNCTION DOC]
+        # Append one chat item. Finalizes active streams. If the item lies beyond the
+        # window: when following, redraw at the latest window and return its widget;
+        # otherwise just update the later count. Builds the widget; if the item is
+        # outside the visible window (and not followed) returns it unmounted. Otherwise
+        # mounts it before the bottom boundary, records it, clears active streaming
+        # state, and re-windows when the window exceeds size plus overscan. Requests a
+        # follow scroll when appropriate. Returns the (possibly re-created) widget.
         """Append one item, paging to the latest window only for followed output."""
         should_follow = self._should_follow_output if not scroll_end else True
         await self._finalize_active_assistant_message()
@@ -1307,6 +1574,9 @@ class TranscriptView(VerticalScroll):
         *,
         theme: TuiTheme = TAU_DARK_THEME,
     ) -> None:
+        # [FUNCTION DOC]
+        # For every windowed tool, skill, branch summary or compaction summary item,
+        # update its widget with expansion from the state or the item's always-show flag.
         """Update only mounted rows whose rendering depends on result visibility."""
         self._render_state = state
         self._render_theme = theme
@@ -1331,6 +1601,10 @@ class TranscriptView(VerticalScroll):
         invocation: str | None = None,
         result_markup: str | None = None,
     ) -> bool:
+        # [FUNCTION DOC]
+        # Update a mounted item: try an in-place refresh; else mount a replacement after
+        # it, remove the old one and update the map, then follow if appropriate.
+        # Returns false when the item is not mounted as a message widget.
         """Update a mounted item in O(1); off-screen state is rendered when paged in."""
         child = self._item_widgets.get(id(item))
         if not isinstance(child, TranscriptMessageWidget) or child.item is not item:
@@ -1365,6 +1639,10 @@ class TranscriptView(VerticalScroll):
         scroll_end: bool = False,
         preserve_thinking: bool = False,
     ) -> StreamingTranscriptMessageWidget:
+        # [FUNCTION DOC]
+        # Return the active streaming assistant widget, creating and mounting an empty
+        # one before the bottom boundary if needed (finalizing active thinking unless
+        # preserved) and following output when appropriate.
         """Create the active assistant message widget if needed."""
         if self._active_assistant_widget is not None:
             return self._active_assistant_widget
@@ -1390,6 +1668,10 @@ class TranscriptView(VerticalScroll):
         theme: TuiTheme = TAU_DARK_THEME,
         scroll_end: bool = False,
     ) -> None:
+        # [FUNCTION DOC]
+        # Ignore deltas when the latest window is not mounted; otherwise ensure an
+        # active assistant widget (keeping thinking open), append the fragment and
+        # follow output when appropriate.
         """Append streamed assistant text when the latest window is mounted."""
         if not self._window_is_latest:
             return
@@ -1409,6 +1691,13 @@ class TranscriptView(VerticalScroll):
         show_thinking: bool,
         scroll_end: bool = False,
     ) -> None:
+        # [FUNCTION DOC]
+        # If the state's latest item is outside the window, only update the later
+        # count and return; otherwise extend the window to the end. When thinking is
+        # hidden, mount a single placeholder (once per run) before the active assistant
+        # widget or bottom boundary. When shown, create and mount an active streaming
+        # thinking widget if needed and append the fragment. Follows output when
+        # appropriate.
         """Append streamed thinking text or one hidden-thinking placeholder."""
         state = self._render_state
         if state is not None:
@@ -1461,6 +1750,10 @@ class TranscriptView(VerticalScroll):
         *,
         item: ChatItem | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # Finalize the active assistant widget with the final text and bind it to the
+        # canonical item (updating the map). Without an active widget, append the item
+        # or a new assistant item for non-empty text instead. Clears active state.
         """Finalize the active assistant widget after the provider sends the full message."""
         widget = self._active_assistant_widget
         if widget is None:
@@ -1489,6 +1782,12 @@ class TranscriptView(VerticalScroll):
         theme: TuiTheme = TAU_DARK_THEME,
         show_thinking: bool,
     ) -> None:
+        # [FUNCTION DOC]
+        # Replace the provisional streamed tail: remove all active message widgets,
+        # forget unmounted map entries, extend the window to the state end, and mount
+        # widgets for the canonical ordered items (hidden thinking runs collapsed to one
+        # placeholder, tool results collapsed). Re-windows if over size plus overscan,
+        # otherwise follows output when appropriate.
         """Replace only the provisional assistant tail with canonical ordered blocks."""
         should_follow = self._should_follow_output
         for widget in tuple(self._active_message_widgets):
@@ -1542,6 +1841,9 @@ class TranscriptView(VerticalScroll):
 
     @property
     def lines(self) -> tuple[TranscriptLine, ...]:
+        # [FUNCTION DOC]
+        # Property: compatibility view splitting every mounted message's selection text
+        # into transcript line records.
         """Compatibility text view for tests and lightweight transcript inspection."""
         messages = [
             child
@@ -1556,6 +1858,9 @@ class TranscriptView(VerticalScroll):
 
 
 def _identity_index(items: Sequence[ChatItem], target: ChatItem) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: index of the item by identity, checking the last element first, then
+    # scanning backwards; nothing when absent.
     """Return an item's identity-based index with an O(1) append-path fast path."""
     if items and items[-1] is target:
         return len(items) - 1
@@ -1566,6 +1871,8 @@ def _identity_index(items: Sequence[ChatItem], target: ChatItem) -> int | None:
 
 
 def _last_transcript_child_is_hidden_thinking_placeholder(children: Sequence[Widget]) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true if the last message child is the hidden-thinking placeholder.
     for child in reversed(children):
         if isinstance(child, TranscriptMessageWidget | StreamingTranscriptMessageWidget):
             return (
@@ -1584,6 +1891,9 @@ def _transcript_widget(
     invocation: str | None = None,
     result_markup: str | None = None,
 ) -> TranscriptMessageWidget | StreamingTranscriptMessageWidget:
+    # [FUNCTION DOC]
+    # HELPER: streaming widget for assistant/thinking items, else a message widget
+    # with the given rendering options.
     if item.role in {"assistant", "thinking"}:
         return StreamingTranscriptMessageWidget(item, theme=theme)
     return TranscriptMessageWidget(
@@ -1604,6 +1914,11 @@ def transcript_item_selection_text(
     invocation: str | None = None,
     result_markup: str | None = None,
 ) -> str:
+    # [FUNCTION DOC]
+    # Return the plain text a transcript item represents for selection/copying:
+    # custom items use markup-stripped text; tool batches use batch text; tools with
+    # rendered result markup use the invocation line plus stripped markup; others
+    # use the visible chat text.
     """Return the plain text represented by a selectable transcript item."""
     if item.role == "custom":
         return _custom_selection_text(custom_markup, item.text)
@@ -1618,6 +1933,9 @@ def transcript_item_selection_text(
 
 
 def _custom_markup_to_text(markup: str) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: parse Rich markup into text, falling back to literal text when the
+    # markup is malformed (never raises).
     """Parse Rich markup safely; fall back to literal text on malformed markup."""
     try:
         return Text.from_markup(markup)
@@ -1626,6 +1944,8 @@ def _custom_markup_to_text(markup: str) -> Text:
 
 
 def _custom_selection_text(markup: str | None, raw_text: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: plain text of custom markup, or the raw text when no markup.
     """Return the plain (markup-stripped) text of a custom item for selection."""
     if markup is None:
         return raw_text
@@ -1638,6 +1958,9 @@ def _custom_body_renderable(
     raw_text: str,
     body_style: str,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # HELPER: folding, wrapping text from custom markup, or from raw text in the
+    # body style when no markup.
     """Render a custom message body from renderer markup, or raw text on fallback."""
     if markup is None:
         return Text(raw_text, style=body_style, overflow="fold", no_wrap=False)
@@ -1648,6 +1971,9 @@ def _custom_body_renderable(
 
 
 def _split_rich_style_colors(style: str) -> tuple[str | None, str | None]:
+    # [FUNCTION DOC]
+    # HELPER: parse a Rich style string and return foreground and background color
+    # names (each possibly nothing). May raise on invalid style strings.
     """Split the foreground/background colors from a simple Rich style string."""
     text_style = Style.parse(style)
     foreground = text_style.color.name if text_style.color is not None else None
@@ -1656,6 +1982,8 @@ def _split_rich_style_colors(style: str) -> tuple[str | None, str | None]:
 
 
 def _use_plain_transcript_body(item: ChatItem) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true for alert/update highlights or user, tool, skill and error roles.
     """Return whether a transcript item can use fast selectable plain text."""
     return item.highlight in {"alert", "update"} or item.role in {
         "user",
@@ -1675,6 +2003,12 @@ def _transcript_plain_body_text(
     invocation: str | None = None,
     result_markup: str | None = None,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # HELPER: renderable for plain rows. Non-tool roles: folded text in body style.
+    # Tool batches: batch rendering. Tools: styled invocation line; grouped calls
+    # show only that; result markup is appended as a group; otherwise the expanded
+    # result text (or "… update" while running) is appended either as a patch/diff
+    # rendering or as plain text after a blank line.
     """Return styled transcript text for selectable plain rows."""
     if item.role != "tool":
         return Text(text, style=body_style, overflow="fold", no_wrap=False)
@@ -1733,6 +2067,8 @@ def _render_transcript_tool_invocation(
     accent_style: str | None,
     description_only: bool = False,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: thin wrapper over the styled tool invocation renderer.
     """Render tool descriptions in status color and argument details in gray."""
     return _styled_tool_invocation(
         text,
@@ -1748,6 +2084,10 @@ def _transcript_item_markdown(
     show_tool_results: bool,
     invocation: str | None = None,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Markdown source for an item: system prompt items get tag protection,
+    # assistant/thinking/status/summary items pass through, everything else is
+    # escaped plain Markdown.
     """Return Markdown for a transcript item using native Textual Markdown blocks."""
     visible_text = _visible_chat_text(
         item, show_tool_results=show_tool_results, invocation=invocation
@@ -1783,6 +2123,10 @@ _SYSTEM_PROMPT_URI_AUTOLINK_PATTERN = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]{1,31}
 
 
 def _system_prompt_markdown(text: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: wrap XML-like tags found outside protected ranges (fences, indented
+    # code, autolinks, inline code) in code spans, using a delimiter one backtick
+    # longer than any backtick run in the tag. Returns the rewritten text.
     """Protect prompt markup tags so Markdown displays them as highlighted code.
 
     Tags inside fenced blocks or existing inline code are left untouched. Tags
@@ -1809,6 +2153,9 @@ def _system_prompt_markdown(text: str) -> str:
 
 
 def _system_prompt_protected_ranges(text: str) -> tuple[tuple[int, int], ...]:
+    # [FUNCTION DOC]
+    # HELPER: sorted start/end ranges of fenced blocks, indented code lines, URI
+    # autolinks and inline code spans (outside blocks).
     """Return Markdown ranges that must not be rewritten."""
     block_ranges = [
         *_system_prompt_fenced_ranges(text),
@@ -1823,6 +2170,9 @@ def _system_prompt_protected_ranges(text: str) -> tuple[tuple[int, int], ...]:
 
 
 def _system_prompt_fenced_ranges(text: str) -> tuple[tuple[int, int], ...]:
+    # [FUNCTION DOC]
+    # HELPER: ranges of backtick or tilde fenced blocks (up to 3 spaces indent);
+    # an unterminated fence extends to the end of the text.
     """Find fenced Markdown blocks, including unterminated blocks."""
     ranges: list[tuple[int, int]] = []
     offset = 0
@@ -1859,6 +2209,9 @@ def _is_system_prompt_fence_close(
     character: str,
     minimum_length: int,
 ) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true if a line is a closing fence of the same character, at least as
+    # long as the opener, with nothing else after it.
     stripped = line.rstrip("\r\n")
     marker = re.match(rf"^ {{0,3}}{re.escape(character)}+", stripped)
     if marker is None or len(marker.group(0).lstrip()) < minimum_length:
@@ -1867,6 +2220,10 @@ def _is_system_prompt_fence_close(
 
 
 def _system_prompt_indented_code_ranges(text: str) -> tuple[tuple[int, int], ...]:
+    # [FUNCTION DOC]
+    # HELPER: ranges of lines starting with four spaces or a tab (indented code).
+    # Note: does not require a preceding blank line, so indented list continuation
+    # lines are also treated as code.
     """Find lines belonging to indented Markdown code blocks."""
     ranges: list[tuple[int, int]] = []
     offset = 0
@@ -1878,6 +2235,8 @@ def _system_prompt_indented_code_ranges(text: str) -> tuple[tuple[int, int], ...
 
 
 def _system_prompt_uri_autolink_ranges(text: str) -> tuple[tuple[int, int], ...]:
+    # [FUNCTION DOC]
+    # HELPER: ranges of angle-bracket URI autolinks.
     """Find CommonMark URI autolinks, including schemes without ``//``."""
     return tuple(
         (match.start(), match.end()) for match in _SYSTEM_PROMPT_URI_AUTOLINK_PATTERN.finditer(text)
@@ -1888,6 +2247,9 @@ def _system_prompt_inline_code_ranges(
     text: str,
     block_ranges: Sequence[tuple[int, int]],
 ) -> tuple[tuple[int, int], ...]:
+    # [FUNCTION DOC]
+    # HELPER: scan for backtick runs outside block ranges and record spans closed by
+    # a run of equal length; unmatched openers are skipped.
     """Find inline backtick code spans outside Markdown code blocks."""
     ranges: list[tuple[int, int]] = []
     position = 0
@@ -1923,6 +2285,9 @@ def _find_backtick_closer(
     delimiter_length: int,
     block_ranges: Sequence[tuple[int, int]],
 ) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: position of the next backtick run with exactly the delimiter length,
+    # skipping block ranges; nothing if not found.
     position = start
     while position < len(text):
         block_end = _protected_range_end(position, block_ranges)
@@ -1940,6 +2305,8 @@ def _find_backtick_closer(
 
 
 def _backtick_run_end(text: str, start: int) -> int:
+    # [FUNCTION DOC]
+    # HELPER: index just after a run of backticks starting at the position.
     end = start
     while end < len(text) and text[end] == "`":
         end += 1
@@ -1950,6 +2317,9 @@ def _protected_range_end(
     position: int,
     ranges: Sequence[tuple[int, int]],
 ) -> int | None:
+    # [FUNCTION DOC]
+    # HELPER: given sorted ranges, return the largest end among ranges containing
+    # the position, or nothing.
     protected_end: int | None = None
     for start, end in ranges:
         if position < start:
@@ -1960,10 +2330,14 @@ def _protected_range_end(
 
 
 def _position_in_ranges(position: int, ranges: Sequence[tuple[int, int]]) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true when the position falls inside any range.
     return _protected_range_end(position, ranges) is not None
 
 
 def _plain_markdown(text: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: escape each line of plain text as Markdown, joined by newlines.
     """Represent arbitrary plain text as wrapping Markdown paragraphs."""
     if not text:
         return ""
@@ -1971,6 +2345,8 @@ def _plain_markdown(text: str) -> str:
 
 
 def _escape_plain_markdown_line(line: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: backslash-escape backslashes and Markdown punctuation characters.
     """Escape Markdown syntax while preserving plain, wrapping text."""
     escaped = line.replace("\\", "\\\\")
     for character in "`*_{}[]()#+-.!|>":
@@ -1979,11 +2355,16 @@ def _escape_plain_markdown_line(line: str) -> str:
 
 
 def _extract_text_selection(text: str, selection: Selection) -> str:
+    # [FUNCTION DOC]
+    # HELPER: clip the selection to the text and extract the selected substring.
     clipped_selection = _clip_selection_to_text(selection, text)
     return clipped_selection.extract(text)
 
 
 def _clip_selection_to_text(selection: Selection, text: str) -> Selection:
+    # [FUNCTION DOC]
+    # HELPER: clamp selection start and end offsets to existing lines and columns;
+    # empty text yields an empty selection.
     lines = text.splitlines()
     if not lines:
         return Selection(Offset(0, 0), Offset(0, 0))
@@ -1994,6 +2375,8 @@ def _clip_selection_to_text(selection: Selection, text: str) -> Selection:
 
 
 def _clip_selection_offset(offset: Offset | None, lines: list[str]) -> Offset | None:
+    # [FUNCTION DOC]
+    # HELPER: clamp one offset's line and column into range; passes nothing through.
     if offset is None:
         return None
     line_index = min(max(offset.y, 0), len(lines) - 1)
@@ -2003,6 +2386,9 @@ def _clip_selection_offset(offset: Offset | None, lines: list[str]) -> Offset | 
 
 @dataclass(frozen=True, slots=True)
 class _SidebarContent:
+    # [CLASS DOC]
+    # HELPER: frozen bundle of sidebar renderables: summary sections, skills,
+    # prompts and extensions.
     summary_sections: tuple[RenderableType, ...]
     skills: RenderableType
     prompts: RenderableType
@@ -2014,6 +2400,9 @@ def render_session_sidebar(
     *,
     theme: TuiTheme = TAU_DARK_THEME,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # Render the whole sidebar as one static Rich group: summary sections plus
+    # skills, prompts and extensions sections separated by rules.
     """Render a static summary of the active coding session."""
     content = _build_sidebar_content(session, theme=theme)
     sections = (
@@ -2030,6 +2419,15 @@ def _build_sidebar_content(
     *,
     theme: TuiTheme,
 ) -> _SidebarContent:
+    # [FUNCTION DOC]
+    # HELPER: build the sidebar renderables. Summary sections in fixed order:
+    # 0 title (session title or "Untitled session"), 1 activity (turn and tool call
+    # counts), 2 usage (tokens in/out, estimated cost or "$N/A", optional cache hit
+    # rates latest/session, optional average TPS and TTFT), 3 compaction ("off" or
+    # auto threshold), 4 context files (limited bullet list), then an optional
+    # system prompt files section, then tools (line-limited comma list). Also
+    # builds grouped skills and prompts lists and the extensions comma list.
+    # Reads session state only.
     """Build shared sidebar renderables for static and interactive views."""
     title = Text(session.session_title or "Untitled session", style=f"bold {theme.accent}")
     stats = session.session_stats
@@ -2108,6 +2506,8 @@ def _separate_sidebar_sections(
     *,
     theme: TuiTheme,
 ) -> list[RenderableType]:
+    # [FUNCTION DOC]
+    # HELPER: interleave a separator rule between consecutive sections.
     separated: list[RenderableType] = []
     for index, section in enumerate(sections):
         if index:
@@ -2122,17 +2522,23 @@ def _sidebar_section(
     *,
     theme: TuiTheme,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # HELPER: render a bold section header and its body, both indented by one column.
     """Render one sidebar section without a surrounding border."""
     header = Text(title, style=f"bold {theme.prompt_text}")
     return Group(Padding(header, (0, 0, 0, 1)), Padding(body, (0, 0, 0, 1)))
 
 
 def _sidebar_separator(*, theme: TuiTheme) -> RenderableType:
+    # [FUNCTION DOC]
+    # HELPER: a horizontal rule in the border color with one blank line below.
     """Render a spaced divider between adjacent sidebar sections."""
     return Padding(Rule(style=theme.border), (0, 0, 1, 0))
 
 
 def _sidebar_brand(*, theme: TuiTheme) -> RenderableType:
+    # [FUNCTION DOC]
+    # HELPER: centered logo text followed by the current Tau version.
     brand = Text(style=f"bold {theme.prompt_text}")
     brand.append(TAU_SIDEBAR_LOGO)
     brand.append(f"  {current_version()}", style=theme.completion_description)
@@ -2144,6 +2550,9 @@ def render_compact_session_info(
     *,
     theme: TuiTheme = TAU_DARK_THEME,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # Render a two-column grid: styled cwd (with git branch) on the left; on the
+    # right provider:model, optional thinking level and the context usage line.
     """Render the session facts below the prompt."""
     left = _styled_cwd(session.cwd, theme=theme)
     right = Text(style=theme.muted_text, overflow="fold", no_wrap=False, justify="right")
@@ -2170,6 +2579,10 @@ def render_chat_item(
     show_tool_results: bool = False,
     custom_markup: str | None = None,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # Render a chat item as a standalone Rich block: a one-column role-colored bar
+    # and padded body (custom markup, tool body, or general chat body) inside
+    # padding styled by the role.
     """Render a chat item as a standalone Toad-inspired transcript block."""
     role_style = _chat_item_role_style(item, theme)
     if item.role == "custom":
@@ -2208,6 +2621,12 @@ def render_chat_item(
 
 
 def _chat_item_role_style(item: ChatItem, theme: TuiTheme) -> TuiRoleStyle:
+    # [FUNCTION DOC]
+    # HELPER: role style for an item: alert highlight uses the error color, update
+    # highlight uses bright yellow, finished tools get a success or error border
+    # based on the result's check or cross prefix, else the theme's role style.
+    # Raises KeyError for roles missing from the theme.
+    # KNOWN ISSUE: the update highlight color is hard-coded rather than themed.
     if item.highlight == "alert":
         return TuiRoleStyle(border=theme.error, body=f"bold {theme.error}")
     if item.highlight == "update":
@@ -2221,6 +2640,10 @@ def _chat_item_role_style(item: ChatItem, theme: TuiTheme) -> TuiRoleStyle:
 
 
 def _tool_accent_style(item: ChatItem, *, theme: TuiTheme) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: accent color for a tool row's description: running tools use the tool
+    # border color, success and failure use themed colors, others nothing; non-tool
+    # items get nothing.
     # Bare colors: the accent span inherits its background from the tool body
     # style, so it blends with any theme's transcript background.
     if item.role != "tool":
@@ -2235,10 +2658,17 @@ def _tool_accent_style(item: ChatItem, *, theme: TuiTheme) -> str | None:
 
 
 def _bash_row_is_description_only(item: ChatItem) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true for bash rows whose text is just an arrow-prefixed description.
     return item.tool_name == "bash" and item.text.startswith("→ ")
 
 
 def _tool_batch_row_invocation(row: ChatItem, *, expanded: bool) -> str:
+    # [FUNCTION DOC]
+    # HELPER: invocation text for one batch row. Grouped rows expand to each
+    # member's text (with results for file groups that carry results) or stay as
+    # the summary line. Expanded bash rows append the exact command. Running rows
+    # past the timer threshold get an elapsed-time suffix (reads the monotonic clock).
     if row.grouped_tool_calls is not None:
         if expanded:
             blocks = []
@@ -2273,6 +2703,9 @@ def _tool_batch_row_invocation(row: ChatItem, *, expanded: bool) -> str:
 
 
 def _tool_batch_selection_text(item: ChatItem, *, expanded: bool) -> str:
+    # [FUNCTION DOC]
+    # HELPER: join batch rows' invocation text, with results when expanded or
+    # "… update" for running rows; rows separated by blank lines when expanded.
     rows: list[str] = []
     for row in item.tool_batch_items or []:
         text = _tool_batch_row_invocation(row, expanded=expanded)
@@ -2291,6 +2724,9 @@ def _render_transcript_tool_batch(
     theme: TuiTheme,
     expanded: bool,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: same content as the batch selection text but as one styled Rich text
+    # with per-row accent spans.
     """Render a batch as one selectable Text value with per-row style spans."""
     rendered = Text(style=body_style, overflow="fold", no_wrap=False)
     for index, row in enumerate(item.tool_batch_items or []):
@@ -2321,6 +2757,10 @@ def _render_tool_chat_body(
     syntax_theme: str,
     theme: TuiTheme,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # HELPER: render a tool body for standalone chat blocks: batch rendering,
+    # otherwise the styled invocation, followed by the rendered result when
+    # expanded, not grouped and a result exists.
     if item.tool_batch_items is not None:
         return _render_transcript_tool_batch(
             item,
@@ -2354,6 +2794,8 @@ def _render_tool_invocation(
     accent_style: str | None,
     description_only: bool = False,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: thin wrapper over the styled tool invocation renderer.
     return _styled_tool_invocation(
         text,
         body_style=body_style,
@@ -2375,6 +2817,9 @@ def _styled_tool_invocation(
     accent_style: str | None,
     description_only: bool = False,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: render each line as neutral prefix, accented description and body-
+    # styled details using the section splitter; returns folded wrapping text.
     rendered = Text(style=body_style, overflow="fold", no_wrap=False)
     accent_style = accent_style or body_style
     for index, line in enumerate(text.splitlines() or [""]):
@@ -2392,6 +2837,12 @@ def _styled_tool_invocation(
 def _split_tool_invocation_sections(
     text: str, *, description_only: bool = False
 ) -> tuple[str, str, str]:
+    # [FUNCTION DOC]
+    # HELPER: split an invocation line into prefix, description and details:
+    # description-only arrow lines are all description; grouped file summaries
+    # ("Reading N files" and so on with optional progress) use the summary as
+    # description; arrow lines with " · $ " split before the command; other arrow
+    # lines split the first word as description; non-arrow lines are all details.
     """Split an invocation into neutral prefix, status description, and gray details."""
     if description_only and text.startswith("→ "):
         return "→ ", text[2:], ""
@@ -2415,6 +2866,12 @@ def _visible_chat_text(
     show_tool_results: bool,
     invocation: str | None = None,
 ) -> str:
+    # [FUNCTION DOC]
+    # HELPER: text shown for an item: summaries show a bold heading plus body when
+    # expanded, else their short text; non-tool/skill roles show their text; tool
+    # batches use batch text; tools use the invocation override if given; grouped
+    # calls show only the text; expanded results are appended after a blank line,
+    # or "… update" while running.
     if item.role == "branch_summary":
         if show_tool_results and item.tool_result_text:
             return f"**Branch Summary**\n\n{item.tool_result_text}"
@@ -2445,6 +2902,12 @@ def _render_chat_body(
     syntax_theme: str,
     theme: TuiTheme,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # HELPER: render body text: patch output as text plus diff syntax; assistant,
+    # thinking and status as themed Markdown (or plain text if a fence is
+    # unclosed); other roles via fenced-block rendering when possible, else plain
+    # text. KNOWN ISSUE: the final triple-backtick check is redundant since both
+    # branches return the same plain text.
     patch_body = _render_patch_body(
         text,
         body_style=body_style,
@@ -2488,6 +2951,10 @@ def _render_patch_body(
     syntax_theme: str,
     code_block_background: str,
 ) -> RenderableType | None:
+    # [FUNCTION DOC]
+    # HELPER: if text contains a "Patch:" line with non-empty content after it,
+    # return the preamble as plain text plus the patch highlighted as a diff with the
+    # code block background; else nothing.
     marker = "\nPatch:\n"
     if marker not in text:
         return None
@@ -2507,20 +2974,31 @@ def _render_patch_body(
 
 
 class ThemedCodeBlock(CodeBlock):
+    # [CLASS DOC]
+    # Rich Markdown code block rendered as wrapped, padded syntax with Tau's code
+    # block background.
     """Rich Markdown code block with Tau's themed background color."""
 
     @classmethod
     def create(cls, markdown: Markdown, token: Any) -> ThemedCodeBlock:
+        # [FUNCTION DOC]
+        # Build from a Markdown token: lexer from the info string's first word (default
+        # "text"), the Markdown's code theme and its code block background attribute.
         node_info = token.info or ""
         lexer_name = node_info.partition(" ")[0]
         code_block_background = getattr(markdown, "code_block_background", "default")
         return cls(lexer_name or "text", markdown.code_theme, code_block_background)
 
     def __init__(self, lexer_name: str, theme: str, code_block_background: str) -> None:
+        # [FUNCTION DOC]
+        # Initialize the code block and store the background color.
         super().__init__(lexer_name, theme)
         self.code_block_background = code_block_background
 
     def __rich_console__(self, console: Console, options: Any) -> Any:
+        # [FUNCTION DOC]
+        # Yield a Syntax renderable of the right-stripped code with word wrap, padding
+        # and the background color.
         code = str(self.text).rstrip()
         yield Syntax(
             code,
@@ -2533,6 +3011,8 @@ class ThemedCodeBlock(CodeBlock):
 
 
 class LeftAlignedMarkdownHeading(Heading):
+    # [CLASS DOC]
+    # Rich Markdown heading forcing left alignment for every heading level.
     """Rich Markdown heading that keeps all heading levels left-aligned."""
 
     LEVEL_ALIGN: ClassVar[dict[str, Literal["default", "left", "center", "right", "full"]]] = {
@@ -2546,6 +3026,10 @@ class LeftAlignedMarkdownHeading(Heading):
 
 
 class ThemedMarkdown(Markdown):
+    # [CLASS DOC]
+    # Rich Markdown renderer using left-aligned headings and themed code blocks,
+    # applying a temporary Rich theme for headings, bullets, links, tables, inline
+    # code and code block background.
     """Markdown renderer with Tau's softer heading/accent colors."""
 
     elements = {
@@ -2569,6 +3053,9 @@ class ThemedMarkdown(Markdown):
         inline_code_theme: str,
         style: str = "none",
     ) -> None:
+        # [FUNCTION DOC]
+        # Initialize Rich Markdown with style and code themes, and store the themed
+        # style strings and code block background.
         super().__init__(
             markup,
             style=style,
@@ -2583,6 +3070,8 @@ class ThemedMarkdown(Markdown):
         self.code_block_background = code_block_background
 
     def __rich_console__(self, console: Console, options: Any) -> Any:
+        # [FUNCTION DOC]
+        # Render the Markdown with the derived Rich theme pushed on the console.
         with console.use_theme(
             _markdown_theme(
                 self.heading_style,
@@ -2597,10 +3086,14 @@ class ThemedMarkdown(Markdown):
 
 
 def _markdown_highlight_style(theme: TuiTheme) -> str:
+    # [FUNCTION DOC]
+    # HELPER: the theme's Markdown heading style.
     return theme.markdown_heading
 
 
 def _markdown_inline_code_style(theme: TuiTheme) -> str:
+    # [FUNCTION DOC]
+    # HELPER: the theme's inline code style.
     return theme.markdown_inline_code
 
 
@@ -2612,6 +3105,10 @@ def _markdown_theme(
     table_border_style: str,
     code_block_background: str,
 ) -> Theme:
+    # [FUNCTION DOC]
+    # HELPER: build a Rich theme mapping Markdown style names (bold headings,
+    # bullets, numbers, block quotes, links, table header/border, inline code, code
+    # block background) from the given style strings. May raise on invalid styles.
     highlight = Style.parse(heading_style)
     inline_code = Style.parse(inline_code_style)
     link = Style.parse(link_style)
@@ -2646,6 +3143,11 @@ def _render_fenced_body(
     syntax_theme: str,
     code_block_background: str,
 ) -> RenderableType | None:
+    # [FUNCTION DOC]
+    # HELPER: render text with triple-backtick fences as alternating plain text and
+    # syntax-highlighted code blocks (unknown languages as "text"). Returns nothing
+    # when there are no fences or any fence is not at a line start, lacks a newline
+    # after the opener, or has no closing line, so callers fall back to plain text.
     if "```" not in text:
         return None
 
@@ -2692,15 +3194,23 @@ def _append_plain(
     *,
     body_style: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: append folded plain text (trailing newlines stripped) when non-empty.
     if text:
         renderables.append(_plain_text(text.rstrip("\n"), body_style=body_style))
 
 
 def _plain_text(text: str, *, body_style: str) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: folded, wrapping Rich text in the body style.
     return Text(text, style=body_style, overflow="fold", no_wrap=False)
 
 
 def _context_usage(session: SessionSummarySource) -> str:
+    # [FUNCTION DOC]
+    # HELPER: "used/limit" where limit is the auto compact threshold when positive,
+    # else the context window, and used is the compact token estimate only when
+    # provider usage is known, otherwise "?".
     threshold = session.auto_compact_token_threshold
     limit = session.context_window_tokens if threshold is None or threshold <= 0 else threshold
     used = (
@@ -2712,6 +3222,9 @@ def _context_usage(session: SessionSummarySource) -> str:
 
 
 def _styled_cwd(cwd: Path, *, theme: TuiTheme) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: home-shortened cwd with the parent muted and the last component
+    # emphasized, followed by the git branch in parentheses. Runs git.
     """Style the parent path as metadata while emphasizing the working directory."""
     short_path = _short_path(cwd)
     parent, separator, name = short_path.rpartition("/")
@@ -2726,6 +3239,8 @@ def _styled_cwd(cwd: Path, *, theme: TuiTheme) -> Text:
 
 
 def _format_milliseconds(value: float) -> str:
+    # [FUNCTION DOC]
+    # HELPER: rounded milliseconds below one second, else seconds with one decimal.
     rounded = round(value)
     if rounded < 1000:
         return f"{rounded}ms"
@@ -2733,6 +3248,8 @@ def _format_milliseconds(value: float) -> str:
 
 
 def _compact_token_count(value: int) -> str:
+    # [FUNCTION DOC]
+    # HELPER: "0k" for non-positive, "<1k" below 1000, else rounded thousands with "k".
     if value <= 0:
         return "0k"
     if value < 1000:
@@ -2745,10 +3262,15 @@ def _context_file_labels(
     *,
     cwd: Path,
 ) -> list[str]:
+    # [FUNCTION DOC]
+    # HELPER: display labels for context files relative to cwd.
     return [_context_file_label(Path(context_file.path), cwd=cwd) for context_file in context_files]
 
 
 def _context_file_label(path: Path, *, cwd: Path) -> str:
+    # [FUNCTION DOC]
+    # HELPER: label for a path: relative to the resolved cwd when inside it,
+    # otherwise the home-shortened absolute path. Relative inputs are joined to cwd.
     expanded_path = path.expanduser()
     if not expanded_path.is_absolute():
         expanded_path = cwd / expanded_path
@@ -2763,6 +3285,10 @@ def _context_file_label(path: Path, *, cwd: Path) -> str:
 
 
 def _thinking_level(session: SessionSummarySource) -> str | None:
+    # [FUNCTION DOC]
+    # HELPER: thinking level to display: nothing when the session reports an empty
+    # available-levels tuple; else the explicit level, else a level from an
+    # optional state attribute, else "--". Uses dynamic attribute probing.
     available = getattr(session, "available_thinking_levels", None)
     if available == ():
         return None
@@ -2775,6 +3301,11 @@ def _thinking_level(session: SessionSummarySource) -> str | None:
 
 
 def _git_branch(cwd: Path) -> str:
+    # [FUNCTION DOC]
+    # HELPER: run git branch --show-current in cwd with a 0.5 second timeout and
+    # return the branch, or "--" on errors, timeouts or detached/empty output.
+    # KNOWN ISSUE: a blocking subprocess runs on the UI thread for every compact
+    # info or sidebar render whose fingerprint changed.
     try:
         result = run(
             ["git", "-C", str(cwd), "branch", "--show-current"],
@@ -2794,16 +3325,22 @@ def _git_branch(cwd: Path) -> str:
 
 
 def _has_unclosed_fence(text: str) -> bool:
+    # [FUNCTION DOC]
+    # HELPER: true when an odd number of lines start with triple backticks.
     fence_count = sum(1 for line in text.splitlines() if line.startswith("```"))
     return fence_count % 2 == 1
 
 
 def _fence_language(raw: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: first word of a fence info string, defaulting to "text".
     language = raw.strip().split(maxsplit=1)[0] if raw.strip() else ""
     return language or "text"
 
 
 def _syntax_language(raw: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: fence language if Pygments knows a lexer for it, else "text".
     language = _fence_language(raw)
     if language == "text":
         return language
@@ -2819,6 +3356,10 @@ def render_completion_suggestions(
     *,
     theme: TuiTheme = TAU_DARK_THEME,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # Render completion items as a two-column grid: category headers (with a blank
+    # row between categories), a "›" marker and selected styles on the selected
+    # item, and each item's display text with its description.
     """Render prompt completion suggestions in aligned command/description columns."""
     table = Table.grid(expand=True)
     table.add_column(no_wrap=True)
@@ -2848,6 +3389,9 @@ def render_completion_suggestions(
 
 @dataclass(frozen=True, slots=True)
 class _LineLimitedCommaList:
+    # [CLASS DOC]
+    # HELPER: Rich renderable showing a comma-separated list limited to a maximum
+    # number of wrapped lines, with a "...(N more)" suffix for omitted items.
     items: tuple[str, ...]
     empty: str
     style: str
@@ -2857,6 +3401,11 @@ class _LineLimitedCommaList:
         console: Console,
         options: ConsoleOptions,
     ) -> RenderResult:
+        # [FUNCTION DOC]
+        # HELPER: yield the empty text when no items; otherwise find the largest prefix
+        # of items whose wrapped text fits the line budget at the available width (if
+        # even one item does not fit, truncate it with an ellipsis), then append the
+        # hidden count line when items were omitted.
         if not self.items:
             yield Text(self.empty, style=self.style)
             return
@@ -2885,6 +3434,9 @@ class _LineLimitedCommaList:
         yield text
 
     def _truncate_to_line_budget(self, text: Text, *, console: Console, width: int) -> Text:
+        # [FUNCTION DOC]
+        # HELPER: keep only the first allowed wrapped lines, cropping the last one and
+        # adding an ellipsis when lines were dropped.
         wrapped_lines = list(text.wrap(console, width))
         visible_lines = [line.copy() for line in wrapped_lines[:SIDEBAR_COMMA_LIST_MAX_LINES]]
         if len(wrapped_lines) > SIDEBAR_COMMA_LIST_MAX_LINES:
@@ -2894,6 +3446,8 @@ class _LineLimitedCommaList:
         return Text("\n").join(visible_lines)
 
     def _text(self, items: Sequence[str]) -> Text:
+        # [FUNCTION DOC]
+        # HELPER: comma-joined folded text of the items in the list style.
         return Text(
             ", ".join(items),
             style=self.style,
@@ -2908,6 +3462,8 @@ def _comma_list(
     empty: str,
     theme: TuiTheme,
 ) -> RenderableType:
+    # [FUNCTION DOC]
+    # HELPER: build a line-limited comma list in the muted description style.
     return _LineLimitedCommaList(
         items=tuple(items),
         empty=empty,
@@ -2916,6 +3472,9 @@ def _comma_list(
 
 
 def _compact_usage_count(value: int) -> str:
+    # [FUNCTION DOC]
+    # HELPER: integer as-is below 1000, else one-decimal "k" or "m" with trailing
+    # zeros removed.
     if value < 1_000:
         return str(value)
     if value < 1_000_000:
@@ -2924,16 +3483,22 @@ def _compact_usage_count(value: int) -> str:
 
 
 def _format_cost(value: float) -> str:
+    # [FUNCTION DOC]
+    # HELPER: dollars with three decimals for positive values under one cent, else two.
     if 0 < value < 0.01:
         return f"${value:.3f}"
     return f"${value:.2f}"
 
 
 def _plural(count: int, singular: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: the singular word for a count of one, else the word with "s".
     return singular if count == 1 else f"{singular}s"
 
 
 def _replace_sidebar_file_widgets(container: Vertical, widgets: Sequence[Widget]) -> None:
+    # [FUNCTION DOC]
+    # HELPER: remove all children of the container and mount the new widgets.
     """Replace a sidebar file list after its session-resource fingerprint changed."""
     container.remove_children()
     if widgets:
@@ -2946,6 +3511,10 @@ def _context_file_widgets(
     cwd: Path,
     theme: TuiTheme,
 ) -> list[Widget]:
+    # [FUNCTION DOC]
+    # HELPER: up to the bullet limit of clickable context file items, a "...(N
+    # more)" overflow static, or a "No context files" static; non-item widgets get
+    # the muted color.
     widgets: list[Widget] = [
         SidebarFileItem(
             _context_file_label(Path(context_file.path), cwd=cwd),
@@ -2977,6 +3546,9 @@ def _skill_file_widgets(
     cwd: Path,
     theme: TuiTheme,
 ) -> list[Widget]:
+    # [FUNCTION DOC]
+    # HELPER: group skills by origin directory (the parent of a SKILL.md folder, or
+    # the file's directory) and build grouped clickable widgets.
     grouped: dict[str, list[Skill]] = {}
     for skill in skills:
         origin = skill.path.parent.parent if skill.path.name == "SKILL.md" else skill.path.parent
@@ -2990,6 +3562,8 @@ def _prompt_file_widgets(
     cwd: Path,
     theme: TuiTheme,
 ) -> list[Widget]:
+    # [FUNCTION DOC]
+    # HELPER: group prompt templates by directory and build grouped clickable widgets.
     grouped: dict[str, list[PromptTemplate]] = {}
     for template in templates:
         origin = _resource_origin_label(template.path.parent, cwd=cwd)
@@ -3004,6 +3578,10 @@ def _grouped_sidebar_file_widgets[SidebarResource: (Skill, PromptTemplate)](
     kind: str,
     theme: TuiTheme,
 ) -> list[Widget]:
+    # [FUNCTION DOC]
+    # HELPER: for each origin in precedence order, a muted origin header and
+    # name-sorted clickable items (hollow bullet for skills with model invocation
+    # disabled); an empty-state static when there are no groups.
     if not grouped:
         empty = "No skills loaded" if kind == "Skill" else "No prompt templates"
         widget = Static(empty, classes="sidebar-file-empty", markup=False)
@@ -3033,6 +3611,9 @@ def _grouped_sidebar_file_widgets[SidebarResource: (Skill, PromptTemplate)](
 
 
 def _resource_origin_sort_key(origin: str) -> tuple[int, str]:
+    # [FUNCTION DOC]
+    # HELPER: sort key giving known user/project skill and prompt directories fixed
+    # precedence and others last, then alphabetical.
     precedence = {
         "~/.tau/skills": 0,
         "~/.agents/skills": 1,
@@ -3047,6 +3628,9 @@ def _resource_origin_sort_key(origin: str) -> tuple[int, str]:
 
 
 def _absolute_sidebar_path(path: Path, *, cwd: Path) -> Path:
+    # [FUNCTION DOC]
+    # HELPER: user-expand the path, join relative paths to cwd and make it absolute
+    # (without resolving symlinks).
     expanded = path.expanduser()
     if not expanded.is_absolute():
         expanded = cwd / expanded
@@ -3059,6 +3643,9 @@ def _grouped_skill_list(
     cwd: Path,
     theme: TuiTheme,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: static text listing skills grouped by origin with hollow bullets for
+    # disabled-invocation skills, or "No skills loaded".
     if not skills:
         return Text("No skills loaded", style=theme.completion_description)
 
@@ -3076,6 +3663,9 @@ def _grouped_prompt_list(
     cwd: Path,
     theme: TuiTheme,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: static text listing prompt templates grouped by origin, or
+    # "No prompt templates".
     if not templates:
         return Text("No prompt templates", style=theme.completion_description)
 
@@ -3092,6 +3682,10 @@ def _grouped_resource_names(
     directory: str,
     theme: TuiTheme,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: render grouped names: origins ordered with the user Tau home first,
+    # then user agents, project Tau and project agents dirs (others alphabetical in
+    # the first rank), each with sorted bulleted names.
     origin_precedence = {
         f"~/.agents/{directory}": 1,
         f"./.tau/{directory}": 2,
@@ -3116,6 +3710,9 @@ def _grouped_resource_names(
 
 
 def _resource_origin_label(origin: Path, *, cwd: Path) -> str:
+    # [FUNCTION DOC]
+    # HELPER: display label for an origin directory: "./relative" inside cwd,
+    # "~/relative" inside the home directory, else the absolute path.
     expanded_origin = origin.expanduser()
     if not expanded_origin.is_absolute():
         expanded_origin = cwd / expanded_origin
@@ -3141,6 +3738,8 @@ def _limited_bullet_list(
     empty: str,
     theme: TuiTheme,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: bullet list of the first items up to the limit plus a "...(N more)" line.
     text = _bullet_list(
         items[:SIDEBAR_BULLET_LIST_LIMIT],
         empty=empty,
@@ -3158,6 +3757,8 @@ def _bullet_list(
     empty: str,
     theme: TuiTheme,
 ) -> Text:
+    # [FUNCTION DOC]
+    # HELPER: muted bullet lines for items, or the empty message when none.
     text = Text()
     if not items:
         text.append(empty, style=theme.completion_description)
@@ -3172,6 +3773,8 @@ def _bullet_list(
 
 
 def _short_path(path: Path) -> str:
+    # [FUNCTION DOC]
+    # HELPER: path shown as "~/..." when under the home directory, else unchanged.
     home = Path.home()
     try:
         return f"~/{path.relative_to(home)}"
