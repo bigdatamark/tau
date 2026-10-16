@@ -1,3 +1,14 @@
+# [MODULE DOC]
+# Large integration-style test suite for Tau's extension system
+# (tau_coding.extensions and its wiring into CodingSession): discovery of
+# extension files, packages and pyproject [tool.tau] manifests; loading and
+# isolation of broken extensions; built-in (packaged) extensions and their
+# generations; registration of tools, commands, providers, prompt guidelines and
+# sections; tool-call/tool-result/input hooks; agent event fan-out; extension
+# actions (sending messages, entries, labels, inference routing); the UI bridge
+# (dialogs, components, sidebar); reload/new/resume lifecycles and invalidation
+# of stale APIs; and custom message/tool renderers. Uses tmp_path directories,
+# fake providers and recording fakes; runs on the asyncio anyio backend.
 """Tests for extension discovery, loading, hooks, and session wiring."""
 
 import asyncio
@@ -59,10 +70,15 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 def anyio_backend() -> str:
+    # [FUNCTION DOC]
+    # HELPER: Fixture selecting the asyncio backend for anyio-marked tests.
     return "asyncio"
 
 
 def _paths(tmp_path: Path) -> TauResourcePaths:
+    # [FUNCTION DOC]
+    # HELPER: Build resource paths rooted in tmp_path: Tau home "home-tau", project
+    # cwd "project" and agents root "home-agents".
     return TauResourcePaths(
         root=tmp_path / "home-tau",
         cwd=tmp_path / "project",
@@ -71,6 +87,9 @@ def _paths(tmp_path: Path) -> TauResourcePaths:
 
 
 def _write_extension(directory: Path, name: str, body: str) -> Path:
+    # [FUNCTION DOC]
+    # HELPER: Create the directory if needed, write "<name>.py" with the given
+    # source text and return its path.
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.py"
     path.write_text(body, encoding="utf-8")
@@ -100,10 +119,15 @@ def setup(tau):
 
 
 def _user_extensions_dir(paths: TauResourcePaths) -> Path:
+    # [FUNCTION DOC]
+    # HELPER: Return the user-level extensions directory (Tau home/extensions).
     return paths.root / "extensions"
 
 
 def _project_extensions_dir(paths: TauResourcePaths) -> Path:
+    # [FUNCTION DOC]
+    # HELPER: Return the project-level extensions directory (cwd/.tau/extensions);
+    # asserts the paths have a cwd.
     assert paths.cwd is not None
     return paths.cwd / ".tau" / "extensions"
 
@@ -113,15 +137,28 @@ def _runtime_with(
     *,
     include_project_dir: bool = False,
 ) -> ExtensionRuntime:
+    # [FUNCTION DOC]
+    # HELPER: Create an extension runtime and load extensions from the given paths,
+    # optionally including the project extensions dir. Returns the runtime.
     runtime = ExtensionRuntime()
     runtime.load(paths, include_project_dir=include_project_dir)
     return runtime
 
 
 class RecordingSession:
+    # [CLASS DOC]
+    # HELPER: Minimal fake of the session surface an extension runtime binds to
+    # (model/provider info, model choices, inference routing, session id/name,
+    # thinking level, system prompt, project trust, running flag, messages). Records
+    # steering/follow-up messages, queued custom message metadata, custom entries
+    # and labels in lists for assertions.
     """Minimal BoundSession implementation for runtime tests."""
 
     def __init__(self, tmp_path: Path, *, running: bool = False) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Initialize fake session state with fixed values (model/provider
+        # "fake", two model choices, trusted project, "Test session" name, given running
+        # flag) and empty recording lists.
         self.cwd = tmp_path
         self.model = "fake"
         self.provider_name = "fake"
@@ -154,6 +191,9 @@ class RecordingSession:
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Record a steering message's text and its (text, custom type, details)
+        # tuple.
         self.steered.append(content)
         self.queued_custom.append((content, custom_type, details))
 
@@ -164,16 +204,26 @@ class RecordingSession:
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Record a follow-up message's text and its (text, custom type, details)
+        # tuple.
         self.followed_up.append(content)
         self.queued_custom.append((content, custom_type, details))
 
     async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Record a (namespace, data) custom entry.
         self.custom_entries.append((namespace, data))
 
     async def set_label(self, target_id: str, label: str | None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Record a (target id, label) pair.
         self.labels.append((target_id, label))
 
     def set_inference_provider(self, route: str | None) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Set the inference route; mode becomes "fixed" for a route and
+        # "automatic" for None. Returns the route, or an "automatic (...)" description.
         self.inference_provider = route
         self.inference_provider_mode = "fixed" if route is not None else "automatic"
         return route or "automatic (will pin after the next successful response)"
@@ -183,6 +233,9 @@ class RecordingSession:
 
 
 def test_discovers_user_extensions_and_skips_project_by_default(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts discovery finds only user extensions unless project dirs are enabled,
+    # with no diagnostics.
     paths = _paths(tmp_path)
     _write_extension(_user_extensions_dir(paths), "user_ext", "def setup(tau):\n    pass\n")
     _write_extension(_project_extensions_dir(paths), "proj_ext", "def setup(tau):\n    pass\n")
@@ -194,6 +247,9 @@ def test_discovers_user_extensions_and_skips_project_by_default(tmp_path: Path) 
 
 
 def test_project_extensions_load_first_when_enabled(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that with project dirs enabled, project extensions come before user
+    # ones.
     paths = _paths(tmp_path)
     _write_extension(_user_extensions_dir(paths), "ext_a", "def setup(tau):\n    pass\n")
     _write_extension(_project_extensions_dir(paths), "ext_b", "def setup(tau):\n    pass\n")
@@ -204,6 +260,9 @@ def test_project_extensions_load_first_when_enabled(tmp_path: Path) -> None:
 
 
 def test_duplicate_extension_names_prefer_first_loaded(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a duplicate name keeps the first (project) entry and emits a
+    # "duplicate extension name" diagnostic.
     paths = _paths(tmp_path)
     _write_extension(_user_extensions_dir(paths), "dup", "def setup(tau):\n    pass\n")
     _write_extension(_project_extensions_dir(paths), "dup", "def setup(tau):\n    pass\n")
@@ -216,6 +275,9 @@ def test_duplicate_extension_names_prefer_first_loaded(tmp_path: Path) -> None:
 
 
 def test_explicit_extension_paths_load_even_with_discovery_disabled(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts explicit extra paths are discovered even when resource dirs are
+    # excluded.
     paths = _paths(tmp_path)
     _write_extension(_user_extensions_dir(paths), "skipped", "def setup(tau):\n    pass\n")
     explicit = _write_extension(tmp_path / "elsewhere", "explicit", "def setup(tau):\n    pass\n")
@@ -230,6 +292,8 @@ def test_explicit_extension_paths_load_even_with_discovery_disabled(tmp_path: Pa
 
 
 def test_missing_explicit_path_is_an_error_diagnostic(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a missing explicit path yields an error-severity diagnostic.
     paths = _paths(tmp_path)
 
     _, diagnostics = discover_extensions(paths, extra_paths=(tmp_path / "nope.py",))
@@ -238,6 +302,10 @@ def test_missing_explicit_path_is_an_error_diagnostic(tmp_path: Path) -> None:
 
 
 def test_package_extension_loads_with_relative_import(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a package directory with extension.py and a sibling helper loads under
+    # the directory name, supports relative imports, and its setup runs (sets a
+    # value computed from the helper).
     paths = _paths(tmp_path)
     package_dir = _user_extensions_dir(paths) / "pkg_ext"
     package_dir.mkdir(parents=True)
@@ -256,6 +324,10 @@ def test_package_extension_loads_with_relative_import(tmp_path: Path) -> None:
 
 
 def _write_src_layout_extension(repo: Path, *, entry_name: str = "extension") -> Path:
+    # [FUNCTION DOC]
+    # HELPER: Create repo/src/my_ext with a helper module and an entry file (default
+    # extension.py) whose setup stores helper value plus one on itself. Returns the
+    # entry path.
     package_dir = repo / "src" / "my_ext"
     package_dir.mkdir(parents=True)
     (package_dir / "helper.py").write_text("VALUE = 41\n", encoding="utf-8")
@@ -268,6 +340,9 @@ def _write_src_layout_extension(repo: Path, *, entry_name: str = "extension") ->
 
 
 def test_manifest_declares_src_layout_entry(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a pyproject [tool.tau] extensions list pointing into src/ loads the
+    # entry named after its package dir with working relative imports.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     _write_src_layout_extension(repo)
@@ -284,6 +359,8 @@ def test_manifest_declares_src_layout_entry(tmp_path: Path) -> None:
 
 
 def test_manifest_wins_over_root_extension_py(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a manifest declaration takes precedence over a root extension.py.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     _write_src_layout_extension(repo)
@@ -299,6 +376,9 @@ def test_manifest_wins_over_root_extension_py(tmp_path: Path) -> None:
 
 
 def test_manifest_entry_named_after_file_when_not_extension_py(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a manifest entry not named extension.py is named after its file and
+    # records its package directory.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     _write_src_layout_extension(repo, entry_name="main")
@@ -313,6 +393,8 @@ def test_manifest_entry_named_after_file_when_not_extension_py(tmp_path: Path) -
 
 
 def test_manifest_discovered_in_extensions_dir(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a repo with a manifest inside the user extensions dir is discovered.
     paths = _paths(tmp_path)
     repo = _user_extensions_dir(paths) / "my-ext-repo"
     _write_src_layout_extension(repo)
@@ -327,6 +409,8 @@ def test_manifest_discovered_in_extensions_dir(tmp_path: Path) -> None:
 
 
 def test_manifest_multiple_entries_load_independently(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts several manifest entries load as separate extensions in order.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     _write_src_layout_extension(repo)
@@ -345,6 +429,9 @@ def test_manifest_multiple_entries_load_independently(tmp_path: Path) -> None:
 
 
 def test_manifest_duplicate_entry_names_first_wins(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts duplicate manifest entry names keep the first and emit a duplicate
+    # diagnostic.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     for parent in ("src", "legacy"):
@@ -366,6 +453,9 @@ def test_manifest_duplicate_entry_names_first_wins(tmp_path: Path) -> None:
 
 
 def test_manifest_empty_list_falls_back_to_extension_py(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an empty manifest list falls back to the root extension.py (named
+    # after the repo dir) without diagnostics.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -381,6 +471,9 @@ def test_manifest_empty_list_falls_back_to_extension_py(tmp_path: Path) -> None:
 
 
 def test_explicit_file_path_to_package_entry_cannot_reach_siblings(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts loading a package entry file directly fails its relative import and
+    # yields a "failed to import extension" error diagnostic.
     """`-e` on an entry *file* loads it standalone: relative imports fail.
 
     Package extensions must be loaded through their directory (or a manifest);
@@ -400,6 +493,9 @@ def test_explicit_file_path_to_package_entry_cannot_reach_siblings(tmp_path: Pat
 
 
 def test_manifest_missing_entry_is_error_with_extension_py_fallback(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a manifest pointing to a missing file errors ("does not exist") and
+    # falls back to root extension.py.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -419,6 +515,9 @@ def test_manifest_missing_entry_is_error_with_extension_py_fallback(tmp_path: Pa
 
 
 def test_manifest_without_tau_table_falls_back_to_extension_py(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a pyproject without [tool.tau] is ignored silently in favor of
+    # extension.py.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -434,6 +533,9 @@ def test_manifest_without_tau_table_falls_back_to_extension_py(tmp_path: Path) -
 
 
 def test_manifest_invalid_declarations_are_error_diagnostics(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a non-list extensions value is an error ("list of file paths") with
+    # fallback to extension.py.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -451,6 +553,8 @@ def test_manifest_invalid_declarations_are_error_diagnostics(tmp_path: Path) -> 
 
 
 def test_manifest_parse_failure_is_warning_with_fallback(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts invalid TOML yields a "could not parse" warning and falls back.
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -468,6 +572,9 @@ def test_manifest_parse_failure_is_warning_with_fallback(tmp_path: Path) -> None
 
 
 def test_helper_modules_stay_namespaced_in_sys_modules(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts package helper modules are registered under a tau_extension_<name>
+    # namespace rather than as top-level modules.
     paths = _paths(tmp_path)
     package_dir = _user_extensions_dir(paths) / "pkg_ns"
     package_dir.mkdir(parents=True)
@@ -486,6 +593,9 @@ def test_helper_modules_stay_namespaced_in_sys_modules(tmp_path: Path) -> None:
 
 
 def test_broken_extension_is_isolated(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension raising at import produces an error diagnostic while
+    # others still load.
     paths = _paths(tmp_path)
     _write_extension(_user_extensions_dir(paths), "broken", "raise RuntimeError('boom')\n")
     _write_extension(_user_extensions_dir(paths), "works", "def setup(tau):\n    pass\n")
@@ -497,6 +607,8 @@ def test_broken_extension_is_isolated(tmp_path: Path) -> None:
 
 
 def test_extension_without_setup_is_rejected(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a module without setup is rejected with an "entry point" diagnostic.
     paths = _paths(tmp_path)
     _write_extension(_user_extensions_dir(paths), "nosetup", "VALUE = 1\n")
 
@@ -507,6 +619,8 @@ def test_extension_without_setup_is_rejected(tmp_path: Path) -> None:
 
 
 def test_async_setup_is_rejected(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an async setup function is rejected ("sync function").
     paths = _paths(tmp_path)
     _write_extension(
         _user_extensions_dir(paths), "async_setup", "async def setup(tau):\n    pass\n"
@@ -519,6 +633,8 @@ def test_async_setup_is_rejected(tmp_path: Path) -> None:
 
 
 def test_underscore_files_are_skipped(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts files starting with an underscore are not discovered.
     paths = _paths(tmp_path)
     _write_extension(_user_extensions_dir(paths), "_private", "def setup(tau):\n    pass\n")
 
@@ -532,7 +648,13 @@ def _fake_built_in(
     *,
     refresh_models: RefreshModels | None = None,
 ) -> BuiltInExtension:
+    # [FUNCTION DOC]
+    # HELPER: Build a built-in extension declaration named "fake-built-in" whose
+    # setup records the API it receives and registers a tool, a command and a
+    # dynamic OpenAI-compatible provider (with optional model refresh callback).
     def command(args: str, context: object) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Fake command returning "built-in: <args>".
         del context
         return f"built-in: {args}"
 
@@ -542,10 +664,15 @@ def _fake_built_in(
         signal: object = None,
         on_update: object = None,
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake tool executor returning "built-in tool".
         del tool_call_id, arguments, signal, on_update
         return AgentToolResult(content="built-in tool")
 
     def setup(tau: ExtensionAPI) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Built-in setup: records the API and registers the fake tool,
+        # command and provider.
         setup_apis.append(tau)
         tau.register_tool(
             AgentTool(
@@ -573,10 +700,17 @@ def _fake_built_in(
 
 
 def test_built_in_declaration_validates_name_setup_and_hidden_flag() -> None:
+    # [FUNCTION DOC]
+    # Asserts the built-in declaration rejects empty names, names with surrounding
+    # whitespace, async setup functions and non-boolean hidden flags (ValueError).
     def setup(tau: ExtensionAPI) -> None:
+        # [FUNCTION DOC]
+        # HELPER: No-op sync setup.
         del tau
 
     async def async_setup(tau: ExtensionAPI) -> None:
+        # [FUNCTION DOC]
+        # HELPER: No-op async setup used to trigger validation failure.
         del tau
 
     with pytest.raises(ValueError, match="non-empty"):
@@ -592,6 +726,12 @@ def test_built_in_declaration_validates_name_setup_and_hidden_flag() -> None:
 async def test_hidden_built_in_registers_real_runtime_surfaces_despite_no_extensions(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Loads a runtime with only the fake built-in and asserts: setup ran once; it is
+    # absent from user-visible extension names but present in metadata as a hidden
+    # "built-in" source with id "built-in:fake-built-in" and no path; its tool
+    # executes; its command runs through the built registry; and its provider is
+    # effective with the built-in source id.
     setup_apis: list[ExtensionAPI] = []
     runtime = ExtensionRuntime(built_in_extensions=(_fake_built_in(setup_apis),))
 
@@ -620,6 +760,10 @@ async def test_hidden_built_in_registers_real_runtime_surfaces_despite_no_extens
 
 
 def test_built_ins_load_once_before_user_explicit_and_project_sources(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Loads twice (user + explicit, then project only) and asserts the built-in
+    # setup ran only once and metadata lists built-in, user, explicit, project
+    # sources in that order, with the built-in excluded from extension names.
     paths = _paths(tmp_path)
     setup_apis: list[ExtensionAPI] = []
     _write_extension(_user_extensions_dir(paths), "user_ext", "def setup(tau):\n    pass\n")
@@ -651,6 +795,11 @@ def test_built_ins_load_once_before_user_explicit_and_project_sources(tmp_path: 
 async def test_built_in_order_preserves_tool_command_and_provider_precedence(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With a user extension registering the same tool, command and provider ids as
+    # the built-in, asserts the built-in tool and command win (first registration)
+    # while the user extension's provider becomes effective (later provider layers
+    # shadow earlier ones).
     paths = _paths(tmp_path)
     setup_apis: list[ExtensionAPI] = []
     _write_extension(
@@ -708,11 +857,18 @@ def setup(tau):
 def test_built_in_setup_failure_is_isolated_and_rolls_back_every_registration(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts a built-in whose setup registers things and then raises leaves no
+    # tool, command or provider behind, does not appear in metadata, records a
+    # "built-in setup failed" error, and does not stop other built-ins.
     setup_apis: list[ExtensionAPI] = []
     working = BuiltInExtension(name="working", setup=lambda tau: None)
     fake = _fake_built_in(setup_apis)
 
     def broken_setup(tau: ExtensionAPI) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Runs the fake built-in's setup (registering everything) then raises
+        # RuntimeError.
         fake.setup(tau)
         raise RuntimeError("broken declaration")
 
@@ -737,10 +893,18 @@ def test_built_in_setup_failure_is_isolated_and_rolls_back_every_registration(
 async def test_retiring_built_in_generation_cancels_provider_work_and_drops_registrations(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Starts a slow provider model refresh, retires and closes the runtime, and
+    # asserts the close drained, the refresh finished as "cancelled", and all
+    # registrations and metadata are gone; using the old API raises ExtensionError
+    # "stale after reload".
     setup_apis: list[ExtensionAPI] = []
     entered = asyncio.Event()
 
     async def refresh(context: ProviderRefreshContext) -> ProviderModelSnapshot:
+        # [FUNCTION DOC]
+        # HELPER: Model refresh callback that signals entry and then sleeps 10 seconds
+        # (to be cancelled) before returning an empty snapshot.
         del context
         entered.set()
         await asyncio.sleep(10)
@@ -771,6 +935,9 @@ async def test_retiring_built_in_generation_cancels_provider_work_and_drops_regi
 
 
 def test_setup_failure_rolls_back_registrations(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a file extension that registers a tool then raises in setup leaves no
+    # extension name, no tools, and a "setup failed" diagnostic.
     paths = _paths(tmp_path)
     _write_extension(
         _user_extensions_dir(paths),
@@ -794,6 +961,9 @@ def test_setup_failure_rolls_back_registrations(tmp_path: Path) -> None:
 
 
 def test_extension_tool_registration_and_composition(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension tool is composed into the tool list and its source is
+    # mapped to the extension name.
     paths = _paths(tmp_path)
     _write_extension(_user_extensions_dir(paths), "hello_ext", HELLO_TOOL_EXTENSION)
 
@@ -805,6 +975,9 @@ def test_extension_tool_registration_and_composition(tmp_path: Path) -> None:
 
 
 async def test_extension_tool_overrides_builtin_by_name(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension tool named like a host tool ("read") replaces it during
+    # composition and its executor is used.
     paths = _paths(tmp_path)
     _write_extension(
         _user_extensions_dir(paths),
@@ -823,6 +996,8 @@ async def test_extension_tool_overrides_builtin_by_name(tmp_path: Path) -> None:
     async def builtin_read(
         tool_call_id: str, arguments: object, signal: object = None, on_update: object = None
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Host "read" executor returning "builtin" (should not be called).
         return AgentToolResult(content="builtin")
 
     builtin = AgentTool(
@@ -838,6 +1013,9 @@ async def test_extension_tool_overrides_builtin_by_name(tmp_path: Path) -> None:
 
 
 def test_duplicate_tool_registration_first_wins(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts two extensions registering the same tool name keep one tool and
+    # record an "already registered" diagnostic.
     paths = _paths(tmp_path)
     body = HELLO_TOOL_EXTENSION
     _write_extension(_user_extensions_dir(paths), "ext_one", body)
@@ -854,9 +1032,18 @@ async def test_separately_loaded_same_name_sources_keep_first_tool_and_command(
     tmp_path: Path,
     second_fails: bool,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized on whether the second source's setup fails. Loads two
+    # same-named extension files in separate load calls and asserts the first
+    # source's tool and command remain effective and an "already registered"
+    # diagnostic exists.
     paths = _paths(tmp_path)
 
     def body(marker: str, *, fail: bool = False) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Generate extension source registering a tool "shared-tool" and
+        # command "shared-command" that both report the marker string, optionally
+        # raising at the end of setup.
         failure = "\n    raise RuntimeError('setup exploded')" if fail else ""
         return f"""
 from tau_agent.tools import AgentTool, AgentToolResult
@@ -906,6 +1093,12 @@ def setup(tau):
 async def test_failed_setup_cleans_every_registration_after_entry_symlink_retarget(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Uses a symlinked entry file whose setup registers a provider, tool, command,
+    # guideline, section, renderer and input handler, then retargets the symlink
+    # and raises. Asserts every registration is rolled back (even though the entry
+    # path now resolves elsewhere), input hooks leave text unchanged, the orphan
+    # handler never ran, and a "setup failed" diagnostic is recorded.
     paths = _paths(tmp_path)
     target_a = tmp_path / "target-a.py"
     target_b = tmp_path / "target-b.py"
@@ -984,6 +1177,9 @@ def setup(tau):
 
 
 def test_extension_commands_layer_onto_default_registry(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension command is added to the default command registry and
+    # its handler result is wrapped as handled with the returned message.
     paths = _paths(tmp_path)
     _write_extension(
         _user_extensions_dir(paths),
@@ -1007,6 +1203,9 @@ def test_extension_commands_layer_onto_default_registry(tmp_path: Path) -> None:
 
 
 def test_extension_command_cannot_shadow_builtin(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension cannot replace a built-in command ("model" keeps its
+    # description) and a "could not register command" diagnostic is recorded.
     paths = _paths(tmp_path)
     _write_extension(
         _user_extensions_dir(paths),
@@ -1024,6 +1223,9 @@ def test_extension_command_cannot_shadow_builtin(tmp_path: Path) -> None:
 
 
 def test_extension_command_errors_are_contained(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a raising extension command returns a handled result whose message
+    # mentions failure and records a diagnostic naming "command:/boom".
     paths = _paths(tmp_path)
     _write_extension(
         _user_extensions_dir(paths),
@@ -1049,12 +1251,18 @@ def test_extension_command_errors_are_contained(tmp_path: Path) -> None:
 
 
 def _command_context(registry: object, text: str, name: str, args: str) -> object:
+    # [FUNCTION DOC]
+    # HELPER: Build a command context with no session for the given registry, raw
+    # text, command name and argument string.
     from tau_coding.commands import CommandContext
 
     return CommandContext(session=None, registry=registry, text=text, name=name, args=args)  # type: ignore[arg-type]
 
 
 def test_prompt_guideline_registration(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts non-blank guidelines are stored and blank ones produce an "empty
+    # prompt guideline" diagnostic.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "guidance")
     api.add_prompt_guideline("Always run the tests before claiming success")
@@ -1065,6 +1273,10 @@ def test_prompt_guideline_registration(tmp_path: Path) -> None:
 
 
 def test_prompt_section_registration(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts sections are trimmed, untitled sections are allowed, empty bodies are
+    # rejected ("empty prompt section") and multi-line titles are rejected ("title
+    # spans multiple lines"); blank titles become None.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "structured-guidance")
     api.add_prompt_section("  Review procedure  ", "  First step.\n\n```bash\nuv run pytest\n```  ")
@@ -1084,6 +1296,9 @@ def test_prompt_section_registration(tmp_path: Path) -> None:
 
 
 def test_unknown_event_subscription_is_a_diagnostic(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts subscribing to an unknown event name still loads the extension but
+    # records an "unknown event" diagnostic.
     paths = _paths(tmp_path)
     _write_extension(
         _user_extensions_dir(paths),
@@ -1101,6 +1316,9 @@ def test_unknown_event_subscription_is_a_diagnostic(tmp_path: Path) -> None:
 
 
 async def test_tool_call_hook_can_block(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a tool_call hook returning a block result for tool "danger" turns the
+    # wrapped tool's result into "Tool call blocked: ..." containing the reason.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "guard")
     api.on(
@@ -1121,6 +1339,9 @@ async def test_tool_call_hook_can_block(tmp_path: Path) -> None:
 
 
 async def test_tool_call_hook_can_rewrite_arguments(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a tool_call hook returning replacement arguments causes the inner
+    # executor to receive them instead of the original arguments.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "rewrite")
     api.on("tool_call", lambda event, context: ToolCallHookResult(arguments={"who": "tau"}))
@@ -1130,6 +1351,9 @@ async def test_tool_call_hook_can_rewrite_arguments(tmp_path: Path) -> None:
     async def executor(
         tool_call_id: str, arguments: object, signal: object = None, on_update: object = None
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake executor recording a copy of the arguments it receives and
+        # returning "ok".
         seen.append(dict(arguments))  # type: ignore[call-overload]
         return AgentToolResult(content="ok")
 
@@ -1141,6 +1365,9 @@ async def test_tool_call_hook_can_rewrite_arguments(tmp_path: Path) -> None:
 
 
 async def test_tool_call_hook_can_clear_arguments(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a hook returning an empty argument mapping is honored (not treated as
+    # "no change").
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "clearer")
     api.on("tool_call", lambda event, context: ToolCallHookResult(arguments={}))
@@ -1150,6 +1377,8 @@ async def test_tool_call_hook_can_clear_arguments(tmp_path: Path) -> None:
     async def executor(
         tool_call_id: str, arguments: object, signal: object = None, on_update: object = None
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake executor recording a copy of its arguments and returning "ok".
         seen.append(dict(arguments))  # type: ignore[call-overload]
         return AgentToolResult(content="ok")
 
@@ -1161,6 +1390,9 @@ async def test_tool_call_hook_can_clear_arguments(tmp_path: Path) -> None:
 
 
 async def test_wrapped_tool_forwards_on_update(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the extension wrapper passes the caller's progress callback through
+    # to the inner executor so partial results (text and details) arrive.
     runtime = ExtensionRuntime()
     _register_inline_extension(runtime, "progress")
 
@@ -1172,6 +1404,9 @@ async def test_wrapped_tool_forwards_on_update(tmp_path: Path) -> None:
         signal: object = None,
         on_update: object = None,
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake executor that sends one "halfway" partial result with details and
+        # returns "done".
         assert on_update is not None
         on_update(AgentToolResult(content="halfway", details={"pct": 50}))  # type: ignore[operator]
         return AgentToolResult(content="done")
@@ -1180,6 +1415,8 @@ async def test_wrapped_tool_forwards_on_update(tmp_path: Path) -> None:
     wrapped = runtime.compose_tools([tool])[0]
 
     def collect(result: AgentToolResult) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Progress callback recording (text, details) of each partial result.
         received.append((result.text, result.details))
 
     result = await wrapped.execute("call-1", {}, on_update=collect)
@@ -1189,6 +1426,13 @@ async def test_wrapped_tool_forwards_on_update(tmp_path: Path) -> None:
 
 
 async def test_wrapped_tool_drops_on_update_for_inner_without_seam(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a wrapped tool still runs and returns "ran" when a progress callback
+    # is supplied but the inner executor does not use it.
+    # KNOWN ISSUE: the inner executor actually declares an on_update parameter, so
+    # this does not exercise an executor lacking the progress seam as the comment
+    # claims; the collect callback also has a mismatched signature but is never
+    # called.
     # The wrapper always declares on_update, but the inner executor's own
     # inspect-gate must drop it so a classic (arguments, signal) tool still runs.
     runtime = ExtensionRuntime()
@@ -1197,6 +1441,8 @@ async def test_wrapped_tool_drops_on_update_for_inner_without_seam(tmp_path: Pat
     async def executor(
         tool_call_id: str, arguments: object, signal: object = None, on_update: object = None
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake executor that ignores its inputs and returns "ran".
         return AgentToolResult(content="ran")
 
     tool = AgentTool(
@@ -1205,6 +1451,8 @@ async def test_wrapped_tool_drops_on_update_for_inner_without_seam(tmp_path: Pat
     wrapped = runtime.compose_tools([tool])[0]
 
     def collect(message: str, data: object = None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Progress callback that fails the test if ever invoked.
         raise AssertionError("on_update should not reach an executor without the seam")
 
     result = await wrapped.execute("call-1", {}, on_update=collect)
@@ -1213,10 +1461,15 @@ async def test_wrapped_tool_drops_on_update_for_inner_without_seam(tmp_path: Pat
 
 
 async def test_raising_tool_call_hook_blocks_fail_safe(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a raising tool_call hook blocks the call (fail-safe) with a "hook
+    # failed" reason.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "raiser")
 
     def bad_hook(event: object, context: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Hook that always raises RuntimeError.
         raise RuntimeError("hook exploded")
 
     api.on("tool_call", bad_hook)
@@ -1229,6 +1482,8 @@ async def test_raising_tool_call_hook_blocks_fail_safe(tmp_path: Path) -> None:
 
 
 async def test_tool_result_hook_transforms_result(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a tool_result hook can replace the result content.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "transform")
     api.on("tool_result", lambda event, context: ToolResultHookResult(content="redacted"))
@@ -1240,10 +1495,15 @@ async def test_tool_result_hook_transforms_result(tmp_path: Path) -> None:
 
 
 async def test_raising_tool_result_hook_keeps_result(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a raising tool_result hook leaves the original result and records a
+    # diagnostic mentioning tool_result.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "raiser")
 
     def bad_hook(event: object, context: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Hook that always raises RuntimeError.
         raise RuntimeError("result hook exploded")
 
     api.on("tool_result", bad_hook)
@@ -1256,6 +1516,9 @@ async def test_raising_tool_result_hook_keeps_result(tmp_path: Path) -> None:
 
 
 async def test_input_hooks_chain_transforms(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts multiple transform input hooks apply in registration order, each
+    # seeing the previous output, and the outcome is not handled.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "chain")
     api.on(
@@ -1274,6 +1537,8 @@ async def test_input_hooks_chain_transforms(tmp_path: Path) -> None:
 
 
 async def test_input_hook_handled_short_circuits(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a "handled" input hook stops the chain and its message is returned.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "handler")
     api.on("input", lambda event, context: InputHookResult(action="handled", message="done"))
@@ -1286,6 +1551,9 @@ async def test_input_hook_handled_short_circuits(tmp_path: Path) -> None:
 
 
 def test_input_event_defaults_backward_compatible() -> None:
+    # [FUNCTION DOC]
+    # Asserts the input event defaults to source "interactive" and no streaming
+    # behavior, and equality accounts for those fields.
     # Existing handlers construct/read InputEvent(text=...) with no metadata.
     event = InputEvent(text="hello")
     assert event.text == "hello"
@@ -1298,11 +1566,16 @@ def test_input_event_defaults_backward_compatible() -> None:
 
 
 async def test_input_hook_defaults_to_interactive_idle(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts running input hooks without metadata passes an interactive event with
+    # no streaming behavior.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "capture")
     seen: list[InputEvent] = []
 
     def _hook(event: InputEvent, context: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Input hook that records the event it receives.
         seen.append(event)
 
     api.on("input", _hook)  # type: ignore[attr-defined]
@@ -1315,6 +1588,8 @@ async def test_input_hook_defaults_to_interactive_idle(tmp_path: Path) -> None:
 
 
 async def test_input_hook_receives_source_and_streaming_behavior(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the given source and streaming behavior reach input hooks.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "capture")
     seen: list[InputEvent] = []
@@ -1328,6 +1603,10 @@ async def test_input_hook_receives_source_and_streaming_behavior(tmp_path: Path)
 
 
 async def test_agent_event_fan_out_and_wildcard(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Attaches the runtime to a fake harness subscription and asserts a specific
+    # event handler sees only its event type while the "agent_event" wildcard sees
+    # every event.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "observer")
     specific: list[object] = []
@@ -1338,6 +1617,9 @@ async def test_agent_event_fan_out_and_wildcard(tmp_path: Path) -> None:
     listeners: list[object] = []
 
     def subscribe(listener: object) -> object:
+        # [FUNCTION DOC]
+        # HELPER: Fake harness subscribe function recording the listener and returning
+        # an unsubscribe callable that removes it.
         listeners.append(listener)
         return lambda: listeners.remove(listener)
 
@@ -1352,6 +1634,11 @@ async def test_agent_event_fan_out_and_wildcard(tmp_path: Path) -> None:
 
 
 async def test_extension_turn_events_include_pi_session_metadata(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Dispatches agent start/turn events and asserts extensions receive Pi-style
+    # turn events with a millisecond timestamp, a turn index (0, 0, then 1), the
+    # turn-end message and an empty tool results list, and that the wildcard sees
+    # the same translated events.
     from tau_agent.events import AgentStartEvent
     from tau_agent.events import TurnEndEvent as AgentTurnEndEvent
     from tau_agent.events import TurnStartEvent as AgentTurnStartEvent
@@ -1392,6 +1679,8 @@ async def test_extension_turn_events_include_pi_session_metadata(tmp_path: Path)
 
 
 async def test_extension_turn_index_resets_for_each_agent_run(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the turn index restarts at 0 after each agent start event.
     from tau_agent.events import AgentStartEvent
     from tau_agent.events import TurnEndEvent as AgentTurnEndEvent
     from tau_agent.events import TurnStartEvent as AgentTurnStartEvent
@@ -1419,6 +1708,9 @@ async def test_extension_turn_index_resets_for_each_agent_run(tmp_path: Path) ->
 
 
 async def test_message_end_event_surfaces_provider_usage(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts message_end events delivered to extensions carry the assistant
+    # message's full usage breakdown.
     from typing import cast
 
     from tau_agent import Usage
@@ -1433,6 +1725,9 @@ async def test_message_end_event_surfaces_provider_usage(tmp_path: Path) -> None
     listeners: list[object] = []
 
     def subscribe(listener: object) -> object:
+        # [FUNCTION DOC]
+        # HELPER: Fake harness subscribe recording the listener and returning an
+        # unsubscribe callable.
         listeners.append(listener)
         return lambda: listeners.remove(listener)
 
@@ -1457,10 +1752,15 @@ async def test_message_end_event_surfaces_provider_usage(tmp_path: Path) -> None
 
 
 async def test_raising_event_handler_is_recorded(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a raising event handler does not propagate and a diagnostic naming
+    # the event is recorded.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "raiser")
 
     def handler(event: object, context: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Event handler that always raises RuntimeError.
         raise RuntimeError("listener exploded")
 
     api.on("turn_start", handler)
@@ -1478,6 +1778,9 @@ async def test_raising_event_handler_is_recorded(tmp_path: Path) -> None:
 
 
 def test_actions_raise_before_binding(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts session actions such as sending a user message raise ExtensionError
+    # before the runtime is bound to a session.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "early")
 
@@ -1486,6 +1789,9 @@ def test_actions_raise_before_binding(tmp_path: Path) -> None:
 
 
 def test_send_user_message_steers_active_run(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that while running, deliver_as "steer" queues a steering message and
+    # the default queues a follow-up.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "sender")
     session = RecordingSession(tmp_path, running=True)
@@ -1499,6 +1805,9 @@ def test_send_user_message_steers_active_run(tmp_path: Path) -> None:
 
 
 def test_send_user_message_idle_uses_turn_callback(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that when idle and a turn callback is set, sending a user message
+    # invokes the callback (content, no custom type, no details) instead of queuing.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "sender")
     session = RecordingSession(tmp_path, running=False)
@@ -1510,6 +1819,8 @@ def test_send_user_message_idle_uses_turn_callback(tmp_path: Path) -> None:
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Turn-request callback recording (content, custom type, details).
         delivered.append((content, custom_type, details))
 
     runtime.set_turn_requested_callback(record_turn)
@@ -1521,6 +1832,9 @@ def test_send_user_message_idle_uses_turn_callback(tmp_path: Path) -> None:
 
 
 def test_send_user_message_idle_without_callback_queues(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that when idle with no turn callback the message is queued as a
+    # follow-up.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "sender")
     session = RecordingSession(tmp_path, running=False)
@@ -1532,6 +1846,8 @@ def test_send_user_message_idle_without_callback_queues(tmp_path: Path) -> None:
 
 
 async def test_append_entry_routes_to_session(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts append_entry forwards namespace and data to the session.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "persister")
     session = RecordingSession(tmp_path)
@@ -1543,6 +1859,8 @@ async def test_append_entry_routes_to_session(tmp_path: Path) -> None:
 
 
 async def test_set_label_routes_to_session(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts set_label forwards set and clear operations to the session.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "bookmarker")
     session = RecordingSession(tmp_path)
@@ -1555,6 +1873,9 @@ async def test_set_label_routes_to_session(tmp_path: Path) -> None:
 
 
 def test_transcript_is_empty_at_session_start(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the context exposes session name, thinking level and an empty
+    # transcript for a fresh session.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "reader")
     session = RecordingSession(tmp_path)
@@ -1566,6 +1887,9 @@ def test_transcript_is_empty_at_session_start(tmp_path: Path) -> None:
 
 
 def test_context_exposes_project_trust_decision(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the context's project trust flag and resolution follow the session's
+    # current resolution, and a missing resolution reads as untrusted.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "reader")
     session = RecordingSession(tmp_path)
@@ -1586,6 +1910,8 @@ def test_context_exposes_project_trust_decision(tmp_path: Path) -> None:
 
 
 def test_context_exposes_available_provider_and_model_ids(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the context exposes available provider ids and model choices.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "reader")
     session = RecordingSession(tmp_path)
@@ -1602,6 +1928,8 @@ def test_context_exposes_available_provider_and_model_ids(tmp_path: Path) -> Non
 
 
 def test_transcript_exposes_prior_messages_in_order(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the transcript contains the session's messages in order.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "reader")
     session = RecordingSession(tmp_path)
@@ -1621,6 +1949,8 @@ def test_transcript_exposes_prior_messages_in_order(tmp_path: Path) -> None:
 
 
 def test_transcript_returns_copies_so_mutation_cannot_corrupt_session(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts mutating a transcript message does not affect the session's message.
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "reader")
     session = RecordingSession(tmp_path)
@@ -1637,6 +1967,12 @@ def test_transcript_returns_copies_so_mutation_cannot_corrupt_session(tmp_path: 
 
 
 class RecordingUiBridge:
+    # [CLASS DOC]
+    # HELPER: Fake UI bridge satisfying the extension UiBridge protocol without a
+    # frontend. Returns canned dialog answers, records dialog and component calls
+    # as (name, positional args, keyword args) tuples, notifications as (message,
+    # level) and registered key interceptors; has_ui also drives component and
+    # sidebar support flags.
     """Test UI bridge that records dialog calls and returns canned answers.
 
     Satisfies the ``UiBridge`` protocol without a real frontend, so tests can
@@ -1651,6 +1987,9 @@ class RecordingUiBridge:
         input_result: str | None = None,
         has_ui: bool = True,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Store canned select/confirm/input results and the has_ui flag
+        # (keyword-only) and create empty recording lists.
         self._select_result = select_result
         self._confirm_result = confirm_result
         self._input_result = input_result
@@ -1661,30 +2000,44 @@ class RecordingUiBridge:
 
     @property
     def has_ui(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Property returning the configured has_ui flag.
         return self._has_ui
 
     # -- component seam -------------------------------------------------------
 
     @property
     def supports_components(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Property; components are supported exactly when has_ui is set.
         return self._has_ui
 
     @property
     def theme(self):  # noqa: ANN202 - TuiTheme, imported lazily by the default
+        # [FUNCTION DOC]
+        # HELPER: Property returning the built-in tau-dark theme (imported lazily).
         from tau_coding.tui.config import TAU_DARK_THEME
 
         return TAU_DARK_THEME
 
     def get_prompt_text(self) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Always returns an empty prompt text.
         return ""
 
     def request_render(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Record a request_render call.
         self.calls.append(("request_render", (), {}))
 
     def set_slot_widget(self, key, factory, *, placement="above_prompt"):  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Record a slot widget call with its key and placement (factory unused).
         self.calls.append(("set_slot_widget", (key,), {"placement": placement}))
 
     def open_main_view(self, factory):  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Record an open_main_view call and return a dead (never-open) handle.
         self.calls.append(("open_main_view", (), {}))
         from tau_coding.extensions.api import _DeadMainViewHandle
 
@@ -1692,6 +2045,8 @@ class RecordingUiBridge:
 
     @property
     def supports_sidebar(self) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Property; sidebar is supported exactly when has_ui is set.
         return self._has_ui
 
     def set_sidebar_section(
@@ -1702,6 +2057,8 @@ class RecordingUiBridge:
         title,
         content,  # noqa: ANN001
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Record a sidebar section set with owner, key, title and content.
         self.calls.append(
             (
                 "set_sidebar_section",
@@ -1711,16 +2068,24 @@ class RecordingUiBridge:
         )
 
     def remove_sidebar_section(self, extension_name, key):  # noqa: ANN001, ANN201
+        # [FUNCTION DOC]
+        # HELPER: Record a sidebar section removal with owner and key.
         self.calls.append(("remove_sidebar_section", (extension_name, key), {}))
 
     def clear_components(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Record a clear_components call.
         self.calls.append(("clear_components", (), {}))
 
     def register_key_interceptor(self, handler):  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Store the handler and return an unsubscribe callable that removes it.
         self.interceptors.append(handler)
         return lambda: self.interceptors.remove(handler)
 
     def notify(self, message: str, level: str = "info") -> None:
+        # [FUNCTION DOC]
+        # HELPER: Record a (message, level) notification; level defaults to "info".
         self.notifications.append((message, level))
 
     async def select(
@@ -1730,6 +2095,9 @@ class RecordingUiBridge:
         *,
         timeout: float | None = None,
     ) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: Record a select call (title, options as tuple, timeout) and return
+        # the canned select result.
         self.calls.append(("select", (title, tuple(options)), {"timeout": timeout}))  # type: ignore[arg-type]
         return self._select_result
 
@@ -1740,6 +2108,8 @@ class RecordingUiBridge:
         *,
         timeout: float | None = None,
     ) -> bool:
+        # [FUNCTION DOC]
+        # HELPER: Record a confirm call and return the canned boolean.
         self.calls.append(("confirm", (title, message), {"timeout": timeout}))
         return self._confirm_result
 
@@ -1750,11 +2120,17 @@ class RecordingUiBridge:
         *,
         timeout: float | None = None,
     ) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: Record an input call (title, placeholder, timeout) and return the
+        # canned text.
         self.calls.append(("input", (title, placeholder), {"timeout": timeout}))
         return self._input_result
 
 
 async def test_context_ui_round_trips_dialogs(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts context.ui select/confirm/input/notify forward to the bridge with the
+    # given arguments (timeouts default to None) and return its answers.
     from typing import cast
 
     from tau_coding.extensions.api import ExtensionAPI
@@ -1779,6 +2155,9 @@ async def test_context_ui_round_trips_dialogs(tmp_path: Path) -> None:
 
 
 async def test_context_ui_cancel_returns_pi_defaults(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts cancelled dialogs return Pi defaults: None for select and input, False
+    # for confirm.
     from typing import cast
 
     from tau_coding.extensions.api import ExtensionAPI
@@ -1793,6 +2172,8 @@ async def test_context_ui_cancel_returns_pi_defaults(tmp_path: Path) -> None:
 
 
 async def test_headless_ui_bridges_return_pi_defaults(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the null and stderr bridges report no UI and return Pi defaults.
     from tau_coding.extensions import NullUiBridge, StderrUiBridge
 
     for bridge in (NullUiBridge(), StderrUiBridge()):
@@ -1803,6 +2184,11 @@ async def test_headless_ui_bridges_return_pi_defaults(tmp_path: Path) -> None:
 
 
 async def test_headless_ui_bridges_component_seam_are_noops(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts headless bridges expose a usable theme, empty prompt text, no-op
+    # render/slot/sidebar calls, a dead main-view handle whose wait resolves to None
+    # immediately and whose close is idempotent, and a harmless interceptor
+    # unsubscribe, with component and sidebar support reported as False.
     from tau_coding.extensions import NullUiBridge, StderrUiBridge
 
     for bridge in (NullUiBridge(), StderrUiBridge()):
@@ -1828,6 +2214,9 @@ async def test_headless_ui_bridges_component_seam_are_noops(tmp_path: Path) -> N
 
 
 async def test_context_ui_components_pass_through(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts context.ui.components is the installed bridge itself and slot widget
+    # and key interceptor calls reach it (unsubscribe removes the interceptor).
     from typing import cast
 
     from tau_coding.extensions.api import ExtensionAPI
@@ -1849,6 +2238,9 @@ async def test_context_ui_components_pass_through(tmp_path: Path) -> None:
 
 
 async def test_context_ui_sidebar_is_owned_and_passes_through(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the sidebar facade namespaces calls with the owning extension name
+    # before forwarding set and remove operations.
     from typing import cast
 
     from tau_coding.extensions.api import ExtensionAPI
@@ -1873,6 +2265,8 @@ async def test_context_ui_sidebar_is_owned_and_passes_through(tmp_path: Path) ->
 
 
 async def test_context_ui_sidebar_validates_keys_and_titles(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts blank sidebar keys or titles raise ExtensionError.
     from typing import cast
 
     from tau_coding.extensions import ExtensionError
@@ -1888,6 +2282,9 @@ async def test_context_ui_sidebar_validates_keys_and_titles(tmp_path: Path) -> N
 
 
 async def test_context_ui_sidebar_degrades_on_older_host_bridge(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a bridge without sidebar methods yields an unsupported sidebar whose
+    # operations are silent no-ops.
     from typing import cast
 
     from tau_coding.extensions import UiBridge
@@ -1903,6 +2300,8 @@ async def test_context_ui_sidebar_degrades_on_older_host_bridge(tmp_path: Path) 
 
 
 async def test_context_ui_components_headless_reports_unsupported(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the default runtime UI reports components and sidebar unsupported.
     from typing import cast
 
     from tau_coding.extensions.api import ExtensionAPI
@@ -1915,6 +2314,8 @@ async def test_context_ui_components_headless_reports_unsupported(tmp_path: Path
 
 
 async def test_default_runtime_ui_is_headless(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the default runtime UI has no UI and returns Pi dialog defaults.
     from typing import cast
 
     from tau_coding.extensions.api import ExtensionAPI
@@ -1929,6 +2330,11 @@ async def test_default_runtime_ui_is_headless(tmp_path: Path) -> None:
 
 
 async def test_sync_command_spawns_task_that_awaits_dialog(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Loads an extension whose sync command schedules an async dialog task on the
+    # running loop; asserts the command returns immediately with "opening menu...",
+    # and after yielding to the loop the select dialog was shown and the chosen
+    # action was sent as a follow-up user message.
     """A sync /command drives an async dialog by spawning a loop task.
 
     Mirrors the adopted v1 pattern: command handlers stay sync, so a handler
@@ -1979,11 +2385,17 @@ async def test_sync_command_spawns_task_that_awaits_dialog(tmp_path: Path) -> No
 
 
 def _register_inline_extension(runtime: ExtensionRuntime, name: str) -> object:
+    # [FUNCTION DOC]
+    # HELPER: Register an in-memory extension with the runtime via its private
+    # setup seam (virtual path, test source id) and return the extension API object
+    # captured by its setup function.
     from tau_coding.extensions.loader import LoadedExtension
 
     captured: dict[str, object] = {}
 
     def setup(api: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Setup function capturing the API object into the enclosing mapping.
         captured["api"] = api
 
     runtime._setup_extension(  # noqa: SLF001 - test seam
@@ -1998,15 +2410,23 @@ def _register_inline_extension(runtime: ExtensionRuntime, name: str) -> object:
 
 
 def _make_tool(name: str, *, content: str) -> AgentTool:
+    # [FUNCTION DOC]
+    # HELPER: Build a tool with the given name whose executor returns the given
+    # content text.
     async def executor(
         tool_call_id: str, arguments: object, signal: object = None, on_update: object = None
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Executor ignoring inputs and returning the fixed content.
         return AgentToolResult(content=content)
 
     return AgentTool(name=name, label=name, description="d", parameters={}, execute_fn=executor)
 
 
 def test_context_paths_exposes_constructor_paths_during_extension_use(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts paths passed to the runtime constructor are exposed unchanged both on
+    # the runtime and via the extension context after loading and binding.
     resolved = TauPaths(
         home=tmp_path / "custom-home",
         agents_home=tmp_path / "custom-agents",
@@ -2024,6 +2444,9 @@ def test_context_paths_exposes_constructor_paths_during_extension_use(tmp_path: 
 
 
 def test_context_paths_falls_back_to_resource_root_and_agents_root(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that without constructor paths, the context paths derive home and
+    # agents home from the loaded resource paths.
     runtime = ExtensionRuntime()
     runtime.load(
         TauResourcePaths(
@@ -2047,6 +2470,10 @@ def _session_config(
     *,
     extension_body: str | None = None,
 ) -> CodingSessionConfig:
+    # [FUNCTION DOC]
+    # HELPER: Build a coding session config using the fake provider, model "fake",
+    # a JSONL session file in tmp_path and the tmp resource paths; optionally writes
+    # a user extension named "integration" with the given body; creates the cwd.
     paths = _paths(tmp_path)
     if extension_body is not None:
         _write_extension(_user_extensions_dir(paths), "integration", extension_body)
@@ -2065,6 +2492,11 @@ async def test_session_loads_built_in_without_extension_discovery_or_project_tru
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # With built-ins patched to the fake and extensions disabled, asserts loading a
+    # session never prompts for project trust (resolution source "empty"), still
+    # registers the built-in tool, ignores the user extension, exposes no user
+    # extension names, and reports the built-in in metadata.
     from dataclasses import replace as dataclass_replace
 
     import tau_coding.built_in_extensions as declarations
@@ -2078,6 +2510,8 @@ async def test_session_loads_built_in_without_extension_discovery_or_project_tru
     prompt_calls = 0
 
     async def prompt(request: ProjectTrustRequest) -> TrustChoice:
+        # [FUNCTION DOC]
+        # HELPER: Trust prompt that counts calls and declines once.
         nonlocal prompt_calls
         del request
         prompt_calls += 1
@@ -2114,6 +2548,10 @@ async def test_session_lifecycle_recreates_built_in_in_a_fresh_generation(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over reload/new/resume. Asserts each lifecycle operation runs the
+    # built-in setup again in a new runtime with a new provider generation, the old
+    # runtime is inactive, and the old API raises "stale after reload".
     from dataclasses import replace as dataclass_replace
 
     import tau_coding.built_in_extensions as declarations
@@ -2160,6 +2598,10 @@ async def test_session_lifecycle_recreates_built_in_in_a_fresh_generation(
 
 
 async def test_session_exposes_extension_paths_at_moved_home(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension loaded by a session sees context paths whose home is the
+    # configured Tau home.
+    # KNOWN ISSUE: the loaded session is never closed.
     await CodingSession.load(
         _session_config(tmp_path, FakeProvider([]), extension_body=API_CAPTURING_EXTENSION)
     )
@@ -2170,6 +2612,10 @@ async def test_session_exposes_extension_paths_at_moved_home(tmp_path: Path) -> 
 
 
 async def test_session_exposes_extension_tools_and_commands(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension tool is appended after the built-in read/write/edit/bash
+    # tools, its command is handled by the session, and the tool appears in the
+    # system prompt. The session is not closed.
     body = HELLO_TOOL_EXTENSION + (
         "\n\ndef _cmd(args, context):\n"
         "    return 'extension says hi'\n\n\n"
@@ -2194,6 +2640,8 @@ async def test_session_exposes_extension_tools_and_commands(tmp_path: Path) -> N
 
 
 async def test_extension_guideline_reaches_system_prompt(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension prompt guideline appears in the session system prompt.
     body = "def setup(tau):\n    tau.add_prompt_guideline('Never commit directly to main')\n"
     session = await CodingSession.load(
         _session_config(tmp_path, FakeProvider([]), extension_body=body)
@@ -2203,6 +2651,12 @@ async def test_extension_guideline_reaches_system_prompt(tmp_path: Path) -> None
 
 
 async def test_session_metadata_changes_reach_extensions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Loads a managed session, attaches an inline observer, and asserts: a
+    # multi-line session name is rejected with ValueError; renaming and changing
+    # the thinking level each emit exactly one event (session_info_changed with the
+    # new name, thinking_level_changed with the new level) whose context already
+    # reflects the change; repeating the same values emits nothing.
     config = _session_config(tmp_path, FakeProvider([]))
     manager = SessionManager(
         TauPaths(home=tmp_path / "manager-tau", agents_home=tmp_path / "manager-agents")
@@ -2220,6 +2674,9 @@ async def test_session_metadata_changes_reach_extensions(tmp_path: Path) -> None
     seen: list[tuple[str, str | None, str | None, str, str]] = []
 
     def record_event(event: object, context: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Event handler recording (event type, name, level, context session
+        # name, context thinking level).
         seen.append(
             (
                 event.type,  # type: ignore[attr-defined]
@@ -2250,6 +2707,10 @@ async def test_session_metadata_changes_reach_extensions(tmp_path: Path) -> None
 
 
 async def test_auto_session_name_change_reaches_extensions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that when the session auto-names itself from the first exchange (the
+    # fake provider's first response is the title), extensions receive one
+    # session_info_changed event with that name.
     provider = FakeProvider(
         [
             [
@@ -2290,6 +2751,9 @@ async def test_auto_session_name_change_reaches_extensions(tmp_path: Path) -> No
 async def test_extension_prompt_section_reaches_system_prompt_after_user_append(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension prompt section renders as a "## <title>" markdown block
+    # in the system prompt, placed after the user's appended system prompt text.
     body = (
         "def setup(tau):\n"
         "    tau.add_prompt_section('Review procedure', "
@@ -2309,6 +2773,9 @@ async def test_extension_prompt_section_reaches_system_prompt_after_user_append(
 
 
 async def test_reload_picks_up_prompt_section_changes(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a prompt section from an extension added after load appears after
+    # reload and the reload summary reports the system prompt was rebuilt.
     provider = FakeProvider([])
     session = await CodingSession.load(_session_config(tmp_path, provider))
     assert "## Late procedure" not in session.system_prompt
@@ -2327,6 +2794,8 @@ async def test_reload_picks_up_prompt_section_changes(tmp_path: Path) -> None:
 
 
 async def test_reload_picks_up_guideline_changes(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a guideline from an extension added after load appears after reload.
     provider = FakeProvider([])
     session = await CodingSession.load(_session_config(tmp_path, provider))
     assert "Prefer uv over pip" not in session.system_prompt
@@ -2345,6 +2814,12 @@ async def test_reload_picks_up_guideline_changes(tmp_path: Path) -> None:
 
 
 async def test_session_start_deferred_until_host_emits(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts session_start is not fired during load, fires once with reason
+    # "startup" when the host emits pending start, is not repeated on a second call,
+    # and closing may add a "quit" event.
+    # KNOWN ISSUE: the final assertion accepts both with and without the "quit"
+    # shutdown reason, so it does not pin down shutdown behavior.
     body = (
         "EVENTS = []\n\n\n"
         "def setup(tau):\n"
@@ -2372,6 +2847,9 @@ async def test_session_start_deferred_until_host_emits(tmp_path: Path) -> None:
 async def test_session_start_handler_can_notify_through_attached_bridge(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts a session_start handler can notify through a UI bridge attached after
+    # load but before the deferred start is emitted.
     body = (
         "def setup(tau):\n"
         "    tau.on('session_start', "
@@ -2390,6 +2868,9 @@ async def test_session_start_handler_can_notify_through_attached_bridge(
 
 
 async def test_input_handled_prevents_agent_run(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an input hook returning "handled" produces no events, no provider
+    # calls and no stored messages.
     body = (
         "from tau_coding.extensions import InputHookResult\n\n\n"
         "def _hook(event, context):\n"
@@ -2410,6 +2891,9 @@ async def test_input_handled_prevents_agent_run(tmp_path: Path) -> None:
 
 
 async def test_prompt_input_hook_defaults_to_interactive(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts plain session prompts reach input hooks with source "interactive"
+    # and no streaming behavior (observed via the transformed user message text).
     # The plain session.prompt path (TUI idle submit, print mode) tags the
     # input hook with source="interactive" and no streaming behavior.
     body = (
@@ -2437,6 +2921,8 @@ async def test_prompt_input_hook_defaults_to_interactive(tmp_path: Path) -> None
 
 
 async def test_prompt_input_hook_source_extension(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a prompt with source "extension" passes that source to input hooks.
     # source="extension" flows through prompt() to the input hook, mirroring the
     # TUI extension-initiated idle turn (send_user_message -> turn_requested).
     body = (
@@ -2465,6 +2951,11 @@ async def test_prompt_input_hook_source_extension(tmp_path: Path) -> None:
 async def test_agent_events_reach_extension_after_interrupted_tool_repair(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Regression test: builds a session file whose last assistant message has an
+    # unanswered tool call, loads it (triggering interrupted-tool repair that
+    # replaces the harness), runs a prompt and asserts extensions still receive
+    # agent_start and agent_end events.
     # Regression: load() attached the extension event fan-out to the local
     # harness it built before _persist_loaded_interrupted_tool_repairs() could
     # replace session._harness. Loading a session that died mid-tool-call then
@@ -2504,6 +2995,9 @@ async def test_agent_events_reach_extension_after_interrupted_tool_repair(
 
 
 async def test_extension_tool_call_block_reaches_model(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts that when an extension blocks a bash tool call, a single tool result
+    # containing the block reason (not flagged as an error) is recorded and sent on.
     body = (
         "from tau_coding.extensions import ToolCallHookResult\n\n\n"
         "def _hook(event, context):\n"
@@ -2544,6 +3038,11 @@ async def test_extension_tool_call_block_reaches_model(tmp_path: Path) -> None:
 
 
 async def test_custom_message_metadata_survives_session_reload(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a prompt sent with a custom type and details is persisted as a custom
+    # message entry (not a plain message entry), is sent to the provider as a user
+    # message, and after reopening the session is restored as a custom message
+    # with its details.
     provider = FakeProvider(
         [
             [
@@ -2590,6 +3089,10 @@ async def test_custom_message_metadata_survives_session_reload(tmp_path: Path) -
 
 
 async def test_append_entry_persists_on_active_path(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts appending a custom entry writes it to storage with namespace and data
+    # and records it in session state.
+    # KNOWN ISSUE: the session is never closed.
     body = HELLO_TOOL_EXTENSION
     provider = FakeProvider([])
     session = await CodingSession.load(_session_config(tmp_path, provider, extension_body=body))
@@ -2611,6 +3114,9 @@ async def test_append_entry_persists_on_active_path(tmp_path: Path) -> None:
 async def test_context_project_trusted_follows_session_trust_override(
     tmp_path: Path, override: str, expected: bool
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized approve/decline overrides; asserts the context trust flag
+    # matches, the resolution is the session's own object with source "override".
     config = replace(
         _session_config(tmp_path, FakeProvider([]), extension_body=HELLO_TOOL_EXTENSION),
         trust_override=override,
@@ -2628,6 +3134,11 @@ async def test_context_project_trusted_follows_session_trust_override(
 async def test_allowed_tool_names_caps_composed_tools_and_survives_reload(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts an allow-list is applied after extension composition (only "read"
+    # survives, unknown names ignored, extension tool absent from the prompt), and
+    # remains in force after reload (which loads a second extension) and after
+    # resuming another session.
     manager = SessionManager(
         TauPaths(home=tmp_path / "home-tau", agents_home=tmp_path / "home-agents")
     )
@@ -2666,6 +3177,8 @@ async def test_allowed_tool_names_caps_composed_tools_and_survives_reload(
 
 
 async def test_allowed_tool_names_none_keeps_every_composed_tool(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts no allow-list keeps both built-in and extension tools.
     session = await CodingSession.load(
         _session_config(tmp_path, FakeProvider([]), extension_body=HELLO_TOOL_EXTENSION)
     )
@@ -2677,6 +3190,9 @@ async def test_allowed_tool_names_none_keeps_every_composed_tool(tmp_path: Path)
 
 
 async def test_reload_picks_up_new_extension(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts an extension added after load is picked up by reload (count 1), its
+    # tool is available and appears in the system prompt.
     provider = FakeProvider([])
     config = _session_config(tmp_path, provider)
     session = await CodingSession.load(config)
@@ -2697,6 +3213,13 @@ async def test_session_lifecycle_awaits_outgoing_provider_cleanup(
     tmp_path: Path,
     operation: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over reload, replacement (new session) and final close. Registers
+    # a dynamic provider whose model refresh hangs and has slow cleanup, starts a
+    # refresh, triggers the lifecycle operation and asserts the operation does not
+    # complete until cleanup is released, cleanup is not itself cancelled, the
+    # refresh ends "cancelled" and the old registry has no discovery tasks left.
+    # Closes the session afterwards unless it was already closed.
     from dataclasses import replace as dataclass_replace
 
     from tau_coding import SessionManager, TauPaths
@@ -2716,6 +3239,10 @@ async def test_session_lifecycle_awaits_outgoing_provider_cleanup(
     cleanup_cancelled = False
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Refresh callback that signals entry, sleeps (to be cancelled), and in
+        # its cleanup signals cleanup start and waits for release, recording whether
+        # that wait itself was cancelled.
         nonlocal cleanup_cancelled
         entered.set()
         try:
@@ -2770,6 +3297,12 @@ async def test_published_lifecycle_adoption_contains_cancellation_during_outgoin
     tmp_path: Path,
     operation: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over reload/new/resume. Asserts that once the new runtime is
+    # published, cancelling the lifecycle task while the old runtime's provider
+    # cleanup is pending does not abort it: the task completes normally with a
+    # result, cleanup is not re-cancelled, the refresh ends "cancelled", and resume
+    # lands on the target session.
     from dataclasses import replace as dataclass_replace
 
     from tau_coding import SessionManager, TauPaths
@@ -2790,6 +3323,8 @@ async def test_published_lifecycle_adoption_contains_cancellation_during_outgoin
     cleanup_recancelled = False
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Same hanging refresh with slow cleanup, recording re-cancellation.
         nonlocal cleanup_recancelled
         entered.set()
         try:
@@ -2848,6 +3383,11 @@ async def test_final_close_finishes_registry_and_each_provider_before_propagatin
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts that cancelling a session close mid-cleanup still closes the runtime
+    # once and every owned provider once before CancelledError propagates, empties
+    # the owned provider list and discovery tasks, and that a second close is a
+    # no-op.
     session = await CodingSession.load(_session_config(tmp_path, FakeProvider([])))
     runtime = session.extension_runtime
     registry = runtime.provider_registry
@@ -2857,6 +3397,8 @@ async def test_final_close_finishes_registry_and_each_provider_before_propagatin
     runtime_close_calls = 0
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: Hanging refresh whose cleanup signals start and waits for release.
         entered.set()
         try:
             await asyncio.sleep(10)
@@ -2882,6 +3424,8 @@ async def test_final_close_finishes_registry_and_each_provider_before_propagatin
     original_runtime_close = runtime.aclose
 
     async def counted_runtime_close():
+        # [FUNCTION DOC]
+        # HELPER: Wrapper around the runtime close that counts invocations.
         nonlocal runtime_close_calls
         runtime_close_calls += 1
         return await original_runtime_close()
@@ -2889,10 +3433,16 @@ async def test_final_close_finishes_registry_and_each_provider_before_propagatin
     monkeypatch.setattr(runtime, "aclose", counted_runtime_close)
 
     class CountingProvider:
+        # [CLASS DOC]
+        # HELPER: Fake owned provider counting close calls.
         def __init__(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: Start the close counter at zero.
             self.close_calls = 0
 
         async def aclose(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: Increment the close counter and yield once to the loop.
             self.close_calls += 1
             await asyncio.sleep(0)
 
@@ -2921,6 +3471,10 @@ async def test_final_close_finishes_registry_and_each_provider_before_propagatin
 
 
 async def test_runtime_survives_new_session_swap(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts starting a new session builds a new extension runtime, the old module
+    # saw a shutdown with reason "new" and the reloaded module saw a start with
+    # reason "new".
     from tau_coding import SessionManager
 
     body = (
@@ -2955,6 +3509,8 @@ async def test_runtime_survives_new_session_swap(tmp_path: Path) -> None:
 
 
 async def test_session_swap_clears_host_extension_components(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a new-session swap tells the UI bridge to clear extension components.
     # A session rebind (resume/new) must tear down extension-owned UI: slot
     # widgets, main views, and key interceptors from the previous session
     # otherwise survive the switch (session_start handlers can re-mount).
@@ -2979,6 +3535,8 @@ async def test_session_swap_clears_host_extension_components(tmp_path: Path) -> 
 
 
 def test_reset_for_reload_clears_host_extension_components() -> None:
+    # [FUNCTION DOC]
+    # Asserts resetting the runtime for reload clears extension UI components.
     # /reload replaces the registration set; host-side extension UI (slot
     # widgets, main views, key interceptors) belongs to the stale generation
     # and must be torn down with it, or interceptors accumulate per reload.
@@ -2992,12 +3550,21 @@ def test_reset_for_reload_clears_host_extension_components() -> None:
 
 
 def test_reset_for_reload_invalidates_only_after_component_cleanup() -> None:
+    # [FUNCTION DOC]
+    # Asserts the old API is still active while components are being cleared and
+    # becomes stale ("stale after reload") afterwards.
     runtime = ExtensionRuntime()
     api = cast(ExtensionAPI, _register_inline_extension(runtime, "old"))
     observed_active: list[bool] = []
 
     class CleanupBridge(RecordingUiBridge):
+        # [CLASS DOC]
+        # HELPER: Recording bridge that, when clearing components, records whether the
+        # old API is still usable.
         def clear_components(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: Record whether the old API's name is still readable, then record the
+            # clear call.
             observed_active.append(api.name == "old")
             super().clear_components()
 
@@ -3011,6 +3578,10 @@ def test_reset_for_reload_invalidates_only_after_component_cleanup() -> None:
 
 
 def test_extension_can_read_and_change_inference_provider(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the context reports the inference route and mode, and the API can pin
+    # a route (mode "fixed") and reset to automatic, returning the session's
+    # descriptive strings.
     runtime = ExtensionRuntime()
     api = cast(ExtensionAPI, _register_inline_extension(runtime, "huggingface"))
     session = RecordingSession(tmp_path)
@@ -3035,6 +3606,9 @@ API_CAPTURING_EXTENSION = "APIS = []\n\n\ndef setup(tau):\n    APIS.append(tau)\
 
 
 def test_reset_for_reload_invalidates_prior_api_actions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts after reset every API action (send message, register tool, subscribe,
+    # notify) raises "stale after reload".
     runtime = ExtensionRuntime()
     api = cast(ExtensionAPI, _register_inline_extension(runtime, "old"))
     runtime.bind(RecordingSession(tmp_path))
@@ -3052,6 +3626,10 @@ def test_reset_for_reload_invalidates_prior_api_actions(tmp_path: Path) -> None:
 
 
 async def test_reset_for_reload_invalidates_prior_context_and_ui(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts after reset every context read and UI facade operation (including
+    # trivial reads, dialogs, components and sidebar access) raises "stale after
+    # reload".
     runtime = ExtensionRuntime(ui=RecordingUiBridge())
     api = cast(ExtensionAPI, _register_inline_extension(runtime, "old"))
     runtime.bind(RecordingSession(tmp_path))
@@ -3089,6 +3667,9 @@ async def test_reset_for_reload_invalidates_prior_context_and_ui(tmp_path: Path)
 async def test_reload_invalidates_old_instance_and_new_instance_works(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts session reload makes the old extension API stale while the newly
+    # loaded instance has a working context and can send messages.
     provider = FakeProvider([])
     session = await CodingSession.load(
         _session_config(tmp_path, provider, extension_body=API_CAPTURING_EXTENSION)
@@ -3112,6 +3693,10 @@ async def test_reload_invalidates_old_instance_and_new_instance_works(
 
 
 async def test_failed_resource_reload_does_not_emit_extension_shutdown(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Makes the user SYSTEM.md unreadable as UTF-8 after load and asserts reload
+    # raises ResourceError ("Could not read replacement system prompt file") before
+    # any session_shutdown event reaches extensions.
     body = (
         "EVENTS = []\n\n"
         "def setup(tau):\n"
@@ -3137,6 +3722,11 @@ async def test_failed_resource_reload_does_not_emit_extension_shutdown(tmp_path:
 async def test_reload_awaits_shutdown_before_invalidation_and_starts_new_generation(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts on reload the outgoing extension's async shutdown handler runs (with
+    # reason "reload") while its API is still active, the new instance receives a
+    # start with reason "reload", and UI components are cleared before the new
+    # instance mounts its slot widget.
     body = (
         "EVENTS = []\n\n"
         "def setup(tau):\n"
@@ -3173,6 +3763,9 @@ async def test_reload_awaits_shutdown_before_invalidation_and_starts_new_generat
 async def test_session_replacement_rebuilds_and_invalidates_source_extensions(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Asserts a new-session replacement makes the old extension context stale and
+    # the new instance's context reports the new session id.
     from dataclasses import replace as dataclass_replace
 
     from tau_coding import SessionManager, TauPaths
@@ -3200,6 +3793,10 @@ async def test_session_replacement_rebuilds_and_invalidates_source_extensions(
 async def test_inflight_handler_touching_stale_api_records_diagnostic(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Starts an input hook that waits, resets the runtime for reload, then lets the
+    # hook use its now-stale API; asserts the resulting ExtensionError is contained
+    # (input not handled) and recorded as a "stale after reload" diagnostic.
     import asyncio
 
     runtime = ExtensionRuntime()
@@ -3208,6 +3805,9 @@ async def test_inflight_handler_touching_stale_api_records_diagnostic(
     release = asyncio.Event()
 
     async def handler(event: object, context: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Async input hook that waits for release then tries to send a user
+        # message through the (stale) API.
         del context
         await release.wait()
         api.send_user_message("zombie")  # generation went stale mid-flight
@@ -3230,15 +3830,24 @@ async def test_inflight_handler_touching_stale_api_records_diagnostic(
 
 
 def _inline_api(runtime: ExtensionRuntime, name: str) -> ExtensionAPI:
+    # [FUNCTION DOC]
+    # HELPER: Register an inline extension and return its API typed as the
+    # extension API.
     return cast(ExtensionAPI, _register_inline_extension(runtime, name))
 
 
 def test_render_custom_message_uses_registered_renderer(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a registered message renderer receives a view (custom type, content,
+    # details) and options (expanded flag) and its markup is returned.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "notifier")
     seen: list[tuple[CustomMessageView, MessageRenderOptions]] = []
 
     def render(view: CustomMessageView, options: MessageRenderOptions) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Renderer recording its inputs and returning bold markup of the
+        # details label (or content).
         seen.append((view, options))
         return f"[bold]{view.details['label'] if view.details else view.content}[/bold]"
 
@@ -3253,6 +3862,8 @@ def test_render_custom_message_uses_registered_renderer(tmp_path: Path) -> None:
 
 
 def test_render_custom_message_returns_none_when_unregistered(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts unknown custom types render to None.
     runtime = ExtensionRuntime()
     _inline_api(runtime, "notifier")
 
@@ -3260,6 +3871,8 @@ def test_render_custom_message_returns_none_when_unregistered(tmp_path: Path) ->
 
 
 def test_register_message_renderer_first_registration_wins(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the first registered renderer for a custom type is kept.
     runtime = ExtensionRuntime()
     first = _inline_api(runtime, "first")
     second = _inline_api(runtime, "second")
@@ -3270,10 +3883,15 @@ def test_register_message_renderer_first_registration_wins(tmp_path: Path) -> No
 
 
 def test_render_custom_message_swallows_renderer_errors(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a raising renderer yields None and a "message_renderer:<type>"
+    # diagnostic.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "boom")
 
     def render(view: CustomMessageView, options: MessageRenderOptions) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Renderer that always raises RuntimeError.
         raise RuntimeError("renderer exploded")
 
     api.register_message_renderer("boom", render)
@@ -3283,10 +3901,15 @@ def test_render_custom_message_swallows_renderer_errors(tmp_path: Path) -> None:
 
 
 def test_render_custom_message_reports_failure_once_per_custom_type(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts repeated renderer failures for one custom type record only one
+    # diagnostic.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "boom")
 
     def render(view: CustomMessageView, options: MessageRenderOptions) -> str:
+        # [FUNCTION DOC]
+        # HELPER: Renderer that always raises RuntimeError.
         raise RuntimeError("renderer exploded")
 
     api.register_message_renderer("boom", render)
@@ -3304,10 +3927,15 @@ def test_render_custom_message_reports_failure_once_per_custom_type(tmp_path: Pa
 
 
 async def _idle_executor(tool_call_id, arguments, signal=None, on_update=None):  # noqa: ANN001, ANN202
+    # [FUNCTION DOC]
+    # HELPER: Tool executor returning an empty result.
     return AgentToolResult(content="")
 
 
 def _renderable_tool(name: str, render_call=None, render_result=None) -> AgentTool:  # noqa: ANN001
+    # [FUNCTION DOC]
+    # HELPER: Build a tool with the given name, the idle executor and optional call
+    # and result renderers.
     return AgentTool(
         name=name,
         label=name,
@@ -3320,11 +3948,17 @@ def _renderable_tool(name: str, render_call=None, render_result=None) -> AgentTo
 
 
 def test_render_tool_call_uses_tool_renderer(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the runtime renders a tool call through the tool's render_call with
+    # the given arguments.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "subagents")
     seen: list[dict[str, JSONValue]] = []
 
     def render(arguments) -> str:  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Call renderer recording arguments and returning an "agent" line with
+        # the description.
         seen.append(dict(arguments))
         return f"▸ agent · {arguments.get('description')}"
 
@@ -3337,6 +3971,8 @@ def test_render_tool_call_uses_tool_renderer(tmp_path: Path) -> None:
 
 
 def test_render_tool_call_returns_none_without_renderer(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts None for tools without a call renderer and for unknown tools.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "subagents")
     api.register_tool(_renderable_tool("agent"))
@@ -3346,10 +3982,15 @@ def test_render_tool_call_returns_none_without_renderer(tmp_path: Path) -> None:
 
 
 def test_render_tool_call_swallows_errors_and_reports_once(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts repeated raising call renderers return None with a single
+    # "render_call:<tool>" diagnostic.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "boom")
 
     def render(arguments) -> str:  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Call renderer that always raises RuntimeError.
         raise RuntimeError("renderer exploded")
 
     api.register_tool(_renderable_tool("boom-tool", render))
@@ -3362,6 +4003,8 @@ def test_render_tool_call_swallows_errors_and_reports_once(tmp_path: Path) -> No
 
 
 def test_render_tool_call_rejects_non_string_result(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a non-string call renderer result is discarded with a diagnostic.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "subagents")
     api.register_tool(_renderable_tool("agent", lambda arguments: 42))
@@ -3371,6 +4014,9 @@ def test_render_tool_call_rejects_non_string_result(tmp_path: Path) -> None:
 
 
 def _tool_result(name: str, *, ok: bool = True) -> AgentToolResult:
+    # [FUNCTION DOC]
+    # HELPER: Build a tool result with text "raw result" and a description detail.
+    # KNOWN ISSUE: the name and ok parameters are ignored.
     return AgentToolResult(
         content="raw result",
         details={"description": "Summarize codebase"},
@@ -3378,11 +4024,17 @@ def _tool_result(name: str, *, ok: bool = True) -> AgentToolResult:
 
 
 def test_render_tool_result_uses_tool_renderer(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts the result renderer receives the result and expanded flag for both
+    # collapsed and expanded rendering and its markup is returned.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "subagents")
     seen: list[tuple[str, bool]] = []
 
     def render(result, *, expanded) -> str:  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Result renderer recording (description detail, expanded) and
+        # returning fixed markup.
         seen.append((str(result.details["description"]), expanded))
         return "✓ completed · 3 tool uses"
 
@@ -3397,6 +4049,8 @@ def test_render_tool_result_uses_tool_renderer(tmp_path: Path) -> None:
 
 
 def test_render_tool_result_returns_none_without_renderer(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts None for tools without a result renderer and for unknown tools.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "subagents")
     api.register_tool(_renderable_tool("agent"))
@@ -3406,10 +4060,15 @@ def test_render_tool_result_returns_none_without_renderer(tmp_path: Path) -> Non
 
 
 def test_render_tool_result_swallows_errors_and_reports_once(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts repeated raising result renderers return None with a single
+    # "render_result:<tool>" diagnostic.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "boom")
 
     def render(result, *, expanded) -> str:  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Result renderer that always raises RuntimeError.
         raise RuntimeError("renderer exploded")
 
     api.register_tool(_renderable_tool("boom-tool", render_result=render))
@@ -3422,6 +4081,8 @@ def test_render_tool_result_swallows_errors_and_reports_once(tmp_path: Path) -> 
 
 
 def test_render_tool_result_rejects_non_string_result(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a non-string result renderer output is discarded with a diagnostic.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "subagents")
     api.register_tool(_renderable_tool("agent", render_result=lambda result, *, expanded: 42))
@@ -3431,15 +4092,22 @@ def test_render_tool_result_rejects_non_string_result(tmp_path: Path) -> None:
 
 
 def test_render_tool_result_failures_do_not_shadow_render_call(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts failures of the result renderer and the call renderer of one tool are
+    # reported separately (deduplication keys do not collide).
     # The two renderers share the once-per-name dedup set; a broken
     # render_result must not swallow the diagnostic for a broken render_call.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "boom")
 
     def bad_call(arguments) -> str:  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Call renderer that always raises RuntimeError.
         raise RuntimeError("call renderer exploded")
 
     def bad_result(result, *, expanded) -> str:  # noqa: ANN001
+        # [FUNCTION DOC]
+        # HELPER: Result renderer that always raises RuntimeError.
         raise RuntimeError("result renderer exploded")
 
     api.register_tool(_renderable_tool("agent", render_call=bad_call, render_result=bad_result))
@@ -3451,6 +4119,8 @@ def test_render_tool_result_failures_do_not_shadow_render_call(tmp_path: Path) -
 
 
 def test_render_custom_message_rejects_non_string_result(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts a message renderer returning a non-string yields None.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "wrong")
     # A renderer that returns a non-string (e.g. a widget) must not reach the UI.
@@ -3463,6 +4133,8 @@ def test_render_custom_message_rejects_non_string_result(tmp_path: Path) -> None
 
 
 def test_message_renderers_cleared_on_reload(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts registered message renderers are removed by a reload reset.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "notifier")
     api.register_message_renderer("t", lambda view, options: "rendered")
@@ -3474,6 +4146,9 @@ def test_message_renderers_cleared_on_reload(tmp_path: Path) -> None:
 
 
 def test_send_custom_message_queues_metadata_while_running(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts sending a custom message while running queues it with its custom type
+    # and details.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "notifier")
     session = RecordingSession(tmp_path, running=True)
@@ -3491,6 +4166,9 @@ def test_send_custom_message_queues_metadata_while_running(tmp_path: Path) -> No
 
 
 def test_send_custom_message_idle_delivers_metadata_via_turn_callback(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts sending a custom message while idle invokes the turn callback with
+    # content, custom type and details.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "notifier")
     session = RecordingSession(tmp_path, running=False)
@@ -3502,6 +4180,8 @@ def test_send_custom_message_idle_delivers_metadata_via_turn_callback(tmp_path: 
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Turn callback recording (content, custom type, details).
         delivered.append((content, custom_type, details))
 
     runtime.set_turn_requested_callback(record_turn)
@@ -3512,6 +4192,9 @@ def test_send_custom_message_idle_delivers_metadata_via_turn_callback(tmp_path: 
 
 
 def test_send_custom_message_without_trigger_turn_queues(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Asserts trigger_turn False queues the message without invoking the turn
+    # callback even when idle.
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "notifier")
     session = RecordingSession(tmp_path, running=False)
@@ -3522,6 +4205,8 @@ def test_send_custom_message_without_trigger_turn_queues(tmp_path: Path) -> None
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Turn callback that fails the test if invoked.
         raise AssertionError("turn callback should not fire when trigger_turn=False")
 
     runtime.set_turn_requested_callback(record_turn)
@@ -3532,6 +4217,10 @@ def test_send_custom_message_without_trigger_turn_queues(tmp_path: Path) -> None
 
 
 def _loaded_extension_module(name: str) -> object:
+    # [FUNCTION DOC]
+    # HELPER: Return the most recently inserted top-level module in the module
+    # registry whose name starts with "tau_extension_<name>"; asserts at least one
+    # exists.
     candidates = [
         module
         for module_name, module in sys.modules.items()
