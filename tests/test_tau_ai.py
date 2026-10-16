@@ -1,3 +1,12 @@
+# [MODULE DOC]
+# Provider-layer tests for tau_ai: the fake provider, environment config
+# parsing, and the HTTP providers (OpenAI-compatible chat completions and
+# Responses API, OpenAI Codex, Google Generative AI, Anthropic, GitHub
+# Copilot variants). Each test injects an httpx client with a MockTransport
+# handler that records requests and returns canned SSE bodies or error
+# statuses, then asserts on the request payload/headers and the canonical
+# assistant event stream (start/deltas/end/done/error), retries, cancellation,
+# usage accounting and diagnostics. No real network access.
 import ssl
 from collections.abc import AsyncIterator, Mapping
 from json import loads
@@ -44,6 +53,8 @@ from tau_ai import (
 
 
 async def _collect(stream: AsyncIterator[object]) -> list[object]:
+    # [FUNCTION DOC]
+    # HELPER: Drains an async iterator into a list and returns it.
     return [event async for event in stream]
 
 
@@ -52,12 +63,20 @@ def _provider_tool(
     description: str,
     parameters: Mapping[str, JSONValue],
 ) -> AgentTool:
+    # [FUNCTION DOC]
+    # HELPER: Builds an AgentTool with the given name (also used as label),
+    # description and parameter schema whose execute function returns the
+    # arguments' string form. Used to test tool schema serialisation.
     async def execute(
         tool_call_id: str,
         arguments: Mapping[str, JSONValue],
         signal: object | None = None,
         on_update: object | None = None,
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake tool execute function; ignores call id, signal and update
+        # callback and returns a result whose text is the string form of the
+        # arguments.
         del tool_call_id, signal, on_update
         return AgentToolResult(content=str(arguments))
 
@@ -72,6 +91,9 @@ def _provider_tool(
 
 @pytest.mark.anyio
 async def test_fake_provider_replays_scripted_events() -> None:
+    # [FUNCTION DOC]
+    # Verifies FakeProvider yields the scripted events unchanged and records the
+    # model and system prompt of each call.
     start = AssistantMessage(model="fake-model")
     final = AssistantMessage(content="hello", model="fake-model")
     scripted = [
@@ -96,6 +118,9 @@ async def test_fake_provider_replays_scripted_events() -> None:
 
 
 def test_openai_compatible_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # [FUNCTION DOC]
+    # Verifies OPENAI_* environment variables populate the config (API key, base
+    # URL with trailing slash stripped, timeout, max retries, max retry delay).
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1/")
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "12.5")
@@ -114,6 +139,8 @@ def test_openai_compatible_config_from_env(monkeypatch: pytest.MonkeyPatch) -> N
 def test_openai_compatible_config_from_env_rejects_invalid_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verifies a zero timeout raises RuntimeError mentioning "greater than 0".
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "0")
 
@@ -124,6 +151,8 @@ def test_openai_compatible_config_from_env_rejects_invalid_timeout(
 def test_openai_compatible_config_from_env_rejects_invalid_retry_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verifies negative max retries raises RuntimeError mentioning "0 or greater".
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MAX_RETRIES", "-1")
 
@@ -133,6 +162,9 @@ def test_openai_compatible_config_from_env_rejects_invalid_retry_settings(
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_uses_configured_timeout() -> None:
+    # [FUNCTION DOC]
+    # Verifies the lazily created HTTP client uses the configured connect/read
+    # timeout and is closed afterwards.
     provider = OpenAICompatibleProvider(
         OpenAICompatibleConfig(
             api_key="test-key",
@@ -151,9 +183,16 @@ async def test_openai_compatible_provider_uses_configured_timeout() -> None:
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_formats_request_and_streams_text() -> None:
+    # [FUNCTION DOC]
+    # Verifies the chat completions URL, bearer auth and custom headers, the
+    # payload (model, stream, system + user messages, no cache key/affinity
+    # headers/reasoning for non-OpenAI hosts) and the canonical text event
+    # sequence ending in a "stop" done event with "Hello".
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns two text delta chunks then [DONE].
         requests.append(request)
         return httpx.Response(
             200,
@@ -217,9 +256,14 @@ async def test_openai_compatible_provider_formats_request_and_streams_text() -> 
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_uses_wire_model_alias_but_reports_logical_model() -> None:
+    # [FUNCTION DOC]
+    # Verifies model aliases rewrite the model sent on the wire while the final
+    # message reports the logical model id.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns one "ok" chunk with stop.
         requests.append(request)
         return httpx.Response(
             200,
@@ -252,10 +296,16 @@ async def test_openai_compatible_provider_uses_wire_model_alias_but_reports_logi
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_observes_headers_after_success() -> None:
+    # [FUNCTION DOC]
+    # Verifies the response headers observer is invoked only for the successful
+    # retry (not the failed 500 attempt) and both attempts use the aliased model.
     observed: list[dict[str, str]] = []
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call returns 500 with a provider header, later calls a
+        # successful stream with x-inference-provider "deepinfra".
         requests.append(request)
         if len(requests) == 1:
             return httpx.Response(
@@ -302,7 +352,12 @@ async def test_openai_compatible_provider_observes_headers_after_success() -> No
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_observer_failure_keeps_completed_response() -> None:
+    # [FUNCTION DOC]
+    # Verifies an exception raised by the headers observer does not fail the
+    # response; it is recorded as a "response_headers_observer_error" diagnostic.
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns a successful "ok" stream with a provider header.
         del request
         return httpx.Response(
             200,
@@ -314,6 +369,8 @@ async def test_openai_compatible_provider_observer_failure_keeps_completed_respo
         )
 
     def fail_observer(headers: Mapping[str, str]) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Headers observer that always raises PermissionError.
         del headers
         raise PermissionError("session index is read-only")
 
@@ -346,14 +403,24 @@ async def test_openai_compatible_provider_observer_failure_keeps_completed_respo
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_does_not_retry_after_partial_output() -> None:
+    # [FUNCTION DOC]
+    # Verifies a read error after partial content is not retried and ends with
+    # an error event preserving the partial text.
     requests: list[httpx.Request] = []
 
     class FailingStream(httpx.AsyncByteStream):
+        # [CLASS DOC]
+        # HELPER: Async byte stream yielding one content chunk then raising
+        # httpx.ReadError.
         async def __aiter__(self) -> AsyncIterator[bytes]:
+            # [FUNCTION DOC]
+            # HELPER: Yields one SSE chunk with "partial", then raises ReadError.
             yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
             raise httpx.ReadError("stream dropped")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a 200 with the failing stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -388,14 +455,24 @@ async def test_openai_compatible_provider_does_not_retry_after_partial_output() 
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_reports_raw_ssl_error_after_partial_output() -> None:
+    # [FUNCTION DOC]
+    # Verifies a raw ssl.SSLError after partial content is surfaced as an error
+    # event (no retry) keeping the partial text.
     requests: list[httpx.Request] = []
 
     class FailingStream(httpx.AsyncByteStream):
+        # [CLASS DOC]
+        # HELPER: Async byte stream yielding one chunk then raising ssl.SSLError.
         async def __aiter__(self) -> AsyncIterator[bytes]:
+            # [FUNCTION DOC]
+            # HELPER: Yields one SSE chunk with "partial", then raises a bad-record-MAC
+            # SSLError.
             yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
             raise ssl.SSLError(1, "[SSL: SSLV3_ALERT_BAD_RECORD_MAC] bad record mac")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a 200 with the failing stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -429,9 +506,14 @@ async def test_openai_compatible_provider_reports_raw_ssl_error_after_partial_ou
 
 @pytest.mark.anyio
 async def test_openai_chat_completions_sends_prompt_cache_key_without_affinity_headers() -> None:
+    # [FUNCTION DOC]
+    # Verifies api.openai.com chat requests send the session id as
+    # prompt_cache_key but no session_id / x-client-request-id headers.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an "ok" stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -464,9 +546,13 @@ async def test_openai_chat_completions_sends_prompt_cache_key_without_affinity_h
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_includes_configured_reasoning_effort() -> None:
+    # [FUNCTION DOC]
+    # Verifies a configured reasoning effort is sent as reasoning_effort.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an "ok" stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -512,9 +598,15 @@ async def test_zai_provider_serializes_thinking_protocol(
     expected_thinking: dict[str, str],
     expected_effort: str | None,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: with the "zai" thinking format the payload has a thinking
+    # object enabled/disabled by effort, reasoning_effort only when the compat
+    # flag allows it, and never enable_thinking.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an "ok" stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -550,9 +642,13 @@ async def test_zai_provider_serializes_thinking_protocol(
 
 @pytest.mark.anyio
 async def test_unsupported_reasoning_effort_guard_remains_for_openai_format() -> None:
+    # [FUNCTION DOC]
+    # Verifies supportsReasoningEffort false suppresses reasoning_effort.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an "ok" stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -584,9 +680,13 @@ async def test_unsupported_reasoning_effort_guard_remains_for_openai_format() ->
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_includes_openrouter_provider_routing() -> None:
+    # [FUNCTION DOC]
+    # Verifies the openrouterProvider compat value is sent as "provider".
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an "ok" stream then [DONE].
         requests.append(request)
         return httpx.Response(
             200,
@@ -618,9 +718,14 @@ async def test_openai_compatible_provider_includes_openrouter_provider_routing()
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_supports_nested_reasoning_effort_parameter() -> None:
+    # [FUNCTION DOC]
+    # Verifies a "reasoning.effort" parameter name produces a nested reasoning
+    # object on the chat completions endpoint instead of reasoning_effort.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an "ok" stream then [DONE].
         requests.append(request)
         return httpx.Response(
             200,
@@ -657,9 +762,14 @@ async def test_openai_compatible_provider_supports_nested_reasoning_effort_param
 
 @pytest.mark.anyio
 async def test_google_provider_sends_system_instruction_at_top_level() -> None:
+    # [FUNCTION DOC]
+    # Verifies Google requests put systemInstruction at top level and map low
+    # effort to a thinkingConfig with includeThoughts and a 2048 token budget.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a Google candidate "ok" with STOP.
         requests.append(request)
         return httpx.Response(
             200,
@@ -700,9 +810,15 @@ async def test_google_provider_sends_system_instruction_at_top_level() -> None:
 
 @pytest.mark.anyio
 async def test_google_provider_round_trips_thought_signature() -> None:
+    # [FUNCTION DOC]
+    # Verifies a functionCall thoughtSignature is kept on the ToolCall and sent
+    # back on the replayed function call part in the next request.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records each request and returns a functionCall part with a thought
+        # signature and STOP.
         requests.append(request)
         return httpx.Response(
             200,
@@ -757,9 +873,14 @@ async def test_google_provider_round_trips_thought_signature() -> None:
 
 @pytest.mark.anyio
 async def test_google_provider_strips_unsupported_schema_keywords_from_tools() -> None:
+    # [FUNCTION DOC]
+    # Verifies additionalProperties is removed recursively from tool parameter
+    # schemas sent to Google while other keywords are kept.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an "ok" STOP candidate.
         requests.append(request)
         return httpx.Response(
             200,
@@ -813,9 +934,14 @@ async def test_google_provider_strips_unsupported_schema_keywords_from_tools() -
 
 @pytest.mark.anyio
 async def test_google_provider_errors_when_stream_ends_during_thinking() -> None:
+    # [FUNCTION DOC]
+    # Verifies a stream ending without finishReason after thought content is not
+    # retried and yields an error keeping the thinking text.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns only a thought part, no finishReason.
         requests.append(request)
         return httpx.Response(
             200,
@@ -853,6 +979,9 @@ async def test_google_provider_errors_when_stream_ends_during_thinking() -> None
 
 @pytest.mark.anyio
 async def test_google_provider_does_not_execute_tool_from_incomplete_stream() -> None:
+    # [FUNCTION DOC]
+    # Runs the full agent loop: a function call in a stream without finishReason
+    # must produce an error assistant message and the tool must not execute.
     executed = False
 
     async def execute(
@@ -861,6 +990,8 @@ async def test_google_provider_does_not_execute_tool_from_incomplete_stream() ->
         signal: object | None = None,
         on_update: object | None = None,
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: Fake tool execute that flags (via a closure variable) that it ran.
         nonlocal executed
         del tool_call_id, arguments, signal, on_update
         executed = True
@@ -875,6 +1006,8 @@ async def test_google_provider_does_not_execute_tool_from_incomplete_stream() ->
     )
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns text plus a functionCall part without finishReason.
         return httpx.Response(
             200,
             text=(
@@ -914,9 +1047,14 @@ async def test_google_provider_does_not_execute_tool_from_incomplete_stream() ->
 
 @pytest.mark.anyio
 async def test_google_provider_retries_empty_clean_close_then_errors() -> None:
+    # [FUNCTION DOC]
+    # Verifies empty streams are retried up to max retries (3 requests) and then
+    # fail with "Google stream ended without finishReason".
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an empty 200 event stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -950,7 +1088,11 @@ async def test_google_provider_retries_empty_clean_close_then_errors() -> None:
 
 @pytest.mark.anyio
 async def test_google_provider_accepts_explicit_stop_finish_reason() -> None:
+    # [FUNCTION DOC]
+    # Verifies STOP maps to a "stop" done event with the text.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns an "ok" candidate with STOP.
         return httpx.Response(
             200,
             text=(
@@ -984,7 +1126,11 @@ async def test_google_provider_accepts_explicit_stop_finish_reason() -> None:
 
 @pytest.mark.anyio
 async def test_google_provider_maps_max_tokens_finish_reason_to_length() -> None:
+    # [FUNCTION DOC]
+    # Verifies MAX_TOKENS maps to reason and stop reason "length".
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns a "partial" candidate with MAX_TOKENS.
         return httpx.Response(
             200,
             text=(
@@ -1018,9 +1164,13 @@ async def test_google_provider_maps_max_tokens_finish_reason_to_length() -> None
 
 @pytest.mark.anyio
 async def test_google_provider_errors_on_truncated_json_chunk() -> None:
+    # [FUNCTION DOC]
+    # Verifies an invalid JSON chunk produces an error without retry.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a truncated JSON data line.
         requests.append(request)
         return httpx.Response(
             200,
@@ -1054,7 +1204,12 @@ async def test_google_provider_errors_on_truncated_json_chunk() -> None:
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_streams_reasoning_content() -> None:
+    # [FUNCTION DOC]
+    # Verifies reasoning_content deltas become thinking events/blocks (signature
+    # "reasoning_content") ordered before text in the final message.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns two reasoning chunks, a content chunk and [DONE].
         return httpx.Response(
             200,
             text=(
@@ -1105,9 +1260,14 @@ async def test_openai_compatible_provider_streams_reasoning_content() -> None:
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_replays_persisted_reasoning() -> None:
+    # [FUNCTION DOC]
+    # Verifies prior assistant thinking with the reasoning_content signature is
+    # replayed as reasoning_content on the assistant message.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a "next" stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -1146,6 +1306,9 @@ async def test_openai_compatible_provider_replays_persisted_reasoning() -> None:
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_streams_tool_calls() -> None:
+    # [FUNCTION DOC]
+    # Verifies tool definitions are serialised as functions and fragmented tool
+    # call arguments are assembled into one ToolCall with a "toolUse" done reason.
     tool = _provider_tool(
         "read",
         "Read a file.",
@@ -1153,6 +1316,8 @@ async def test_openai_compatible_provider_streams_tool_calls() -> None:
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: asserts the tools payload, then returns two tool call delta chunks.
         payload = loads(request.content)
         assert payload["tools"] == [
             {
@@ -1205,9 +1370,15 @@ async def test_openai_compatible_provider_streams_tool_calls() -> None:
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_reports_resolved_response_provider() -> None:
+    # [FUNCTION DOC]
+    # Verifies the response provider header from the successful retry (after a
+    # 503) is reported on the start partial and final message, with provider name.
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call returns 503, later calls an "ok" stream with a different
+        # x-inference-provider header (counts attempts via a closure variable).
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -1259,9 +1430,14 @@ async def test_openai_compatible_provider_reports_resolved_response_provider() -
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_retries_transient_status() -> None:
+    # [FUNCTION DOC]
+    # Verifies a 500 is retried once and the second attempt's text stream is
+    # emitted without extra events.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call returns 500, later calls an "ok" stream.
         requests.append(request)
         if len(requests) == 1:
             return httpx.Response(500, text="try again")
@@ -1306,10 +1482,15 @@ async def test_openai_compatible_provider_retries_transient_status() -> None:
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_cancellation_stops_retry_backoff() -> None:
+    # [FUNCTION DOC]
+    # Verifies a pre-cancelled signal stops after the first 503 instead of
+    # waiting for backoff, yielding start then error.
     requests: list[httpx.Request] = []
     signal = SimpleCancellationToken()
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and always returns 503.
         requests.append(request)
         return httpx.Response(503, text="try later")
 
@@ -1343,9 +1524,14 @@ async def test_openai_compatible_provider_cancellation_stops_retry_backoff() -> 
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_does_not_retry_non_transient_status() -> None:
+    # [FUNCTION DOC]
+    # Verifies a 400 is not retried; the error message includes provider, status,
+    # model and the JSON error message; diagnostics include body and attempts.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns 400 with a JSON error body.
         requests.append(request)
         return httpx.Response(
             400,
@@ -1388,7 +1574,12 @@ async def test_openai_compatible_provider_does_not_retry_non_transient_status() 
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_includes_plain_http_error_body_in_message() -> None:
+    # [FUNCTION DOC]
+    # Verifies a plain-text 400 body is included in the error message and
+    # diagnostics.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns 400 with plain text.
         return httpx.Response(400, text="bad request details")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -1424,12 +1615,24 @@ async def test_openai_compatible_provider_includes_plain_http_error_body_in_mess
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_discovers_and_caches_live_model_catalog() -> None:
+    # [FUNCTION DOC]
+    # Verifies Codex model discovery: GET codex/models with client_version query,
+    # bearer token, account id and JSON accept headers; listed models (including
+    # ones not supported in the API) become RuntimeModels with limits, input
+    # modalities (default text+image), thinking levels and default level; hidden
+    # and invalid rows are dropped; the catalog is cached (one request) and
+    # discover_model_limits reads from it.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a JSON model list with listed,
+        # subscription-only, hidden and invalid rows.
         requests.append(request)
         return httpx.Response(
             200,
@@ -1528,18 +1731,27 @@ async def test_openai_codex_provider_discovers_and_caches_live_model_catalog() -
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_uses_resolved_latest_client_version() -> None:
+    # [FUNCTION DOC]
+    # Verifies a client version resolver overrides the static version, is called
+    # once across discovery and limit lookups, and its value is sent.
     requests: list[httpx.Request] = []
     version_calls = 0
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     async def client_version() -> str:
+        # [FUNCTION DOC]
+        # HELPER: Async version resolver returning "0.153.4" and counting calls.
         nonlocal version_calls
         version_calls += 1
         return "0.153.4"
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a one-model JSON list.
         requests.append(request)
         return httpx.Response(
             200,
@@ -1568,10 +1780,17 @@ async def test_openai_codex_provider_uses_resolved_latest_client_version() -> No
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_includes_http_error_detail_in_message() -> None:
+    # [FUNCTION DOC]
+    # Verifies a Codex 400 JSON error becomes a friendly message with provider,
+    # status, model and detail, plus diagnostics with body and attempts.
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns 400 with a JSON error body.
         return httpx.Response(
             400,
             json={"error": {"message": "The requested model does not exist."}},
@@ -1611,10 +1830,16 @@ async def test_openai_codex_provider_includes_http_error_detail_in_message() -> 
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_includes_plain_http_error_body_in_message() -> None:
+    # [FUNCTION DOC]
+    # Verifies a plain-text Codex 400 body appears in the message and diagnostics.
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns 400 with plain text.
         return httpx.Response(400, text="bad request details")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -1662,10 +1887,17 @@ _CODEX_TEXT_SSE = (
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_surfaces_nested_stream_error_message() -> None:
+    # [FUNCTION DOC]
+    # Verifies an in-stream "error" event surfaces its nested error message and
+    # the raw event in diagnostics (no retries configured).
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns the shared overload error SSE body.
         return httpx.Response(
             200,
             text=_CODEX_OVERLOAD_ERROR_SSE,
@@ -1712,12 +1944,19 @@ async def test_openai_codex_provider_surfaces_nested_stream_error_message() -> N
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_retries_transient_stream_error() -> None:
+    # [FUNCTION DOC]
+    # Verifies an overload stream error is retried and the successful second
+    # stream is emitted cleanly.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call returns the overload error SSE, later calls the "ok" text SSE.
         requests.append(request)
         body = _CODEX_OVERLOAD_ERROR_SSE if len(requests) == 1 else _CODEX_TEXT_SSE
         return httpx.Response(
@@ -1759,12 +1998,18 @@ async def test_openai_codex_provider_retries_transient_stream_error() -> None:
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_retries_transient_response_failed() -> None:
+    # [FUNCTION DOC]
+    # Verifies a response.failed event with an overload code is retried.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call returns response.failed (overloaded), later calls "ok" text.
         requests.append(request)
         body = (
             'data: {"type":"response.failed","response":{"status":"failed",'
@@ -1812,12 +2057,18 @@ async def test_openai_codex_provider_retries_transient_response_failed() -> None
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_surfaces_stream_error_after_retry_exhaustion() -> None:
+    # [FUNCTION DOC]
+    # Verifies after exhausting retries the overload message is surfaced.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records requests and always returns the overload error SSE.
         requests.append(request)
         return httpx.Response(
             200,
@@ -1855,12 +2106,18 @@ async def test_openai_codex_provider_surfaces_stream_error_after_retry_exhaustio
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_does_not_retry_non_transient_stream_error() -> None:
+    # [FUNCTION DOC]
+    # Verifies an invalid API key stream error is not retried.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records requests and returns an invalid_api_key error event.
         requests.append(request)
         return httpx.Response(
             200,
@@ -1900,12 +2157,20 @@ async def test_openai_codex_provider_does_not_retry_non_transient_stream_error()
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_formats_request_and_streams_text() -> None:
+    # [FUNCTION DOC]
+    # Verifies the Codex responses URL, auth/account/originator/beta and custom
+    # headers, the payload (model, store false, stream, instructions, input_text
+    # user content) and the text event sequence.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: asserts the payload and returns two output_text deltas then completed.
         requests.append(request)
         payload = loads(request.content)
         assert payload["model"] == "gpt-5.5"
@@ -1970,12 +2235,18 @@ async def test_openai_codex_provider_formats_request_and_streams_text() -> None:
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_includes_configured_reasoning_effort() -> None:
+    # [FUNCTION DOC]
+    # Verifies reasoning effort is sent as reasoning effort plus "auto" summary.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a completed event.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2010,12 +2281,18 @@ async def test_openai_codex_provider_includes_configured_reasoning_effort() -> N
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_omits_reasoning_when_unset() -> None:
+    # [FUNCTION DOC]
+    # Verifies no reasoning field is sent without a configured effort.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns a completed event.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2046,10 +2323,17 @@ async def test_openai_codex_provider_omits_reasoning_when_unset() -> None:
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_streams_reasoning_deltas() -> None:
+    # [FUNCTION DOC]
+    # Verifies reasoning and reasoning_text deltas become thinking events that
+    # close before the text block.
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns two reasoning deltas, an output text delta and completed.
         return httpx.Response(
             200,
             text=(
@@ -2098,10 +2382,17 @@ async def test_openai_codex_provider_streams_reasoning_deltas() -> None:
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_preserves_reasoning_summary_part_boundaries() -> None:
+    # [FUNCTION DOC]
+    # Verifies each reasoning summary part end inserts a blank-line separator
+    # delta into the thinking stream and block.
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns two summary deltas each followed by part.done, text, completed.
         return httpx.Response(
             200,
             text=(
@@ -2151,7 +2442,12 @@ async def test_openai_codex_provider_preserves_reasoning_summary_part_boundaries
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_streams_tool_calls() -> None:
+    # [FUNCTION DOC]
+    # Verifies Codex tool definitions (flat function format, strict none) and
+    # that function call items become ToolCalls with "call_id|item_id" ids.
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     tool = _provider_tool(
@@ -2161,6 +2457,8 @@ async def test_openai_codex_provider_streams_tool_calls() -> None:
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: asserts tools payload and returns function call added/delta/done events.
         payload = loads(request.content)
         assert payload["tools"] == [
             {
@@ -2218,10 +2516,17 @@ async def test_openai_codex_provider_streams_tool_calls() -> None:
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_routes_parallel_tool_argument_streams() -> None:
+    # [FUNCTION DOC]
+    # Verifies interleaved argument deltas for two parallel function calls are
+    # routed by item id and produce both tool calls in order.
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns two interleaved function call item streams then completed.
         return httpx.Response(
             200,
             text=(
@@ -2279,9 +2584,17 @@ async def test_openai_codex_provider_routes_parallel_tool_argument_streams() -> 
 
 @pytest.mark.anyio
 async def test_anthropic_provider_formats_request_and_streams_text() -> None:
+    # [FUNCTION DOC]
+    # Verifies the Anthropic messages URL, x-api-key, anthropic-version and beta
+    # headers, payload (model, stream, system as a cached text block, user text
+    # block with ephemeral cache_control) and the text event sequence ending in a
+    # "stop" done event.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns message_start, two text deltas,
+        # end_turn message_delta and message_stop.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2367,9 +2680,13 @@ async def test_anthropic_provider_sends_configured_max_tokens(
     configured_max_tokens: int | None,
     expected_max_tokens: int,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: configured max tokens are sent, defaulting to 4096 when unset.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns message_stop only.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2402,9 +2719,14 @@ async def test_anthropic_provider_sends_configured_max_tokens(
 
 @pytest.mark.anyio
 async def test_anthropic_provider_includes_configured_thinking_budget() -> None:
+    # [FUNCTION DOC]
+    # Verifies a thinking budget enables thinking with budget_tokens and raises
+    # max_tokens to 9216 (the budget plus 1024).
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns message_stop only.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2438,9 +2760,14 @@ async def test_anthropic_provider_includes_configured_thinking_budget() -> None:
 
 @pytest.mark.anyio
 async def test_anthropic_provider_explicitly_disables_default_adaptive_thinking() -> None:
+    # [FUNCTION DOC]
+    # Verifies thinking_mode "disabled" sends thinking type disabled and no
+    # output_config for a model that would default to adaptive thinking.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns message_stop only.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2474,7 +2801,12 @@ async def test_anthropic_provider_explicitly_disables_default_adaptive_thinking(
 
 @pytest.mark.anyio
 async def test_anthropic_provider_streams_thinking_deltas() -> None:
+    # [FUNCTION DOC]
+    # Verifies thinking_delta blocks stream as thinking events closed before the
+    # text block.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns two thinking deltas, a text delta, end_turn and message_stop.
         return httpx.Response(
             200,
             text=(
@@ -2525,9 +2857,13 @@ async def test_anthropic_provider_streams_thinking_deltas() -> None:
 
 @pytest.mark.anyio
 async def test_anthropic_provider_retries_transient_status_with_event() -> None:
+    # [FUNCTION DOC]
+    # Verifies a 503 is retried and the second stream's events are emitted.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call returns 503, later calls an "ok" text stream.
         requests.append(request)
         if len(requests) == 1:
             return httpx.Response(503, text="overloaded")
@@ -2574,11 +2910,16 @@ async def test_anthropic_provider_retries_transient_status_with_event() -> None:
 
 @pytest.mark.anyio
 async def test_anthropic_provider_retries_raw_ssl_error() -> None:
+    # [FUNCTION DOC]
+    # Verifies a raw ssl.SSLError raised before any response is treated as a
+    # retryable transport error.
     # Post-handshake TLS record errors escape httpx as raw ssl.SSLError rather
     # than an httpx.TransportError; they should still be retried.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call raises ssl.SSLError, later calls return an "ok" stream.
         requests.append(request)
         if len(requests) == 1:
             raise ssl.SSLError(1, "[SSL: SSLV3_ALERT_BAD_RECORD_MAC] bad record mac")
@@ -2620,9 +2961,13 @@ async def test_anthropic_provider_retries_raw_ssl_error() -> None:
 
 @pytest.mark.anyio
 async def test_anthropic_provider_retries_overloaded_529() -> None:
+    # [FUNCTION DOC]
+    # Verifies Anthropic's 529 overloaded status is retried.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call returns 529, later calls an "ok" stream.
         requests.append(request)
         if len(requests) == 1:
             return httpx.Response(529, text="overloaded")
@@ -2669,9 +3014,13 @@ async def test_anthropic_provider_retries_overloaded_529() -> None:
 
 @pytest.mark.anyio
 async def test_anthropic_provider_retries_transient_stream_error() -> None:
+    # [FUNCTION DOC]
+    # Verifies an in-stream overloaded_error before content is retried.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: first call returns an overloaded error event, later an "ok" stream.
         requests.append(request)
         if len(requests) == 1:
             return httpx.Response(
@@ -2724,6 +3073,9 @@ async def test_anthropic_provider_retries_transient_stream_error() -> None:
 
 @pytest.mark.anyio
 async def test_anthropic_provider_surfaces_stream_error_after_retry_exhaustion() -> None:
+    # [FUNCTION DOC]
+    # Verifies after max retries (3 requests) the overloaded message is surfaced
+    # with the raw event and attempt count in diagnostics.
     requests: list[httpx.Request] = []
     error_event = {
         "type": "error",
@@ -2731,6 +3083,8 @@ async def test_anthropic_provider_surfaces_stream_error_after_retry_exhaustion()
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records requests and always returns an overloaded error event.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2771,9 +3125,13 @@ async def test_anthropic_provider_surfaces_stream_error_after_retry_exhaustion()
 
 @pytest.mark.anyio
 async def test_anthropic_provider_does_not_retry_non_transient_stream_error() -> None:
+    # [FUNCTION DOC]
+    # Verifies an authentication_error stream event is not retried.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records requests and returns an authentication error event.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2810,9 +3168,14 @@ async def test_anthropic_provider_does_not_retry_non_transient_stream_error() ->
 
 @pytest.mark.anyio
 async def test_anthropic_provider_does_not_retry_stream_error_after_content() -> None:
+    # [FUNCTION DOC]
+    # Verifies a stream error after partial text is not retried and the error
+    # message keeps the partial text.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records requests and returns a text delta followed by an error event.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2852,20 +3215,31 @@ async def test_anthropic_provider_does_not_retry_stream_error_after_content() ->
 
 @pytest.mark.anyio
 async def test_anthropic_provider_cancellation_stops_stream_error_retry_backoff() -> None:
+    # [FUNCTION DOC]
+    # Verifies cancellation observed during retry backoff stops further requests
+    # and the canonical stream ends with a "no terminal event" error.
     requests: list[httpx.Request] = []
 
     class CancelDuringBackoff(SimpleCancellationToken):
+        # [CLASS DOC]
+        # HELPER: Cancellation token that reports cancelled from its second check on.
         def __init__(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: Initialises the base token and a zero check counter.
             super().__init__()
             self.checks = 0
 
         def is_cancelled(self) -> bool:
+            # [FUNCTION DOC]
+            # HELPER: Increments the check counter and returns true once it reaches 2.
             self.checks += 1
             return self.checks >= 2
 
     signal = CancelDuringBackoff()
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records requests and always returns an overloaded error event.
         requests.append(request)
         return httpx.Response(
             200,
@@ -2903,7 +3277,11 @@ async def test_anthropic_provider_cancellation_stops_stream_error_retry_backoff(
 
 @pytest.mark.anyio
 async def test_anthropic_provider_includes_http_error_detail_in_message() -> None:
+    # [FUNCTION DOC]
+    # Verifies a 400 JSON error body becomes a friendly message and diagnostics.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns 400 with a JSON error body.
         return httpx.Response(
             400,
             json={"error": {"message": "model: invalid-model is not supported"}},
@@ -2942,6 +3320,8 @@ async def test_anthropic_provider_includes_http_error_detail_in_message() -> Non
 
 
 def _weather_tool() -> AgentTool:
+    # [FUNCTION DOC]
+    # HELPER: Builds a get_weather test tool with a city string parameter.
     return _provider_tool(
         "get_weather",
         "Get current weather for a city.",
@@ -2950,6 +3330,10 @@ def _weather_tool() -> AgentTool:
 
 
 def test_use_responses_api_routes_only_restricted_models() -> None:
+    # [FUNCTION DOC]
+    # Verifies the private routing predicate sends gpt-5.5 (incl. pro, any case),
+    # gpt-5.4 and codex models to the Responses API and gpt-5.1 to chat
+    # completions.
     from tau_ai.openai_compatible import _use_responses_api
 
     assert _use_responses_api("gpt-5.5") is True
@@ -2965,9 +3349,16 @@ def test_use_responses_api_routes_only_restricted_models() -> None:
 
 @pytest.mark.anyio
 async def test_responses_api_formats_request_for_restricted_model() -> None:
+    # [FUNCTION DOC]
+    # Verifies gpt-5.5 on an OpenAI-compatible provider uses /responses with
+    # store false, instructions, reasoning effort plus auto summary, flat function
+    # tools, and input items: user text, function_call (empty assistant text
+    # omitted), function_call_output and the next user message.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns two output text deltas then completed.
         requests.append(request)
         return httpx.Response(
             200,
@@ -3063,7 +3454,12 @@ async def test_responses_api_formats_request_for_restricted_model() -> None:
 
 @pytest.mark.anyio
 async def test_responses_api_parses_streamed_tool_call() -> None:
+    # [FUNCTION DOC]
+    # Verifies Responses API function call events produce one ToolCall with the
+    # call_id and parsed arguments and a "toolUse" done reason.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns function call added, two argument deltas, done events, completed.
         return httpx.Response(
             200,
             text=(
@@ -3115,7 +3511,12 @@ async def test_responses_api_parses_streamed_tool_call() -> None:
 
 @pytest.mark.anyio
 async def test_responses_api_streams_refusal_as_text() -> None:
+    # [FUNCTION DOC]
+    # Verifies refusal deltas stream as text events and the refusal done text is
+    # the final message text.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns two refusal deltas, refusal done and completed.
         return httpx.Response(
             200,
             text=(
@@ -3161,7 +3562,11 @@ async def test_responses_api_streams_refusal_as_text() -> None:
 
 @pytest.mark.anyio
 async def test_responses_api_streams_reasoning_summary_as_thinking() -> None:
+    # [FUNCTION DOC]
+    # Verifies reasoning summary deltas become a thinking block before the text.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns one summary delta, one output text delta and completed.
         return httpx.Response(
             200,
             text=(
@@ -3208,7 +3613,11 @@ async def test_responses_api_streams_reasoning_summary_as_thinking() -> None:
 
 @pytest.mark.anyio
 async def test_responses_api_preserves_reasoning_summary_part_boundaries() -> None:
+    # [FUNCTION DOC]
+    # Verifies summary part ends insert blank-line separators into thinking.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns two summary deltas each followed by part.done, text, completed.
         return httpx.Response(
             200,
             text=(
@@ -3259,9 +3668,13 @@ async def test_responses_api_preserves_reasoning_summary_part_boundaries() -> No
 
 @pytest.mark.anyio
 async def test_responses_api_omits_reasoning_when_effort_is_none() -> None:
+    # [FUNCTION DOC]
+    # Verifies effort "none" drops the reasoning field while tools are still sent.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns completed.
         requests.append(request)
         return httpx.Response(
             200,
@@ -3297,7 +3710,12 @@ async def test_responses_api_omits_reasoning_when_effort_is_none() -> None:
 
 @pytest.mark.anyio
 async def test_responses_api_surfaces_stream_failure() -> None:
+    # [FUNCTION DOC]
+    # Verifies response.failed yields one error event with the nested message and
+    # the raw event in diagnostics.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns a response.failed event.
         return httpx.Response(
             200,
             text=(
@@ -3332,7 +3750,12 @@ async def test_responses_api_surfaces_stream_failure() -> None:
 
 @pytest.mark.anyio
 async def test_responses_api_orders_parallel_tool_calls_by_output_index() -> None:
+    # [FUNCTION DOC]
+    # Verifies tool calls are ordered by output index even when done events
+    # arrive out of order.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns two function call items whose done events arrive reversed.
         return httpx.Response(
             200,
             text=(
@@ -3377,7 +3800,11 @@ async def test_responses_api_orders_parallel_tool_calls_by_output_index() -> Non
 
 @pytest.mark.anyio
 async def test_responses_api_surfaces_top_level_error_event() -> None:
+    # [FUNCTION DOC]
+    # Verifies a top-level "error" event yields one error with its message.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns a single top-level error event.
         return httpx.Response(
             200,
             text='data: {"type":"error","message":"rate limited"}\n\n',
@@ -3406,7 +3833,11 @@ async def test_responses_api_surfaces_top_level_error_event() -> None:
 
 @pytest.mark.anyio
 async def test_responses_api_maps_incomplete_status_to_length() -> None:
+    # [FUNCTION DOC]
+    # Verifies response.incomplete ends with a "length" done event keeping text.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns a text delta then response.incomplete.
         return httpx.Response(
             200,
             text=(
@@ -3439,9 +3870,14 @@ async def test_responses_api_maps_incomplete_status_to_length() -> None:
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_reports_usage() -> None:
+    # [FUNCTION DOC]
+    # Verifies chat completions request include_usage and map usage: input =
+    # prompt minus cached, cache read, reasoning tokens, total, zero cost.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns text then a usage-only chunk and [DONE].
         requests.append(request)
         return httpx.Response(
             200,
@@ -3490,12 +3926,20 @@ async def test_openai_compatible_provider_reports_usage() -> None:
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_reports_usage_and_sends_cache_affinity() -> None:
+    # [FUNCTION DOC]
+    # Verifies Codex truncates the session id to 64 chars for prompt_cache_key and
+    # the session-id header (no client request id), and maps usage: input minus
+    # cached and cache-written tokens, reasoning, total.
     requests: list[httpx.Request] = []
 
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns text then completed with usage.
         requests.append(request)
         return httpx.Response(
             200,
@@ -3546,9 +3990,14 @@ async def test_openai_codex_provider_reports_usage_and_sends_cache_affinity() ->
 
 @pytest.mark.anyio
 async def test_openai_compatible_responses_reports_usage_and_sends_cache_affinity() -> None:
+    # [FUNCTION DOC]
+    # Verifies OpenAI Responses requests send prompt_cache_key and a session_id
+    # header and map usage like Codex.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns text then completed with usage.
         requests.append(request)
         return httpx.Response(
             200,
@@ -3598,7 +4047,13 @@ async def test_openai_compatible_responses_reports_usage_and_sends_cache_affinit
 
 @pytest.mark.anyio
 async def test_anthropic_provider_reports_usage() -> None:
+    # [FUNCTION DOC]
+    # Verifies Anthropic usage: input excludes cache, output updated by
+    # message_delta, cache read/write and 1h cache write, total of all four.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns message_start with usage, a text delta, message_delta with output
+        # usage and message_stop.
         return httpx.Response(
             200,
             text=(
@@ -3647,9 +4102,14 @@ async def test_anthropic_provider_reports_usage() -> None:
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_can_disable_usage_in_streaming() -> None:
+    # [FUNCTION DOC]
+    # Verifies supportsUsageInStreaming false omits stream_options and leaves zero
+    # usage.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns an "ok" stream.
         requests.append(request)
         return httpx.Response(
             200,
@@ -3686,8 +4146,12 @@ async def test_openai_compatible_provider_can_disable_usage_in_streaming() -> No
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_reads_usage_from_choice_fallback() -> None:
+    # [FUNCTION DOC]
+    # Verifies usage nested on the choice (Moonshot style) is read.
     # Moonshot-style: usage lives on the choice, not at the chunk top level.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns a chunk whose choice carries usage, then [DONE].
         return httpx.Response(
             200,
             text=(
@@ -3727,9 +4191,14 @@ async def test_openai_compatible_provider_reads_usage_from_choice_fallback() -> 
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_falls_back_to_prompt_cache_hit_tokens() -> None:
+    # [FUNCTION DOC]
+    # Verifies prompt_cache_hit_tokens (DeepSeek style) is used as cache read when
+    # cached_tokens is absent.
     # DeepSeek-style: cache reads come via prompt_cache_hit_tokens, and there
     # is no prompt_tokens_details.cached_tokens to prefer.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns text then usage with prompt_cache_hit_tokens.
         return httpx.Response(
             200,
             text=(
@@ -3770,10 +4239,15 @@ async def test_openai_compatible_provider_falls_back_to_prompt_cache_hit_tokens(
 
 @pytest.mark.anyio
 async def test_openai_compatible_provider_reported_zero_cached_tokens_wins() -> None:
+    # [FUNCTION DOC]
+    # Verifies an explicit cached_tokens of zero is not overridden by
+    # prompt_cache_hit_tokens (nullish fallback semantics).
     # Nullish semantics (Pi: cached_tokens ?? prompt_cache_hit_tokens ?? 0):
     # an explicitly reported cached_tokens of 0 must not fall through to
     # prompt_cache_hit_tokens.
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns text then usage with cached_tokens 0 and cache hit tokens 16.
         return httpx.Response(
             200,
             text=(
@@ -3813,9 +4287,14 @@ async def test_openai_compatible_provider_reported_zero_cached_tokens_wins() -> 
 
 @pytest.mark.anyio
 async def test_anthropic_provider_reports_usage_from_message_delta_only() -> None:
+    # [FUNCTION DOC]
+    # Verifies usage reported only on message_delta still produces a Usage with
+    # no reasoning count.
     # No usage on message_start: the message_delta usage alone must still
     # produce a Usage (the `usage or Usage()` branch).
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns message_start without usage, text, message_delta with usage.
         return httpx.Response(
             200,
             text=(
@@ -3860,10 +4339,16 @@ async def test_anthropic_provider_reports_usage_from_message_delta_only() -> Non
 
 @pytest.mark.anyio
 async def test_openai_codex_provider_leaves_reasoning_none_when_unreported() -> None:
+    # [FUNCTION DOC]
+    # Verifies Codex leaves reasoning none and cache read zero when not reported.
     async def credentials() -> OpenAICodexCredentials:
+        # [FUNCTION DOC]
+        # HELPER: Async Codex credential resolver returning a fixed access token and account id.
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: returns text then completed with basic usage.
         return httpx.Response(
             200,
             text=(
@@ -3902,9 +4387,14 @@ async def test_openai_codex_provider_leaves_reasoning_none_when_unreported() -> 
 
 @pytest.mark.anyio
 async def test_github_copilot_sends_vision_header_for_tool_result_images() -> None:
+    # [FUNCTION DOC]
+    # Verifies the Copilot Responses provider sends Copilot-Vision-Request when a
+    # tool result contains an image.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns completed.
         requests.append(request)
         return httpx.Response(
             200,
@@ -3942,9 +4432,14 @@ async def test_github_copilot_sends_vision_header_for_tool_result_images() -> No
 
 @pytest.mark.anyio
 async def test_github_copilot_anthropic_sends_vision_header() -> None:
+    # [FUNCTION DOC]
+    # Verifies the Copilot Anthropic provider sends Copilot-Vision-Request for
+    # tool result images.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock HTTP transport handler: records the request and returns message_stop.
         requests.append(request)
         return httpx.Response(
             200,

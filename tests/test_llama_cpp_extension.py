@@ -1,3 +1,11 @@
+# [MODULE DOC]
+# Deterministic Phase 5 tests for the trusted built-in llama.cpp integration: endpoint
+# normalization and precedence (stored state, then environment, then default), auth header
+# selection, discovery error handling (auth failures, timeouts, loading, malformed payloads),
+# state/credential persistence and permissions, the extension runtime's local backend actions
+# (refresh, connect, model selection/loading, downloads with progress), router capabilities and
+# input modality parsing, Hugging Face token discovery, and the dynamic provider built from the
+# integration. All HTTP traffic uses httpx MockTransport; files live under tmp_path.
 """Deterministic Phase 5 tests for the trusted llama.cpp integration."""
 
 from __future__ import annotations
@@ -61,6 +69,10 @@ def _context(
     confirmation: str | None = None,
     progress: Callable[[LocalProgress], None] | None = None,
 ) -> LocalOperationContext:
+    # [FUNCTION DOC]
+    # HELPER: Build a local-operation context for the given action (default "refresh") with a fresh
+    # cancellation token, fixed generation/backend/source ids, optional confirmation string, an
+    # always-current check and an optional progress callback (default no-op).
     return LocalOperationContext(
         signal=SimpleCancellationToken(),
         action=action,  # type: ignore[arg-type]
@@ -81,6 +93,10 @@ def _state(
     models: tuple[LlamaCppStoredModel, ...] = (MODEL,),
     checked_at: str | None = "2026-08-20T00:00:00Z",
 ) -> LlamaCppIntegrationState:
+    # [FUNCTION DOC]
+    # HELPER: Build an integration state with the given endpoint (default test server), selected model
+    # (default "qwen-local"), optional credential reference, stored models (default the Qwen model) and
+    # checked-at timestamp.
     return LlamaCppIntegrationState(
         endpoint=endpoint,
         selected_model=selected_model,
@@ -93,9 +109,15 @@ def _state(
 def _client(
     handler: Callable[[httpx.Request], httpx.Response | Exception],
 ) -> tuple[httpx.AsyncClient, list[httpx.Request]]:
+    # [FUNCTION DOC]
+    # HELPER: Create an async httpx client over a mock transport that records each request and returns
+    # the handler's response, raising instead when the handler returns an exception. Returns the client
+    # and the shared request list.
     requests: list[httpx.Request] = []
 
     def dispatch(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Mock dispatch: record the request, call the handler, raise a returned exception or return the response.
         requests.append(request)
         result = handler(request)
         if isinstance(result, Exception):
@@ -108,9 +130,14 @@ def _client(
 def _healthy_handler(
     models: list[Mapping[str, object]] | None = None,
 ) -> Callable[[httpx.Request], httpx.Response]:
+    # [FUNCTION DOC]
+    # HELPER: Return a handler for a healthy server: /health is 200 ok, /v1/models lists the given
+    # models (default one "qwen-local"), anything else 404.
     payload = models if models is not None else [{"id": "qwen-local", "name": "Qwen local"}]
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Route /health and /v1/models to canned responses; 404 otherwise.
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.url.path == "/v1/models":
@@ -127,6 +154,10 @@ def _service(
     credentials: object | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> tuple[LlamaCppService, LlamaCppStateStore, FileCredentialStore]:
+    # [FUNCTION DOC]
+    # HELPER: Build a llama.cpp service with a state store and file credential store under tmp_path,
+    # optional client, credential store override and environment. Returns (service, state store,
+    # credential store).
     paths = TauPaths(home=tmp_path / "tau", agents_home=tmp_path / "agents")
     state_store = LlamaCppStateStore(paths=paths)
     credential_store = FileCredentialStore(paths.home / "credentials.json")
@@ -145,6 +176,10 @@ def _runtime(
     client: httpx.AsyncClient | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> tuple[ExtensionRuntime, TauPaths, FileCredentialStore]:
+    # [FUNCTION DOC]
+    # HELPER: Build an extension runtime under tmp_path with file credentials (also used as built-in
+    # credentials), optional environment and built-in HTTP client, and load only built-in extensions
+    # (no resource or user dirs). Returns (runtime, paths, credentials).
     paths = TauPaths(home=tmp_path / "tau", agents_home=tmp_path / "agents")
     credentials = FileCredentialStore(paths.home / "credentials.json")
     runtime = ExtensionRuntime(
@@ -181,6 +216,9 @@ def _runtime(
     ],
 )
 def test_endpoint_normalization(value: str, root: str, inference: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized test: endpoint normalization keeps host case, strips trailing slashes and a trailing
+    # /v1 for the server root, and derives the inference base by appending /v1.
     endpoint = normalize_llama_cpp_endpoint(value)
     assert endpoint.server_root == root
     assert endpoint.inference_base == inference
@@ -191,11 +229,16 @@ def test_endpoint_normalization(value: str, root: str, inference: str) -> None:
     ["", "localhost:8080", "ftp://localhost", "http://user:pass@localhost", "http://localhost?a=1"],
 )
 def test_endpoint_normalization_rejects_unsafe_values(value: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized test: empty, scheme-less, non-HTTP, credential-bearing and query-bearing endpoints raise ValueError.
     with pytest.raises(ValueError):
         normalize_llama_cpp_endpoint(value)
 
 
 def test_endpoint_precedence_is_stored_then_environment_then_default(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: a stored endpoint wins over the environment; otherwise the environment endpoint is used
+    # (with /v1 stripped); otherwise the default endpoint is used and the service reports unconfigured.
     state_store = LlamaCppStateStore(
         paths=TauPaths(home=tmp_path / "tau", agents_home=tmp_path / "agents")
     )
@@ -228,6 +271,9 @@ def test_endpoint_precedence_is_stored_then_environment_then_default(tmp_path: P
 async def test_explicit_local_refresh_probes_default_and_publishes_live_models(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: an unconfigured service's explicit refresh probes the default endpoint's /health,
+    # reports ready status with the /v1 display endpoint, publishes live models, and writes no state file.
     client, requests = _client(_healthy_handler())
     service, state_store, _ = _service(tmp_path, client=client, environment={})
 
@@ -245,6 +291,9 @@ async def test_explicit_local_refresh_probes_default_and_publishes_live_models(
 
 @pytest.mark.anyio
 async def test_auth_headers_cover_stored_environment_fallback_and_no_auth(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: the Authorization header uses the stored credential first, then the API-key
+    # environment variable, and is omitted when neither exists.
     client, requests = _client(_healthy_handler())
     service, state_store, credentials = _service(
         tmp_path,
@@ -293,6 +342,8 @@ async def test_auth_headers_cover_stored_environment_fallback_and_no_auth(tmp_pa
 async def test_discovery_reports_authentication_http_failures(
     tmp_path: Path, status_code: int
 ) -> None:
+    # [FUNCTION DOC]
+    # Async parametrized test: 401/403 responses mark the backend status stale with a "rejected" diagnostic.
     client, _ = _client(lambda request: httpx.Response(status_code, text="denied"))
     service, state_store, _ = _service(tmp_path, client=client)
     state_store.save(_state())
@@ -310,7 +361,13 @@ async def test_discovery_reports_authentication_http_failures(
 
 @pytest.mark.anyio
 async def test_discovery_timeout_and_health_loading_are_actionable(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: a read timeout makes discovery raise "Timed out" and refresh report an actionable
+    # diagnostic linking to llama.cpp; a 503 loading health response makes discovery raise "still loading".
+    # Note: the first client is closed twice (harmless).
     def timeout(request: httpx.Request) -> Exception:
+        # [FUNCTION DOC]
+        # HELPER: Handler returning a ReadTimeout exception for every request.
         return httpx.ReadTimeout("timed out", request=request)
 
     client, _ = _client(timeout)
@@ -350,7 +407,12 @@ async def test_discovery_timeout_and_health_loading_are_actionable(tmp_path: Pat
 async def test_malformed_empty_and_multiple_model_responses(
     tmp_path: Path, payload: object
 ) -> None:
+    # [FUNCTION DOC]
+    # Async parametrized test: an empty model list is accepted (no models) while empty body, duplicate
+    # ids, or entries lacking an id raise LlamaCppError (malformed/duplicate/exact id).
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Healthy /health; models endpoint returns an empty body or the parametrized JSON payload.
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         if payload is None:
@@ -370,7 +432,13 @@ async def test_malformed_empty_and_multiple_model_responses(
 
 @pytest.mark.anyio
 async def test_malformed_model_payloads_raise_without_guessing_metadata(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: a model entry with blank name, unknown modality and extra fields is accepted without
+    # guessing: context window kept, modalities dropped (None), only object/owned_by kept as compat.
+    # KNOWN ISSUE: the test name says malformed payloads "raise", but it asserts successful discovery.
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Healthy /health; models endpoint returns one model with mixed valid/unknown metadata.
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         return httpx.Response(
@@ -428,12 +496,20 @@ async def test_malformed_model_payloads_raise_without_guessing_metadata(tmp_path
 def test_reported_input_modalities_follows_llama_cpp_architecture(
     model: Mapping[str, object], expected: tuple[str, ...] | None
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized test: modalities are read from architecture.input_modalities, then top-level
+    # input_modalities or modalities; audio/video are dropped (only text/image kept); unknown values,
+    # non-string items, empty lists, text-less results, non-mapping architecture or absence give None.
     assert reported_input_modalities(model) == expected
 
 
 @pytest.mark.anyio
 async def test_discovery_reads_llama_cpp_architecture_modalities(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: discovery keeps text and image from a model's architecture modalities, dropping audio.
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Healthy /health; models endpoint returns one vision model with architecture modalities.
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         return httpx.Response(
@@ -473,13 +549,21 @@ async def test_discovery_reads_llama_cpp_architecture_modalities(tmp_path: Path)
 def test_props_input_modalities_reads_only_a_boolean_vision_flag(
     props: object, expected: tuple[str, ...] | None
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized test: /props modalities give text+image only for a boolean true vision flag, text for
+    # false, and None for non-boolean, missing or non-mapping input.
     assert props_input_modalities(props) == expected
 
 
 def _standard_server(
     models: list[dict[str, object]], props: httpx.Response
 ) -> Callable[[httpx.Request], httpx.Response]:
+    # [FUNCTION DOC]
+    # HELPER: Return a handler serving healthy /health, the given /props response, and the given model
+    # list for any other path.
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Route /health, /props and everything else (models) to canned responses.
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.url.path == "/props":
@@ -520,6 +604,9 @@ async def test_standard_discovery_falls_back_to_props_vision(
     props: httpx.Response,
     expected: tuple[str, ...] | None,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async parametrized test: a single model without reported modalities falls back to /props vision;
+    # a failing /props yields None without failing discovery; model-reported modalities win over /props.
     client, _ = _client(_standard_server(models, props))
     service, _, _ = _service(tmp_path, client=client)
     discovery = await service.discover(ResolvedProviderAuth())
@@ -529,6 +616,8 @@ async def test_standard_discovery_falls_back_to_props_vision(
 
 @pytest.mark.anyio
 async def test_props_vision_is_not_applied_to_several_models(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: /props vision is not applied when the server lists several models (all None).
     props = httpx.Response(200, json={"modalities": {"vision": True}})
     client, _ = _client(_standard_server([{"id": "first"}, {"id": "second"}], props))
     service, _, _ = _service(tmp_path, client=client)
@@ -539,6 +628,10 @@ async def test_props_vision_is_not_applied_to_several_models(tmp_path: Path) -> 
 
 @pytest.mark.anyio
 async def test_dormant_cache_and_offline_refresh_are_network_free(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: an unconfigured service has no models and "unconfigured" status; a configured service
+    # with network disallowed returns cached models without requests, and refresh against a failing
+    # server reports a stale cached status.
     dormant, _, _ = _service(tmp_path / "dormant", environment={})
     assert dormant.configured is False
     assert dormant.provider().models == ()
@@ -575,6 +668,9 @@ async def test_dormant_cache_and_offline_refresh_are_network_free(tmp_path: Path
 async def test_refresh_marks_missing_active_model_stale_without_replacing_it(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: when the selected model disappears from discovery, status becomes stale, no model is
+    # selected, the new model is listed, a diagnostic names the missing model, and there is no default model.
     client, _ = _client(_healthy_handler([{"id": "replacement", "name": "Replacement"}]))
     service, state_store, credentials = _service(tmp_path, client=client)
     state_store.save(_state())
@@ -598,6 +694,10 @@ async def test_refresh_marks_missing_active_model_stale_without_replacing_it(
 
 @pytest.mark.anyio
 async def test_gpt_and_codex_model_ids_use_local_chat_transport(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: GPT/Codex-looking local model ids still use the OpenAI chat-completions transport (no
+    # API inference from the model name); provider transport timeout is the OpenAI-compatible default
+    # while the service uses its own llama.cpp timeout.
     client, _ = _client(_healthy_handler())
     service, state_store, credentials = _service(tmp_path, client=client)
     state_store.save(
@@ -633,6 +733,9 @@ async def test_gpt_and_codex_model_ids_use_local_chat_transport(tmp_path: Path) 
 
 
 def test_state_is_atomic_locked_private_and_recovers_interrupted_writes(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: saving state creates 0600 state and lock files in a 0700 directory; leftover temporary files
+    # are cleaned up when reading; corrupt JSON raises LlamaCppStateError; restoring content recovers.
     paths = TauPaths(home=tmp_path / "tau", agents_home=tmp_path / "agents")
     store = LlamaCppStateStore(paths=paths)
     store.save(_state())
@@ -654,6 +757,9 @@ def test_state_is_atomic_locked_private_and_recovers_interrupted_writes(tmp_path
 
 
 def test_state_schema_validation_and_legacy_recovery(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: a legacy single-endpoint schema-1 file is read and upgraded to the multi-endpoint layout on
+    # save; an unknown schema version and unknown fields raise LlamaCppStateError.
     path = tmp_path / "llama.json"
     legacy = {
         "schema_version": 1,
@@ -681,6 +787,9 @@ def test_state_schema_validation_and_legacy_recovery(tmp_path: Path) -> None:
 def test_state_replace_is_atomic_on_write_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Test: when the atomic rename fails, save raises a write error, the original file is untouched and
+    # no temporary files remain.
     import tau_coding.extensions.builtins.llama_cpp.state as state_module
 
     store = LlamaCppStateStore(tmp_path / "state.json")
@@ -688,6 +797,8 @@ def test_state_replace_is_atomic_on_write_failure(
     original = store.path.read_text(encoding="utf-8")
 
     def fail_replace(source: str | Path, destination: str | Path) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Replacement for the OS rename that raises OSError("disk full").
         del source, destination
         raise OSError("disk full")
 
@@ -702,9 +813,18 @@ def test_state_replace_is_atomic_on_write_failure(
 async def test_setup_status_refresh_use_doctor_and_reset_through_real_runtime(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test through the real extension runtime: llama.cpp starts unconfigured; configure with an
+    # endpoint and API key commits, becomes ready using a stored credential and publishes models;
+    # refresh with changed models stays committed but stale with no "use" action; doctor runs streaming
+    # and tool probes via chat completions; reset removes the state file (credentials remain) and
+    # returns to unconfigured.
     current_models = [{"id": "qwen-local", "name": "Qwen local"}]
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake llama.cpp server: health, current model list, and SSE chat completions returning a
+        # tool call when tools are sent or "OK" text otherwise; 404 otherwise.
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.url.path == "/v1/models":
@@ -774,6 +894,11 @@ async def test_setup_status_refresh_use_doctor_and_reset_through_real_runtime(
 async def test_generation_credential_commit_orphan_reset_and_partial_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test of credential generations during configure: reconfiguring deletes the previous
+    # credential; if saving state fails the new credential is rolled back (not orphaned) and state is
+    # unchanged; if both saving and rolling back the new credential fail, the result reports an orphaned
+    # credential that still exists. Uses monkeypatching of the store save and credential delete.
     client, _ = _client(_healthy_handler())
     service, state_store, credentials = _service(tmp_path, client=client)
     first = await service.configure({"endpoint": SERVER, "api_key": "first"}, _context("configure"))
@@ -806,6 +931,9 @@ async def test_generation_credential_commit_orphan_reset_and_partial_failures(
     original_delete = credentials.delete
 
     def fail_new_credential(name: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Credential delete wrapper that raises OSError when deleting the "fourth" secret and
+        # delegates otherwise.
         if credentials.get(name) == "fourth":
             raise OSError("credential cleanup failed")
         original_delete(name)
@@ -832,6 +960,10 @@ async def test_generation_credential_commit_orphan_reset_and_partial_failures(
 async def test_credential_cleanup_failure_is_reported_and_reset_is_recoverable(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: when deleting the old credential fails during a committed reconfigure, the result is
+    # committed but reports an orphaned credential with a "credentials" diagnostic; reset still commits
+    # while the old secret remains; a new service with a working delete cleans up the orphan.
     client, _ = _client(_healthy_handler())
     service, state_store, credentials = _service(tmp_path, client=client)
     configured = await service.configure(
@@ -842,6 +974,8 @@ async def test_credential_cleanup_failure_is_reported_and_reset_is_recoverable(
     original_delete = credentials.delete
 
     def fail_old(name: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: Credential delete wrapper that fails only for the original credential reference.
         if name == ref:
             raise OSError("credential file unavailable")
         original_delete(name)
@@ -873,6 +1007,10 @@ async def test_credential_cleanup_failure_is_reported_and_reset_is_recoverable(
 async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: print mode with explicit provider llama.cpp and model uses cached state while the
+    # server's GET endpoints are down, streams "hello" from chat completions, and makes only the chat
+    # request. Patches both async client factories; prints to captured stdout.
     from tau_coding.cli import run_print_mode
     from tau_coding.rendering import PrintOutputMode
 
@@ -883,6 +1021,8 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response | Exception:
+        # [FUNCTION DOC]
+        # HELPER: Record requests; GETs return a connection error, other requests an SSE "hello" stream.
         requests.append(request)
         if request.method == "GET":
             return httpx.ConnectError("server is down", request=request)
@@ -896,6 +1036,8 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
         )
 
     def fake_client(*, timeout: float) -> httpx.AsyncClient:
+        # [FUNCTION DOC]
+        # HELPER: Client factory replacement returning a mock-transport client with the requested timeout.
         return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
 
     monkeypatch.setattr(llama_service, "create_async_client", fake_client)
@@ -925,6 +1067,10 @@ async def test_print_mode_explicit_dynamic_startup_uses_cached_state(
 async def test_tui_explicit_dynamic_startup_uses_cached_state_during_downtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: TUI startup with explicit llama.cpp provider during server downtime still creates a
+    # session from cached state (base URL SERVER/v1). Replaces the TUI app with a headless stub and the
+    # client factory with one that always fails to connect; isolates HOME.
     from tau_coding import SessionManager
     from tau_coding.tui import app as tui_app
 
@@ -937,15 +1083,25 @@ async def test_tui_explicit_dynamic_startup_uses_cached_state_during_downtime(
     captured: dict[str, object] = {}
 
     class HeadlessTui:
+        # [CLASS DOC]
+        # HELPER: Headless stand-in for the TUI app that captures the session and does nothing when run.
         def __init__(self, session: object, **kwargs: object) -> None:
+            # [FUNCTION DOC]
+            # HELPER: Capture the session into the shared dict; ignore other keyword arguments.
             del kwargs
             captured["session"] = session
 
         async def run_async(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: Async no-op run.
             return None
 
     def unavailable_client(*, timeout: float) -> httpx.AsyncClient:
+        # [FUNCTION DOC]
+        # HELPER: Client factory whose transport always raises a connection error.
         def handler(request: httpx.Request) -> Exception:
+            # [FUNCTION DOC]
+            # HELPER: Mock handler raising httpx ConnectError.
             raise httpx.ConnectError("server is down", request=request)
 
         return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
@@ -967,6 +1123,9 @@ async def test_tui_explicit_dynamic_startup_uses_cached_state_during_downtime(
 
 @pytest.mark.anyio
 async def test_builtin_source_lifecycle_is_generation_local(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: the built-in llama.cpp source is hidden, not in named extensions, and registers a
+    # local backend; reset_for_reload empties the old provider registry and reloading registers it anew.
     runtime, _, _ = _runtime(tmp_path)
     old_registry = runtime.provider_registry
     assert runtime.extension_metadata[0].source_id == "built-in:llama.cpp"
@@ -987,9 +1146,14 @@ async def test_builtin_source_lifecycle_is_generation_local(tmp_path: Path) -> N
 
 @pytest.mark.anyio
 async def test_router_capability_version_gate_falls_back_without_mutations(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: a router whose build is newer than the tested range falls back to standard discovery,
+    # offers no load action, adds a "tested range" diagnostic, and load_model refuses without any POST.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake server reporting a router with a too-new build; serves /v1/models fallback; records requests.
         requests.append(request)
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
@@ -1025,10 +1189,15 @@ async def test_router_capability_version_gate_falls_back_without_mutations(tmp_p
 async def test_router_load_requires_explicit_confirmation_without_active_peers(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: loading a router model with no active peers first returns a confirmation (load/cancel,
+    # none recommended) without POSTing; with confirmation "load" it commits and POSTs once.
     state = "unloaded"
     posts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake router: model status toggles to loaded after a /models/load POST, counting posts.
         nonlocal state, posts
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
@@ -1073,11 +1242,19 @@ async def test_router_load_requires_explicit_confirmation_without_active_peers(
 
 @pytest.mark.anyio
 async def test_router_load_unload_download_confirm_reconcile_and_publish(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test of router lifecycle: refresh lists loaded/unloaded models and publishes only loaded ones;
+    # load requires confirmation (keep/... /cancel) then loads and publishes both; unload requires
+    # confirmation then unloads; an invalid repository id is rejected without download; a download asks
+    # for confirmation (size unavailable) then POSTs and publishes provider updates.
     states = {"already": "loaded", "target": "unloaded"}
     transitions: dict[str, int] = {}
     mutations: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake router with simulated state transitions (loading/downloading resolve after one more
+        # model listing) recording load/unload/download mutations.
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.url.path == "/props":
@@ -1174,9 +1351,14 @@ async def test_router_load_unload_download_confirm_reconcile_and_publish(tmp_pat
 async def test_fast_router_download_finishes_without_observing_intermediate_state(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: when a router download completes before any intermediate "downloading" state is
+    # observed, the download still commits and the model is reported as unloaded.
     downloaded = False
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake router whose model list is empty until a download POST, then shows the model unloaded.
         nonlocal downloaded
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
@@ -1216,6 +1398,9 @@ async def test_fast_router_download_finishes_without_observing_intermediate_stat
 
 @pytest.mark.anyio
 async def test_router_sse_reports_aggregate_download_progress() -> None:
+    # [FUNCTION DOC]
+    # Async test: the router SSE progress watcher ignores other models' events and reports aggregate
+    # progress across all files for the target model (25+10 of 80+20 bytes).
     payload = "\n".join(
         (
             'data: {"model":"other","event":"download_progress","data":'
@@ -1248,10 +1433,15 @@ async def test_router_sse_reports_aggregate_download_progress() -> None:
 
 @pytest.mark.anyio
 async def test_router_download_reports_aggregate_byte_progress(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: polling download progress aggregates per-file byte counts into fractions 0.35 and
+    # 0.85, with a message containing the percentage and remaining bytes, and the download commits.
     download_poll = 0
     started = False
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake router: after a download POST, model polls report downloading progress twice then unloaded.
         nonlocal download_poll, started
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
@@ -1327,7 +1517,12 @@ async def test_router_download_reports_aggregate_byte_progress(tmp_path: Path) -
 
 @pytest.mark.anyio
 async def test_router_download_rejection_surfaces_server_message(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: a 500 download rejection surfaces the server's error message in an error-severity
+    # "router" diagnostic noting that state was refreshed; nothing is committed.
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake router whose download POST returns a 500 with a structured error message.
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.url.path == "/props":
@@ -1373,10 +1568,15 @@ async def test_router_download_rejection_surfaces_server_message(tmp_path: Path)
 
 @pytest.mark.anyio
 async def test_router_connection_loss_reconciles_without_replaying_mutation(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: losing the connection while reconciling after a load POST does not re-send the load
+    # (exactly one POST) and adds a "will not replay" diagnostic.
     posts = 0
     list_calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake router that counts load POSTs and raises connection errors after two model listings.
         nonlocal posts, list_calls
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
@@ -1414,6 +1614,9 @@ async def test_router_connection_loss_reconciles_without_replaying_mutation(tmp_
 async def test_router_cancellation_requests_documented_cancel_and_reconciles(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: cancelling an in-flight load task issues the documented unload to cancel, reconciles
+    # to unloaded, returns a cancelled result, and publishes no models.
     import asyncio
 
     state = "unloaded"
@@ -1421,6 +1624,8 @@ async def test_router_cancellation_requests_documented_cancel_and_reconciles(
     mutations: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Fake router recording load/unload mutations and signalling an event when loading starts.
         nonlocal state
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})
@@ -1469,9 +1674,16 @@ async def test_router_cancellation_requests_documented_cancel_and_reconciles(
 
 @pytest.mark.anyio
 async def test_hugging_face_search_details_token_and_gating_are_search_only(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Async test: Hugging Face search returns one restricted (gated) repository with GGUF quantization
+    # options (projector files excluded, Q4_K_M recommended); download confirmation shows the size in
+    # GiB and that it continues if the modal closes; the HF token is sent on every request but never
+    # appears in the result repr, and no state file is written.
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: Record requests and serve HF model search/details; delegate other paths to a healthy server.
         requests.append(request)
         if request.url.path == "/api/models":
             return httpx.Response(200, json=[{"id": "owner/repo-GGUF"}])
@@ -1526,6 +1738,9 @@ async def test_hugging_face_search_details_token_and_gating_are_search_only(tmp_
 
 
 def test_hugging_face_token_lookup_matches_standard_environment_paths(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Test: HF token discovery reads (and strips) the HF_TOKEN_PATH file, else the token under
+    # XDG_CACHE_HOME/huggingface. Side effect: writes token files in tmp_path.
     explicit = tmp_path / "explicit-token"
     explicit.write_text(" explicit ", encoding="utf-8")
     assert discover_hf_token({"HF_TOKEN_PATH": str(explicit), "HOME": str(tmp_path)}) == "explicit"
@@ -1542,6 +1757,10 @@ def test_hugging_face_token_lookup_matches_standard_environment_paths(tmp_path: 
 async def test_llama_scoped_reference_persists_pair_and_stays_inert_when_unloaded(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Async test: toggling a scoped llama.cpp model on a partially constructed session persists the
+    # provider/model pair to providers.json without adding llama.cpp provider preferences; once the
+    # dynamic provider has no models the choice is unavailable but still scoped, and toggling removes it.
     from dataclasses import replace
 
     from tau_coding.provider_config import (
@@ -1595,6 +1814,8 @@ async def test_llama_scoped_reference_persists_pair_and_stays_inert_when_unloade
 
 
 def state_store_text(tmp_path: Path) -> str:
+    # [FUNCTION DOC]
+    # HELPER: Return the llama.cpp state file text under tmp_path's Tau home, or "" if it does not exist.
     path = TauPaths(home=tmp_path / "tau", agents_home=tmp_path / "agents").llama_cpp_state_path
     return path.read_text(encoding="utf-8") if path.exists() else ""
 

@@ -1,3 +1,14 @@
+# [MODULE DOC]
+# Tests for dynamic extension providers: the DynamicProvider / ProviderModel
+# contract validation, auth strategies (no auth, optional/required API key,
+# custom auth) and secret hygiene in reprs and diagnostics, runtime creation
+# from providers (OpenAI-compatible transport or custom runtime factories),
+# and the DynamicProviderRegistry lifecycle (layered registrations over a
+# durable baseline, deterministic shadowing, coalesced refreshes with
+# per-waiter timeouts, failure diagnostics, cancellation, re-registration,
+# retire/close draining of cancellation-hostile discovery tasks) plus
+# extension runtime loading/reload interactions. Uses fakes, in-memory
+# credentials, mock HTTP transports and asyncio events; no real network.
 """Tests for dynamic extension provider contracts and registry lifecycle."""
 
 import asyncio
@@ -46,29 +57,48 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 def anyio_backend() -> str:
+    # [FUNCTION DOC]
+    # HELPER: pytest fixture pinning anyio tests to the asyncio backend.
     return "asyncio"
 
 
 class MemoryCredentials:
+    # [CLASS DOC]
+    # HELPER: in-memory credential store fake that records every name read.
     def __init__(self, values: dict[str, str] | None = None) -> None:
+        # [FUNCTION DOC]
+        # HELPER: store the given name -> secret mapping (default empty) and an
+        # empty read log.
         self.values = values or {}
         self.reads: list[str] = []
 
     def get(self, name: str) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: record the read and return the stored value or None.
         self.reads.append(name)
         return self.values.get(name)
 
 
 class ExplodingCredentials:
+    # [CLASS DOC]
+    # HELPER: credential store fake that fails any read (proves no reads occur).
     def get(self, name: str) -> str | None:
+        # [FUNCTION DOC]
+        # HELPER: always raise AssertionError naming the requested credential.
         raise AssertionError(f"must not read {name}")
 
 
 class FixedAuth:
+    # [CLASS DOC]
+    # HELPER: custom auth strategy returning a predetermined resolved auth.
     def __init__(self, resolved: ResolvedProviderAuth) -> None:
+        # [FUNCTION DOC]
+        # HELPER: remember the resolved auth to return.
         self._resolved = resolved
 
     async def resolve(self, context) -> ResolvedProviderAuth:
+        # [FUNCTION DOC]
+        # HELPER: ignore the context and return the stored resolved auth.
         del context
         return self._resolved
 
@@ -81,6 +111,10 @@ def provider(
     refresh_models=None,
     auth=None,
 ) -> DynamicProvider:
+    # [FUNCTION DOC]
+    # HELPER: build a DynamicProvider (default id "local", one model "model")
+    # with an OpenAI-compatible transport at a localhost URL, optional models,
+    # default model, refresh callback and auth (default no auth).
     return DynamicProvider(
         id=provider_id,
         display_name=provider_id.title(),
@@ -95,6 +129,10 @@ def provider(
 
 
 def _provider_extension_body(model_id: str, *, fail_setup: bool = False) -> str:
+    # [FUNCTION DOC]
+    # HELPER: return Python source for an extension whose setup registers a
+    # "local" provider with the given model id, optionally raising afterwards to
+    # simulate a failed setup.
     failure = "\n    raise RuntimeError('setup exploded')" if fail_setup else ""
     return f"""
 from tau_coding.extensions import (
@@ -120,6 +158,8 @@ def setup(tau):
 
 
 async def test_provider_contract_accepts_dormant_zero_model_provider() -> None:
+    # [FUNCTION DOC]
+    # Verify a provider with no models and no default is valid.
     dormant = provider(models=(), default_model=None)
 
     assert dormant.models == ()
@@ -187,11 +227,19 @@ async def test_provider_contract_accepts_dormant_zero_model_provider() -> None:
     ],
 )
 async def test_provider_contract_rejects_invalid_definitions_atomically(factory, message) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: invalid ids, display names, duplicate models, missing
+    # default, zero or two runtime mechanisms, whitespace ids, bad windows,
+    # non-JSON compat, non-OpenAI APIs, auth headers outside the auth strategy,
+    # and duplicate header names raise DynamicProviderError.
     with pytest.raises(DynamicProviderError, match=message):
         factory()
 
 
 async def test_auth_strategies_use_stored_then_environment_then_missing() -> None:
+    # [FUNCTION DOC]
+    # Verify required keys prefer stored credentials then env vars, optional
+    # keys resolve to no auth, and a missing required key raises with guidance.
     credentials = MemoryCredentials({"local:key": "stored-secret"})
     environment = {"LOCAL_API_KEY": "environment-secret"}
 
@@ -229,11 +277,16 @@ async def test_auth_strategies_use_stored_then_environment_then_missing() -> Non
 
 
 async def test_resolved_auth_rejects_accidental_empty_bearer_configuration() -> None:
+    # [FUNCTION DOC]
+    # Verify resolved auth requiring Authorization without a key or header
+    # raises ProviderAuthError.
     with pytest.raises(ProviderAuthError, match="API key or Authorization"):
         ResolvedProviderAuth(omit_authorization_header=False)
 
 
 async def test_no_auth_never_reads_secret_sources() -> None:
+    # [FUNCTION DOC]
+    # Verify NoAuth resolves without touching credentials or environment.
     resolved = await resolve_provider_auth(
         NoAuth(),
         credentials=ExplodingCredentials(),
@@ -245,6 +298,9 @@ async def test_no_auth_never_reads_secret_sources() -> None:
 
 
 async def test_adversarial_custom_auth_is_absent_from_reprs_and_diagnostics() -> None:
+    # [FUNCTION DOC]
+    # Verify secrets in custom auth and refresh errors never appear in reprs or
+    # registry/runtime diagnostics.
     secret = "auth-source-super-secret"
     resolved = ResolvedProviderAuth(
         api_key=secret,
@@ -254,6 +310,9 @@ async def test_adversarial_custom_auth_is_absent_from_reprs_and_diagnostics() ->
     )
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: refresh callback asserting it received the auth and raising with
+        # the secret.
         assert context.auth is resolved
         raise RuntimeError(secret)
 
@@ -278,10 +337,17 @@ async def test_runtime_creation_sanitizes_custom_auth_exceptions_and_diagnostics
     tmp_path: Path,
     error_type: type[BaseException],
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify custom auth failures become a generic ProviderAuthError
+    # and logged diagnostics contain no secret.
     secret = "runtime-auth-super-secret"
 
     class ExplodingAuth:
+        # [CLASS DOC]
+        # HELPER: auth strategy that raises the parametrized error with a secret.
         async def resolve(self, context):
+            # [FUNCTION DOC]
+            # HELPER: raise the configured error type carrying the secret.
             del context
             raise error_type(secret)
 
@@ -318,6 +384,8 @@ async def test_runtime_creation_sanitizes_custom_auth_exceptions_and_diagnostics
 
 
 async def test_runtime_creation_preserves_required_auth_guidance() -> None:
+    # [FUNCTION DOC]
+    # Verify missing required credentials keep the host-authored guidance text.
     dynamic = provider(auth=RequiredApiKey("local:key", "LOCAL_API_KEY"))
 
     with pytest.raises(ProviderAuthError, match="Store credential `local:key`") as exc_info:
@@ -332,10 +400,17 @@ async def test_runtime_creation_preserves_required_auth_guidance() -> None:
 
 
 async def test_runtime_creation_only_preserves_host_authored_required_guidance() -> None:
+    # [FUNCTION DOC]
+    # Verify an auth error raised by the credential store itself is replaced by a
+    # generic message without the secret.
     secret = "required-reader-super-secret"
 
     class SecretBearingCredentials:
+        # [CLASS DOC]
+        # HELPER: credential store whose reads raise ProviderAuthError with a secret.
         def get(self, name: str) -> str | None:
+            # [FUNCTION DOC]
+            # HELPER: raise ProviderAuthError carrying the secret.
             del name
             raise ProviderAuthError(secret)
 
@@ -356,6 +431,9 @@ async def test_runtime_creation_only_preserves_host_authored_required_guidance()
 
 
 async def test_secret_values_are_absent_from_runtime_reprs() -> None:
+    # [FUNCTION DOC]
+    # Verify stored keys and model/transport header values do not appear in
+    # reprs of resolved auth, provider or runtime config.
     credentials = MemoryCredentials({"local:key": "stored-super-secret"})
     resolved = await resolve_provider_auth(
         RequiredApiKey("local:key", "LOCAL_API_KEY"),
@@ -394,13 +472,22 @@ async def test_invalid_custom_runtime_is_closed_once_without_masking_error(
     async_factory: bool,
     close_raises: bool,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized (sync/async factory, close raising or not): verify an invalid
+    # runtime is closed exactly once and the config error is not masked.
     class InvalidRuntime:
+        # [CLASS DOC]
+        # HELPER: runtime lacking a callable stream method that counts closes.
         stream_response = None
 
         def __init__(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: initialize the close counter.
             self.close_calls = 0
 
         async def aclose(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: count the close and optionally raise with a secret message.
             self.close_calls += 1
             if close_raises:
                 raise RuntimeError("close-super-secret")
@@ -410,11 +497,15 @@ async def test_invalid_custom_runtime_is_closed_once_without_masking_error(
     if async_factory:
 
         async def factory(context, model):
+            # [FUNCTION DOC]
+            # HELPER: async factory returning the invalid runtime.
             return invalid
 
     else:
 
         def factory(context, model):
+            # [FUNCTION DOC]
+            # HELPER: sync factory returning the invalid runtime.
             return invalid
 
     dynamic = DynamicProvider(
@@ -433,10 +524,16 @@ async def test_invalid_custom_runtime_is_closed_once_without_masking_error(
 
 
 async def test_custom_runtime_requires_callable_close_member() -> None:
+    # [FUNCTION DOC]
+    # Verify a runtime whose close member is not callable is rejected.
     class InvalidRuntime:
+        # [CLASS DOC]
+        # HELPER: runtime with a stream method but a non-callable close attribute.
         aclose = None
 
         def stream_response(self, **kwargs):
+            # [FUNCTION DOC]
+            # HELPER: must never be called; raises AssertionError.
             raise AssertionError("must not be called")
 
     dynamic = DynamicProvider(
@@ -452,24 +549,37 @@ async def test_custom_runtime_requires_callable_close_member() -> None:
 
 
 async def test_custom_runtime_factory_receives_resolved_auth_and_model() -> None:
+    # [FUNCTION DOC]
+    # Verify a runtime factory gets the provider id, resolved runtime auth and
+    # model, returns the runtime as-is, and the context repr hides the secret.
     observed = []
 
     class FactoryRuntime:
+        # [CLASS DOC]
+        # HELPER: minimal valid runtime with an empty stream and close flag.
         closed = False
 
         def stream_response(self, **kwargs):
+            # [FUNCTION DOC]
+            # HELPER: return an empty async event iterator.
             async def events():
+                # [FUNCTION DOC]
+                # HELPER: async generator yielding nothing.
                 if False:
                     yield None
 
             return events()
 
         async def aclose(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: mark the runtime closed.
             self.closed = True
 
     runtime = FactoryRuntime()
 
     async def factory(context, model):
+        # [FUNCTION DOC]
+        # HELPER: record the context and model and return the runtime.
         observed.append((context, model))
         return runtime
 
@@ -497,6 +607,9 @@ async def test_custom_runtime_factory_receives_resolved_auth_and_model() -> None
 
 
 async def test_durable_baseline_is_overridden_and_restored_exactly() -> None:
+    # [FUNCTION DOC]
+    # Verify an extension layer overrides a durable provider config and
+    # unregistering restores the identical baseline object.
     durable = OpenAICompatibleProviderConfig(
         name="local",
         base_url="https://durable.example/v1",
@@ -538,6 +651,10 @@ async def test_durable_baseline_is_overridden_and_restored_exactly() -> None:
 
 
 async def test_latest_layer_and_same_source_replacement_are_deterministic() -> None:
+    # [FUNCTION DOC]
+    # Verify the latest layer wins, same-source registration replaces in place
+    # (moving to the top), invalid replacements fail without changes, and
+    # unregistering reveals the previous layer.
     registry = DynamicProviderRegistry(generation_id="generation-1")
     first = provider(models=(ProviderModel("first"),), default_model="first")
     second = provider(models=(ProviderModel("second"),), default_model="second")
@@ -568,6 +685,9 @@ async def test_latest_layer_and_same_source_replacement_are_deterministic() -> N
 
 
 async def test_provider_inputs_are_defensively_copied() -> None:
+    # [FUNCTION DOC]
+    # Verify mutating input headers/compat after construction does not affect
+    # the model.
     headers = {"X-Header": "original"}
     compat = {"nested": {"value": "original"}}
     model = ProviderModel("model", headers=headers, compat=compat)
@@ -579,9 +699,14 @@ async def test_provider_inputs_are_defensively_copied() -> None:
 
 
 async def test_nested_compat_is_frozen_at_all_registry_exposure_boundaries() -> None:
+    # [FUNCTION DOC]
+    # Verify nested compat data is deeply immutable in effective definitions,
+    # layers, cached models passed to refresh, and refreshed snapshots.
     cached: list[ProviderModel] = []
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: record cached models and return a fresh snapshot with nested compat.
         cached.extend(context.cached_models)
         return ProviderModelSnapshot(
             (
@@ -625,6 +750,9 @@ async def test_nested_compat_is_frozen_at_all_registry_exposure_boundaries() -> 
 
 
 def _assert_nested_compat_is_frozen(model: ProviderModel, expected: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: assert a model's nested compat has the expected value and that
+    # its mapping, sequence and inner mapping all reject mutation.
     nested = cast(Mapping[str, object], model.compat["nested"])
     items = cast(tuple[object, ...], nested["items"])
     item = cast(Mapping[str, str], items[0])
@@ -639,9 +767,14 @@ def _assert_nested_compat_is_frozen(model: ProviderModel, expected: str) -> None
 
 
 async def test_successful_refresh_publishes_one_complete_snapshot() -> None:
+    # [FUNCTION DOC]
+    # Verify a refresh receives the current cached models and publishes the new
+    # model list and default atomically.
     observed_cached: list[tuple[ProviderModel, ...]] = []
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: record cached models and return a two-model snapshot.
         observed_cached.append(context.cached_models)
         return ProviderModelSnapshot(
             models=(ProviderModel("new-a"), ProviderModel("new-b")),
@@ -664,11 +797,16 @@ async def test_successful_refresh_publishes_one_complete_snapshot() -> None:
 
 @pytest.mark.parametrize("short_first", [False, True])
 async def test_coalesced_refresh_applies_each_waiters_timeout(short_first: bool) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify concurrent waiters share one discovery call but each
+    # applies its own timeout.
     entered = asyncio.Event()
     release = asyncio.Event()
     calls = 0
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: count calls, signal entry, wait for release, return a snapshot.
         nonlocal calls
         calls += 1
         entered.set()
@@ -697,11 +835,16 @@ async def test_coalesced_refresh_applies_each_waiters_timeout(short_first: bool)
 
 @pytest.mark.parametrize("network_first", [False, True])
 async def test_incompatible_network_policies_never_coalesce(network_first: bool) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify refreshes with different network permissions run as
+    # separate discoveries.
     entered = {False: asyncio.Event(), True: asyncio.Event()}
     release = {False: asyncio.Event(), True: asyncio.Event()}
     observed: list[bool] = []
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: record the network policy, wait per policy, return a snapshot.
         policy = context.allow_network
         observed.append(policy)
         entered[policy].set()
@@ -728,11 +871,15 @@ async def test_incompatible_network_policies_never_coalesce(network_first: bool)
 
 
 async def test_concurrent_refresh_callers_share_one_task() -> None:
+    # [FUNCTION DOC]
+    # Verify two concurrent refreshes call discovery once and get equal results.
     entered = asyncio.Event()
     release = asyncio.Event()
     calls = 0
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: count calls, wait for release, return a snapshot.
         nonlocal calls
         calls += 1
         entered.set()
@@ -754,9 +901,14 @@ async def test_concurrent_refresh_callers_share_one_task() -> None:
 
 @pytest.mark.parametrize("mode", ["malformed", "error", "timeout"])
 async def test_failed_refresh_retains_snapshot_and_records_bounded_safe_diagnostic(mode) -> None:
+    # [FUNCTION DOC]
+    # Parametrized (malformed, error, timeout): verify the prior snapshot is
+    # kept, exactly one secret-free diagnostic per layer generation is kept.
     secret = "refresh-super-secret"
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: return a malformed snapshot, raise with a secret, or hang.
         if mode == "malformed":
             return ProviderModelSnapshot((ProviderModel("duplicate"), ProviderModel("duplicate")))
         if mode == "error":
@@ -783,7 +935,11 @@ async def test_failed_refresh_retains_snapshot_and_records_bounded_safe_diagnost
 
 
 async def test_refresh_diagnostics_have_a_deterministic_global_bound() -> None:
+    # [FUNCTION DOC]
+    # Verify refresh diagnostics are capped globally, evicting the oldest.
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: always raise a safe error.
         raise RuntimeError("safe categorical diagnostic only")
 
     registry = DynamicProviderRegistry(generation_id="generation-1")
@@ -800,10 +956,15 @@ async def test_refresh_diagnostics_have_a_deterministic_global_bound() -> None:
 
 
 async def test_cancelling_one_waiter_does_not_cancel_shared_refresh() -> None:
+    # [FUNCTION DOC]
+    # Verify cancelling one waiter leaves the shared discovery running for the
+    # other, which publishes without diagnostics.
     entered = asyncio.Event()
     release = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: wait for release and return a snapshot.
         entered.set()
         await release.wait()
         return ProviderModelSnapshot((ProviderModel("fresh"),), "fresh")
@@ -825,9 +986,14 @@ async def test_cancelling_one_waiter_does_not_cancel_shared_refresh() -> None:
 
 
 async def test_cancelled_refresh_does_not_publish() -> None:
+    # [FUNCTION DOC]
+    # Verify cancel_refresh yields a cancelled result and keeps the old snapshot
+    # even if the callback returns afterwards.
     entered = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: spin until the context signal is cancelled, then return.
         entered.set()
         while not context.signal.is_cancelled():
             await asyncio.sleep(0)
@@ -847,9 +1013,13 @@ async def test_cancelled_refresh_does_not_publish() -> None:
 
 
 async def test_timeout_then_immediate_retry_starts_fresh_and_publishes() -> None:
+    # [FUNCTION DOC]
+    # Verify a retry after a timeout starts a new discovery and publishes.
     calls = 0
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: hang on the first call, return a snapshot afterwards.
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -869,10 +1039,14 @@ async def test_timeout_then_immediate_retry_starts_fresh_and_publishes() -> None
 
 
 async def test_cancel_then_immediate_retry_starts_fresh_and_publishes() -> None:
+    # [FUNCTION DOC]
+    # Verify a retry after cancellation starts a new discovery and publishes.
     entered = asyncio.Event()
     calls = 0
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: hang on the first call, return a snapshot afterwards.
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -895,10 +1069,15 @@ async def test_cancel_then_immediate_retry_starts_fresh_and_publishes() -> None:
 
 
 async def test_reregistration_prevents_old_refresh_publication() -> None:
+    # [FUNCTION DOC]
+    # Verify re-registering the same source cancels the in-flight refresh and
+    # the replacement stays effective.
     entered = asyncio.Event()
     cancelled = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: sleep (signalling when cancelled) then return a stale snapshot.
         entered.set()
         try:
             await asyncio.sleep(10)
@@ -921,10 +1100,15 @@ async def test_reregistration_prevents_old_refresh_publication() -> None:
 
 
 async def test_cancellation_resistant_old_callback_cannot_publish_stale_work() -> None:
+    # [FUNCTION DOC]
+    # Verify a callback that swallows cancellation still cannot publish after
+    # its layer is replaced.
     entered = asyncio.Event()
     release = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: wait for release, swallowing one cancellation, then return stale.
         entered.set()
         try:
             await release.wait()
@@ -948,9 +1132,14 @@ async def test_cancellation_resistant_old_callback_cannot_publish_stale_work() -
 
 
 async def test_unregister_cancels_refresh_and_restores_preceding_layer() -> None:
+    # [FUNCTION DOC]
+    # Verify unregistering a refreshing layer cancels it and restores the layer
+    # below.
     entered = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: sleep long then return a stale snapshot.
         entered.set()
         await asyncio.sleep(10)
         return ProviderModelSnapshot((ProviderModel("stale"),), "stale")
@@ -970,9 +1159,14 @@ async def test_unregister_cancels_refresh_and_restores_preceding_layer() -> None
 
 
 async def test_retire_cancels_tasks_removes_layers_and_rejects_registration() -> None:
+    # [FUNCTION DOC]
+    # Verify retiring a registry cancels refreshes, clears layers and rejects new
+    # registrations.
     entered = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: sleep long then return a stale snapshot.
         entered.set()
         await asyncio.sleep(10)
         return ProviderModelSnapshot((ProviderModel("stale"),), "stale")
@@ -992,6 +1186,9 @@ async def test_retire_cancels_tasks_removes_layers_and_rejects_registration() ->
 
 
 async def test_close_waits_without_recancelling_long_finally_cleanup() -> None:
+    # [FUNCTION DOC]
+    # Verify runtime close waits for a discovery's slow cleanup without
+    # re-cancelling it, then reports drained.
     entered = asyncio.Event()
     cleanup_started = asyncio.Event()
     cleanup_completed = asyncio.Event()
@@ -999,6 +1196,8 @@ async def test_close_waits_without_recancelling_long_finally_cleanup() -> None:
     release_cleanup = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: sleep, then in cleanup wait for release, noting re-cancellation.
         nonlocal cleanup_cancelled
         entered.set()
         try:
@@ -1037,12 +1236,17 @@ async def test_close_waits_without_recancelling_long_finally_cleanup() -> None:
 
 
 async def test_close_reports_blocked_finally_as_contained_without_recancelling() -> None:
+    # [FUNCTION DOC]
+    # Verify close reports a blocked cleanup as one contained supervised task,
+    # and a later close drains it once released.
     entered = asyncio.Event()
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
     cleanup_cancelled = False
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: sleep, then in cleanup block until released.
         nonlocal cleanup_cancelled
         entered.set()
         try:
@@ -1083,11 +1287,16 @@ async def test_close_reports_blocked_finally_as_contained_without_recancelling()
 
 
 async def test_replaced_cancellation_hostile_discovery_cannot_publish_when_it_finishes() -> None:
+    # [FUNCTION DOC]
+    # Verify a discovery that ignores cancellation and finishes after
+    # replacement never publishes and is cleaned up.
     entered = asyncio.Event()
     ignored_cancellation = asyncio.Event()
     release = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: loop ignoring cancellations until released, then return stale.
         while not release.is_set():
             entered.set()
             try:
@@ -1115,12 +1324,17 @@ async def test_replaced_cancellation_hostile_discovery_cannot_publish_when_it_fi
 
 
 async def test_cancellation_hostile_discovery_is_boundedly_contained_and_owned() -> None:
+    # [FUNCTION DOC]
+    # Verify close cancels a hostile discovery once, reports it contained and
+    # supervised, and drains it after release.
     entered = asyncio.Event()
     suppressed = asyncio.Event()
     release = asyncio.Event()
     cancellation_count = 0
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: count suppressed cancellations until released, then return stale.
         nonlocal cancellation_count
         entered.set()
         while not release.is_set():
@@ -1160,6 +1374,9 @@ async def test_cancellation_hostile_discovery_is_boundedly_contained_and_owned()
 
 
 def _live_discovery_tasks() -> list[asyncio.Task[object]]:
+    # [FUNCTION DOC]
+    # HELPER: list unfinished asyncio tasks named with the provider discovery
+    # prefix.
     return [
         task
         for task in asyncio.all_tasks()
@@ -1168,11 +1385,16 @@ def _live_discovery_tasks() -> list[asyncio.Task[object]]:
 
 
 async def test_reset_retains_outgoing_registry_for_later_async_drain() -> None:
+    # [FUNCTION DOC]
+    # Verify reset for reload keeps the outgoing registry so a later close
+    # drains its discovery tasks.
     entered = asyncio.Event()
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: sleep, then block in cleanup until released.
         entered.set()
         try:
             await asyncio.sleep(10)
@@ -1200,9 +1422,14 @@ async def test_reset_retains_outgoing_registry_for_later_async_drain() -> None:
 
 
 async def test_runtime_close_drains_owned_refresh_and_is_idempotent() -> None:
+    # [FUNCTION DOC]
+    # Verify close cancels owned refreshes, deactivates the runtime, clears
+    # providers, and can be called twice.
     entered = asyncio.Event()
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: sleep long then return a stale snapshot.
         entered.set()
         await asyncio.sleep(10)
         return ProviderModelSnapshot((ProviderModel("stale"),), "stale")
@@ -1223,6 +1450,9 @@ async def test_runtime_close_drains_owned_refresh_and_is_idempotent() -> None:
 
 
 async def test_setup_failure_removes_provider_layers(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a provider registered by an extension whose setup then fails is
+    # removed and a setup-failed diagnostic is reported.
     paths = TauResourcePaths(
         root=tmp_path / "tau",
         cwd=tmp_path / "project",
@@ -1255,6 +1485,9 @@ def setup(tau):
 async def test_same_name_extension_paths_shadow_and_restore_exact_provider_layer(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify two same-named extensions at different paths get distinct source
+    # ids, the later one shadows, and unregistering it restores the first.
     paths = TauResourcePaths(
         root=tmp_path / "tau",
         cwd=tmp_path / "project",
@@ -1290,6 +1523,9 @@ async def test_same_name_extension_paths_shadow_and_restore_exact_provider_layer
 async def test_same_name_failed_setup_preserves_first_exact_provider_layer(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify a failing same-named second extension leaves the first layer as the
+    # only one and reports setup failure.
     paths = TauResourcePaths(
         root=tmp_path / "tau",
         cwd=tmp_path / "project",
@@ -1322,6 +1558,9 @@ async def test_same_name_failed_setup_preserves_first_exact_provider_layer(
 async def test_reloading_same_exact_extension_source_keeps_first_registration(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify loading the same extension path again is ignored as a duplicate
+    # source and the first registration is kept.
     paths = TauResourcePaths(
         root=tmp_path / "tau",
         cwd=tmp_path / "project",
@@ -1354,6 +1593,9 @@ async def test_reloading_same_exact_extension_source_keeps_first_registration(
 async def test_extension_api_registers_provider_and_reload_retires_generation(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify an extension-registered provider disappears on reset for reload and
+    # the new registry has a new generation id.
     paths = TauResourcePaths(
         root=tmp_path / "tau",
         cwd=tmp_path / "project",
@@ -1388,6 +1630,9 @@ def setup(tau):
 
 
 async def test_frozen_compat_is_copied_to_mutable_json_at_runtime_boundary() -> None:
+    # [FUNCTION DOC]
+    # Verify the runtime config gets a mutable deep copy of frozen compat whose
+    # mutation does not affect the model.
     model = ProviderModel(
         "model",
         compat={"nested": {"items": [{"value": "original"}]}},
@@ -1413,13 +1658,20 @@ async def test_frozen_compat_is_copied_to_mutable_json_at_runtime_boundary() -> 
 async def test_dynamic_provider_operations_never_call_durable_write_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify registering, refreshing, creating runtimes and unregistering never
+    # write durable provider settings or catalogs.
     def reject_write(*args, **kwargs):
+        # [FUNCTION DOC]
+        # HELPER: stub that fails if any durable write is attempted.
         raise AssertionError(f"durable provider write attempted: {args!r} {kwargs!r}")
 
     monkeypatch.setattr("tau_coding.provider_config._write_provider_settings", reject_write)
     monkeypatch.setattr("tau_coding.provider_config.save_user_catalog_entries", reject_write)
 
     async def refresh(context):
+        # [FUNCTION DOC]
+        # HELPER: return a fresh snapshot.
         return ProviderModelSnapshot((ProviderModel("fresh"),), "fresh")
 
     registry = DynamicProviderRegistry(generation_id="generation-1")
@@ -1439,6 +1691,9 @@ async def test_dynamic_provider_operations_never_call_durable_write_paths(
 
 
 async def test_dynamic_transport_merges_headers_and_supports_custom_auth() -> None:
+    # [FUNCTION DOC]
+    # Verify custom auth headers (including Authorization) win case-insensitively
+    # over transport and model headers with a single value sent.
     auth = FixedAuth(
         ResolvedProviderAuth(
             headers={"Authorization": "Token runtime-secret", "X-Trace": "auth"},
@@ -1465,6 +1720,8 @@ async def test_dynamic_transport_merges_headers_and_supports_custom_auth() -> No
     observed: list[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: record the request and return a minimal SSE stop stream.
         observed.append(request)
         return httpx.Response(
             200,
@@ -1491,6 +1748,8 @@ async def test_dynamic_transport_merges_headers_and_supports_custom_auth() -> No
 
 
 async def test_dynamic_openai_transport_rejects_key_with_omitted_authorization() -> None:
+    # [FUNCTION DOC]
+    # Verify a resolved key combined with Authorization omission is rejected.
     dynamic = provider(
         auth=FixedAuth(
             ResolvedProviderAuth(
@@ -1512,6 +1771,9 @@ async def test_dynamic_openai_transport_rejects_key_with_omitted_authorization()
 
 @pytest.mark.parametrize("with_key", [False, True])
 async def test_dynamic_openai_transport_emits_conditional_authorization(with_key: bool) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify the bearer header is sent only when an optional key
+    # resolves.
     key = "runtime-super-secret" if with_key else None
     credentials = MemoryCredentials({"local:key": key} if key else {})
     dynamic = provider(auth=OptionalApiKey("local:key", "LOCAL_API_KEY"))
@@ -1525,6 +1787,8 @@ async def test_dynamic_openai_transport_emits_conditional_authorization(with_key
     observed: list[httpx.Request] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: record the request and return a short SSE stream.
         observed.append(request)
         return httpx.Response(
             200,
@@ -1554,6 +1818,9 @@ async def test_dynamic_openai_transport_emits_conditional_authorization(with_key
 
 @pytest.mark.parametrize("model_id", ["gpt-5.4-local", "my-codex-local"])
 async def test_dynamic_transport_does_not_infer_endpoint_from_model_name(model_id: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify model names resembling Codex/Responses models still
+    # use the chat completions endpoint.
     dynamic = provider(models=(ProviderModel(model_id),), default_model=model_id)
     runtime = await create_dynamic_model_provider(
         dynamic,
@@ -1565,6 +1832,8 @@ async def test_dynamic_transport_does_not_infer_endpoint_from_model_name(model_i
     urls: list[str] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
+        # [FUNCTION DOC]
+        # HELPER: record the URL and return a minimal SSE stop stream.
         urls.append(str(request.url))
         return httpx.Response(
             200,

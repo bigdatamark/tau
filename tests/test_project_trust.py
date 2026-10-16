@@ -1,3 +1,15 @@
+# [MODULE DOC]
+# Tests for project trust: the gate that decides whether protected
+# project-local resources (AGENTS.md context, .tau/.agents skills, prompts,
+# themes, system prompts, settings and project extensions) are loaded.
+# Covers path canonicalization, the protected-resource detector, the
+# durable trust store (sorted JSON, nearest-ancestor decisions, locking,
+# atomic writes, rollback journal and fail-closed recovery), the trust
+# coordinator's precedence (override, extensions, saved, default, prompt) and
+# run-scoped caching, resource-path planning, the Textual trust modal, CLI
+# flag conflicts, and CodingSession load/reload/new-session/adoption
+# behavior including failure and cancellation paths that must leave the
+# active session unchanged. Uses temp dirs, fake storage and monkeypatching.
 from __future__ import annotations
 
 import asyncio
@@ -41,12 +53,17 @@ from tau_coding.tui.themes import TAU_DARK_THEME
 
 
 def _paths(tmp_path: Path) -> TauPaths:
+    # [FUNCTION DOC]
+    # HELPER: build TauPaths with home and agents home under a temp "home" dir.
     return TauPaths(home=tmp_path / "home" / ".tau", agents_home=tmp_path / "home" / ".agents")
 
 
 def test_canonical_project_path_requires_existing_directory_and_resolves_alias(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify a symlinked directory canonicalizes to its resolved target and a
+    # missing path raises ProjectTrustError (skips without symlink support).
     project = tmp_path / "project"
     project.mkdir()
     alias = tmp_path / "alias"
@@ -62,6 +79,9 @@ def test_canonical_project_path_requires_existing_directory_and_resolves_alias(
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS filesystem casing regression")
 def test_macos_alternate_case_preserves_exact_child_decline(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # macOS only: verify an alternate-case path canonicalizes to the same key
+    # and the exact child decline wins over a trusted parent.
     parent = tmp_path / "Parent"
     child = parent / "MixedCase"
     child.mkdir(parents=True)
@@ -85,6 +105,9 @@ def test_macos_alternate_case_preserves_exact_child_decline(tmp_path: Path) -> N
 
 
 def test_detector_covers_protected_matrix_without_reading_contents(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify the detector recognizes every protected resource kind and reports
+    # sorted categories, per-category counts and at most 12 sample paths.
     project = tmp_path / "project"
     project.mkdir()
     candidates = (
@@ -129,6 +152,9 @@ def test_detector_covers_protected_matrix_without_reading_contents(tmp_path: Pat
 
 
 def test_detector_ignores_empty_and_unsupported_resources(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify empty settings, empty dirs, a reserved prompt name and unsupported
+    # files (CLAUDE.md, pyproject.toml) produce no protected categories.
     project = tmp_path / "project"
     (project / ".tau/skills").mkdir(parents=True)
     (project / ".agents/prompts").mkdir(parents=True)
@@ -143,6 +169,9 @@ def test_detector_ignores_empty_and_unsupported_resources(tmp_path: Path) -> Non
 
 
 def test_store_round_trip_is_sorted_and_nearest_decision_wins(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify decisions persist as sorted version-1 JSON with 0600 permissions
+    # and the nearest (child) decision overrides the parent.
     paths = _paths(tmp_path)
     store = ProjectTrustStore(paths)
     parent = tmp_path / "projects"
@@ -168,6 +197,9 @@ def test_store_round_trip_is_sorted_and_nearest_decision_wins(tmp_path: Path) ->
 
 
 def test_parent_trust_removes_exact_child_for_inheritance(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify trusting the parent removes an exact child decision so the child
+    # inherits the parent's trusted decision.
     store = ProjectTrustStore(_paths(tmp_path))
     child = tmp_path / "parent" / "child"
     child.mkdir(parents=True)
@@ -194,6 +226,9 @@ def test_parent_trust_removes_exact_child_for_inheritance(tmp_path: Path) -> Non
     ],
 )
 def test_store_rejects_malformed_data(tmp_path: Path, payload: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: non-JSON, wrong version, relative paths and duplicate paths
+    # make the store read raise ProjectTrustError.
     store = ProjectTrustStore(_paths(tmp_path))
     store.path.parent.mkdir(parents=True)
     store.path.write_text(payload, encoding="utf-8")
@@ -203,12 +238,17 @@ def test_store_rejects_malformed_data(tmp_path: Path, payload: str) -> None:
 
 
 def test_concurrent_store_updates_do_not_lose_decisions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify concurrent writers from 8 threads (separate store instances) all
+    # persist their decisions under the store lock.
     paths = _paths(tmp_path)
     projects = [tmp_path / f"project-{index}" for index in range(8)]
     for project in projects:
         project.mkdir()
 
     def save(project: Path) -> None:
+        # [FUNCTION DOC]
+        # HELPER: save a trusted decision for one project with a new store.
         ProjectTrustStore(paths).set(canonicalize_project_path(project), "trusted")
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -219,6 +259,9 @@ def test_concurrent_store_updates_do_not_lose_decisions(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_policy_precedence_extension_before_saved_and_default(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify an extension decider's approval outranks a saved untrusted decision
+    # and the default, with source "extension".
     project = tmp_path / "project"
     project.mkdir()
     (project / "AGENTS.md").write_text("rules", encoding="utf-8")
@@ -227,6 +270,8 @@ async def test_policy_precedence_extension_before_saved_and_default(tmp_path: Pa
     coordinator = ProjectTrustCoordinator(store)
 
     async def approve(_event: object) -> ExtensionTrustResult:
+        # [FUNCTION DOC]
+        # HELPER: extension decider that always approves.
         return ExtensionTrustResult("approve")
 
     _summary, resolution = await coordinator.resolve(
@@ -241,6 +286,10 @@ async def test_policy_precedence_extension_before_saved_and_default(tmp_path: Pa
 
 @pytest.mark.anyio
 async def test_malformed_store_fails_closed_but_run_override_still_works(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a corrupt store declines (even with default always) with
+    # diagnostics, while an explicit run override approves; diagnostics state
+    # trust is not a sandbox.
     project = tmp_path / "project"
     project.mkdir()
     (project / "AGENTS.md").write_text("rules", encoding="utf-8")
@@ -266,6 +315,9 @@ async def test_malformed_store_fails_closed_but_run_override_still_works(tmp_pat
 async def test_reload_rechecks_empty_result_but_reuses_nonempty_run_decision(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify an empty-project result is re-evaluated on refresh, but a nonempty
+    # run decision is cached and reused despite a different default.
     project = tmp_path / "project"
     project.mkdir()
     coordinator = ProjectTrustCoordinator(ProjectTrustStore(_paths(tmp_path)))
@@ -285,6 +337,9 @@ async def test_reload_rechecks_empty_result_but_reuses_nonempty_run_decision(
 
 
 def test_untrusted_resource_plan_keeps_user_resources_only(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify an untrusted resource plan keeps only user-level skills, prompts
+    # and themes directories.
     project = tmp_path / "project"
     project.mkdir()
     paths = TauResourcePaths(root=tmp_path / "home/.tau", cwd=project, agents_root=None)
@@ -300,6 +355,10 @@ def test_untrusted_resource_plan_keeps_user_resources_only(tmp_path: Path) -> No
 async def test_tui_trust_modal_shows_boundary_parent_and_keyboard_cancel(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify the trust modal shows the sandbox boundary note, Escape help, the
+    # resolved path, summary counts and the parent choice, and Escape dismisses
+    # it with None.
     project = tmp_path / "parent/project"
     project.mkdir(parents=True)
     (project / "AGENTS.md").write_text("rules", encoding="utf-8")
@@ -308,7 +367,12 @@ async def test_tui_trust_modal_shows_boundary_parent_and_keyboard_cancel(
     results: list[object | None] = []
 
     class Host(App[None]):
+        # [CLASS DOC]
+        # HELPER: minimal Textual app that pushes the trust screen on mount and
+        # records its result.
         def on_mount(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: push the trust screen with a callback appending the result.
             self.push_screen(ProjectTrustScreen(request), results.append)
 
     host = Host()
@@ -332,18 +396,29 @@ async def test_tui_trust_modal_shows_boundary_parent_and_keyboard_cancel(
 
 
 class _Storage:
+    # [CLASS DOC]
+    # HELPER: in-memory session storage fake holding a list of entries.
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: start with an empty entry list.
         self.entries: list[SessionEntry] = []
 
     async def append(self, entry: SessionEntry) -> None:
+        # [FUNCTION DOC]
+        # HELPER: append an entry to the list.
         self.entries.append(entry)
 
     async def read_all(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # HELPER: return a copy of all stored entries.
         return list(self.entries)
 
 
 @pytest.mark.anyio
 async def test_project_extensions_need_trust_and_additional_opt_in(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a project extension (which writes a marker file on import) is only
+    # imported when the project is trusted AND project extensions are enabled.
     project = tmp_path / "project"
     extension_dir = project / ".tau/extensions"
     extension_dir.mkdir(parents=True)
@@ -399,6 +474,8 @@ async def test_project_extensions_need_trust_and_additional_opt_in(tmp_path: Pat
 
 
 def test_cli_rejects_conflicting_overrides() -> None:
+    # [FUNCTION DOC]
+    # Verify the CLI rejects passing both approve and no-approve flags.
     result = CliRunner().invoke(app, ["--approve", "--no-approve", "--print", "hello"])
 
     assert result.exit_code != 0
@@ -408,6 +485,10 @@ def test_cli_rejects_conflicting_overrides() -> None:
 def test_store_failures_preserve_prior_non_granting_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # For each failing step (chmod, fsync, replace, directory fsync), verify a
+    # trust write raises ProjectTrustError and leaves the prior untrusted file
+    # bytes intact.
     paths = _paths(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
@@ -455,6 +536,9 @@ def test_store_failures_preserve_prior_non_granting_bytes(
 async def test_session_default_declines_project_input_and_explicit_approval_loads_it(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify a session declines project context by default and includes it with
+    # an explicit approve override.
     project = tmp_path / "project"
     project.mkdir()
     (project / "AGENTS.md").write_text("protected-default-probe", encoding="utf-8")
@@ -479,6 +563,10 @@ async def test_session_default_declines_project_input_and_explicit_approval_load
 
 @pytest.mark.anyio
 async def test_destination_rebuild_drops_source_project_extensions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify rebuilding a session for a declined destination while reusing the
+    # source extension runtime keeps global extensions but drops source project
+    # extensions and destination context.
     home_extensions = tmp_path / "home/.tau/extensions"
     source_extensions = tmp_path / "source/.tau/extensions"
     destination = tmp_path / "destination"
@@ -526,6 +614,9 @@ async def test_destination_rebuild_drops_source_project_extensions(tmp_path: Pat
 
 @pytest.mark.anyio
 async def test_failed_reload_preserves_complete_live_snapshot(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a reload failing on undecodable AGENTS.md raises and leaves prompt,
+    # runtime, tools and trust resolution unchanged.
     project = tmp_path / "project"
     project.mkdir()
     agents = project / "AGENTS.md"
@@ -569,6 +660,9 @@ async def test_failed_reload_preserves_complete_live_snapshot(tmp_path: Path) ->
 async def test_tui_trust_modal_all_choices_support_arrow_navigation(
     tmp_path: Path, choice_id: str, index: int, expected: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify each modal choice is reachable by down-arrow presses
+    # from the focused list and Enter returns its choice id.
     project = tmp_path / "parent/project"
     project.mkdir(parents=True)
     (project / "AGENTS.md").write_text("rules", encoding="utf-8")
@@ -577,7 +671,11 @@ async def test_tui_trust_modal_all_choices_support_arrow_navigation(
     results: list[object | None] = []
 
     class Host(App[None]):
+        # [CLASS DOC]
+        # HELPER: Textual host app pushing the trust screen and recording results.
         def on_mount(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: push the trust screen with a result-recording callback.
             self.push_screen(ProjectTrustScreen(request), results.append)
 
     host = Host()
@@ -597,6 +695,9 @@ async def test_tui_trust_modal_all_choices_support_arrow_navigation(
 
 @pytest.mark.anyio
 async def test_standalone_trust_modal_uses_tau_dark_palette(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify the standalone trust app uses the tau-dark theme colors and Escape
+    # exits Tau help text.
     project = tmp_path / "project"
     project.mkdir()
     (project / "AGENTS.md").write_text("rules", encoding="utf-8")
@@ -626,20 +727,30 @@ async def test_standalone_trust_modal_uses_tau_dark_palette(tmp_path: Path) -> N
 async def test_extension_order_errors_and_remember_failure_are_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify extension deciders run in order, a raising decider is skipped with
+    # a diagnostic, the first decision stops evaluation, and a failed "remember"
+    # write fails closed (untrusted) with diagnostics.
     project = tmp_path / "project"
     project.mkdir()
     (project / "AGENTS.md").write_text("rules", encoding="utf-8")
     calls: list[str] = []
 
     async def broken(_event: object) -> ExtensionTrustResult:
+        # [FUNCTION DOC]
+        # HELPER: decider that records its call and raises.
         calls.append("broken")
         raise RuntimeError("handler failure")
 
     async def approve(_event: object) -> ExtensionTrustResult:
+        # [FUNCTION DOC]
+        # HELPER: decider that records its call and approves with remember.
         calls.append("approve")
         return ExtensionTrustResult("approve", remember=True)
 
     async def never_reached(_event: object) -> ExtensionTrustResult:
+        # [FUNCTION DOC]
+        # HELPER: decider that should never run (records "late" and declines).
         calls.append("late")
         return ExtensionTrustResult("decline")
 
@@ -661,6 +772,9 @@ async def test_extension_order_errors_and_remember_failure_are_fail_closed(
 def test_store_read_lock_and_write_permission_failures_are_safe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify read permission errors, lock errors and temp file creation errors
+    # all raise ProjectTrustError and leave the stored bytes unchanged.
     paths = _paths(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
@@ -716,12 +830,17 @@ def test_store_read_lock_and_write_permission_failures_are_safe(
 async def test_interactive_choices_have_exact_persistence_semantics(
     tmp_path: Path, choice: object, trusted: bool, saved_decision: str | None
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify each interactive choice (and cancel) yields the
+    # expected trust and persists only exact trust/decline decisions.
     project = tmp_path / "parent/project"
     project.mkdir(parents=True)
     (project / "AGENTS.md").write_text("rules", encoding="utf-8")
     store = ProjectTrustStore(_paths(tmp_path))
 
     async def prompt(_request: ProjectTrustRequest) -> object:
+        # [FUNCTION DOC]
+        # HELPER: prompt callback returning the parametrized choice.
         return choice
 
     _summary, resolution = await ProjectTrustCoordinator(store).resolve(
@@ -742,6 +861,10 @@ async def test_interactive_choices_have_exact_persistence_semantics(
 def test_combined_commit_and_recovery_failures_remain_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovery_operation: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: when the post-replace directory fsync fails and the rollback
+    # step also fails, verify "recovery failed" is raised, the pending journal
+    # retains the prior bytes, and later reads refuse with "incomplete update".
     store = ProjectTrustStore(_paths(tmp_path))
     project = tmp_path / "project"
     project.mkdir()
@@ -753,6 +876,8 @@ def test_combined_commit_and_recovery_failures_remain_fail_closed(
     directory_syncs = 0
 
     def fail_target_directory_sync(directory: Path) -> None:
+        # [FUNCTION DOC]
+        # HELPER: directory fsync stub that fails on its second call only.
         nonlocal directory_syncs
         directory_syncs += 1
         if directory_syncs == 2:
@@ -764,6 +889,8 @@ def test_combined_commit_and_recovery_failures_remain_fail_closed(
         real_unlink = Path.unlink
 
         def fail_pending_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            # [FUNCTION DOC]
+            # HELPER: unlink stub failing for the pending journal path only.
             if path == store.pending_path:
                 raise OSError("rollback unlink")
             real_unlink(path, *args, **kwargs)
@@ -773,6 +900,8 @@ def test_combined_commit_and_recovery_failures_remain_fail_closed(
         real_atomic_replace = store._atomic_replace
 
         def fail_rollback(destination: Path, data: bytes, *, prefix: str) -> None:
+            # [FUNCTION DOC]
+            # HELPER: atomic-replace stub failing only for rollback writes.
             if prefix == ".trust-rollback-":
                 raise OSError(f"rollback {recovery_operation}")
             real_atomic_replace(destination, data, prefix=prefix)
@@ -788,6 +917,9 @@ def test_combined_commit_and_recovery_failures_remain_fail_closed(
 
 
 def test_pending_journal_after_revocation_never_restores_prior_trust(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a leftover undo journal after a revocation blocks reads requiring
+    # explicit recovery and never restores the prior trusted bytes.
     store = ProjectTrustStore(_paths(tmp_path))
     project = tmp_path / "project"
     project.mkdir()
@@ -808,6 +940,8 @@ def test_pending_journal_after_revocation_never_restores_prior_trust(tmp_path: P
 
 
 def test_resource_plan_always_rebinds_to_destination(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify rebinding resource paths to a new cwd keeps the other settings.
     source = tmp_path / "source"
     destination = tmp_path / "destination"
     source.mkdir()
@@ -837,6 +971,9 @@ def test_resource_plan_always_rebinds_to_destination(tmp_path: Path) -> None:
 async def test_source_bound_plan_uses_destination_resources_for_trust_choice(
     tmp_path: Path, choice: str, expected_text: str | None
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify a session loaded for a destination with source-bound
+    # resource paths prompts for and loads only destination resources.
     source = tmp_path / "source"
     destination = tmp_path / "destination"
     source.mkdir()
@@ -858,6 +995,8 @@ async def test_source_bound_plan_uses_destination_resources_for_trust_choice(
     observed: list[Path] = []
 
     async def prompt(request: ProjectTrustRequest) -> str:
+        # [FUNCTION DOC]
+        # HELPER: record the requested cwd and return the parametrized choice.
         observed.append(request.cwd.value)
         return choice
 
@@ -889,12 +1028,17 @@ async def test_source_bound_plan_uses_destination_resources_for_trust_choice(
 async def test_failed_reload_does_not_commit_run_choice_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, choice: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: verify a reload failing during resource preparation does not
+    # cache the run choice, so the next reload prompts again.
     project = tmp_path / "project"
     project.mkdir()
     coordinator = ProjectTrustCoordinator(ProjectTrustStore(_paths(tmp_path)))
     prompts = 0
 
     async def prompt(_request: ProjectTrustRequest) -> str:
+        # [FUNCTION DOC]
+        # HELPER: count prompts and return the parametrized choice.
         nonlocal prompts
         prompts += 1
         return choice
@@ -919,6 +1063,8 @@ async def test_failed_reload_does_not_commit_run_choice_cache(
     attempts = 0
 
     def fail_once(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        # [FUNCTION DOC]
+        # HELPER: resource loader stub raising on the first call only.
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -941,12 +1087,17 @@ async def test_failed_reload_does_not_commit_run_choice_cache(
 async def test_failed_project_extension_reload_re_resolves_trust(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify a reload failing in project extension setup does not cache trust and
+    # a later reload prompts again and loads the extension.
     project = tmp_path / "project"
     project.mkdir()
     coordinator = ProjectTrustCoordinator(ProjectTrustStore(_paths(tmp_path)))
     prompts = 0
 
     async def prompt(_request: ProjectTrustRequest) -> str:
+        # [FUNCTION DOC]
+        # HELPER: count prompts and trust for this run.
         nonlocal prompts
         prompts += 1
         return "trust-run"
@@ -975,6 +1126,8 @@ async def test_failed_project_extension_reload_re_resolves_trust(
     real_load = ExtensionRuntime.load
 
     def fail_project_setup(self: ExtensionRuntime, *args: object, **kwargs: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: extension loader stub raising when project extensions are included.
         if kwargs.get("include_project_dir") is True:
             raise RuntimeError("setup failed")
         real_load(self, *args, **kwargs)  # type: ignore[arg-type]
@@ -996,6 +1149,9 @@ async def test_failed_project_extension_reload_re_resolves_trust(
 async def test_cancelled_destination_staging_leaves_source_session_and_cache_unchanged(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify cancelling the trust prompt while staging a destination session
+    # marks it cancelled and leaves the source session and cache untouched.
     source = tmp_path / "source"
     destination = tmp_path / "destination"
     source.mkdir()
@@ -1019,6 +1175,8 @@ async def test_cancelled_destination_staging_leaves_source_session_and_cache_unc
     source_runtime = active._extension_runtime
 
     async def cancel(_request: ProjectTrustRequest) -> None:
+        # [FUNCTION DOC]
+        # HELPER: prompt that cancels (returns None).
         return None
 
     staged = await CodingSession.load(
@@ -1044,6 +1202,9 @@ async def test_cancelled_destination_staging_leaves_source_session_and_cache_unc
 
 @pytest.mark.anyio
 async def test_new_session_trust_cancellation_preserves_active_session(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify cancelling trust during new_session raises and keeps the current
+    # session id, runtime, prompt and resolution.
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
@@ -1054,6 +1215,8 @@ async def test_new_session_trust_cancellation_preserves_active_session(tmp_path:
     prompts = 0
 
     async def cancel(_request: ProjectTrustRequest) -> None:
+        # [FUNCTION DOC]
+        # HELPER: count prompts and cancel.
         nonlocal prompts
         prompts += 1
         return None
@@ -1099,12 +1262,17 @@ async def test_new_session_trust_cancellation_preserves_active_session(tmp_path:
 async def test_reload_cancellation_during_shutdown_preserves_snapshot_and_re_resolves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify cancellation during old-runtime shutdown in reload keeps the old
+    # snapshot and the next reload prompts again and loads new context.
     project = tmp_path / "project"
     project.mkdir()
     coordinator = ProjectTrustCoordinator(ProjectTrustStore(_paths(tmp_path)))
     prompts = 0
 
     async def prompt(_request: ProjectTrustRequest) -> str:
+        # [FUNCTION DOC]
+        # HELPER: count prompts and trust for this run.
         nonlocal prompts
         prompts += 1
         return "trust-run"
@@ -1127,6 +1295,8 @@ async def test_reload_cancellation_during_shutdown_preserves_snapshot_and_re_res
     (project / "AGENTS.md").write_text("NEW-CONTEXT", encoding="utf-8")
 
     async def cancel_shutdown(_reason: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: shutdown stub that raises cancellation.
         raise asyncio.CancelledError
 
     monkeypatch.setattr(old_runtime, "emit_session_shutdown", cancel_shutdown)
@@ -1148,6 +1318,9 @@ async def test_reload_cancellation_during_shutdown_preserves_snapshot_and_re_res
 async def test_reload_cancellation_during_staged_start_preserves_snapshot_and_re_resolves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify cancellation while starting the staged runtime in reload keeps the
+    # old snapshot and a retry re-resolves trust.
     from tau_coding.extensions.runtime import ExtensionRuntime
 
     project = tmp_path / "project"
@@ -1156,6 +1329,8 @@ async def test_reload_cancellation_during_staged_start_preserves_snapshot_and_re
     prompts = 0
 
     async def prompt(_request: ProjectTrustRequest) -> str:
+        # [FUNCTION DOC]
+        # HELPER: count prompts and trust for this run.
         nonlocal prompts
         prompts += 1
         return "trust-run"
@@ -1180,6 +1355,8 @@ async def test_reload_cancellation_during_staged_start_preserves_snapshot_and_re
     cancelled = False
 
     async def cancel_staged_start(self: ExtensionRuntime, reason: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: session-start stub cancelling once for the staged runtime's reload.
         nonlocal cancelled
         if reason == "reload" and self is not old_runtime and not cancelled:
             cancelled = True
@@ -1204,6 +1381,10 @@ async def test_reload_cancellation_during_staged_start_preserves_snapshot_and_re
 async def test_destination_adoption_cancellation_keeps_source_and_retry_resolves_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify cancellation while adopting a destination replacement keeps the
+    # source session and uncached destination, and a retry prompts again and
+    # adopts the destination (cache source "ui").
     from tau_coding.extensions.runtime import ExtensionRuntime
 
     source = tmp_path / "source"
@@ -1231,11 +1412,15 @@ async def test_destination_adoption_cancellation_keeps_source_and_retry_resolves
     prompts = 0
 
     async def prompt(_request: ProjectTrustRequest) -> str:
+        # [FUNCTION DOC]
+        # HELPER: count prompts and trust for this run.
         nonlocal prompts
         prompts += 1
         return "trust-run"
 
     def replacement_config() -> CodingSessionConfig:
+        # [FUNCTION DOC]
+        # HELPER: build the destination session config reusing the active runtime.
         return CodingSessionConfig(
             provider=cast(ModelProvider, object()),
             model="fake",
@@ -1253,6 +1438,8 @@ async def test_destination_adoption_cancellation_keeps_source_and_retry_resolves
     cancelled_runtime = replacement._extension_runtime
 
     async def cancel_adoption(self: ExtensionRuntime, reason: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: session-start stub cancelling for the replacement runtime only.
         if self is cancelled_runtime:
             raise asyncio.CancelledError
         await real_start(self, reason)  # type: ignore[arg-type]

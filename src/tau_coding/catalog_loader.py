@@ -1,3 +1,12 @@
+# [MODULE DOC]
+# Loads Tau's provider catalog (providers, their models and per-model
+# metadata) from TOML. Layers, in order: the packaged data/catalog.toml, the
+# bundled generated models.dev overlay, the user's cached models.dev overlay,
+# then the user overlay file catalog.toml in the Tau home. Raw TOML tables are
+# merged, model tombstones (removed_models) are applied, then strictly
+# validated with pydantic models into provider catalog entries. Also writes
+# (upserts) provider definitions back into the user catalog atomically.
+# Errors surface as CatalogError with source-prefixed dotted locations.
 """Load Tau's provider catalog from packaged and user TOML files."""
 
 from __future__ import annotations
@@ -52,10 +61,18 @@ _NonNegativeFloat = Annotated[float, Field(ge=0)]
 
 
 class CatalogError(ValueError):
+    # [CLASS DOC]
+    # Exception (ValueError subclass) raised when a catalog file or merged
+    # catalog is invalid TOML, has wrong structure or fails validation.
     """Raised when a Tau catalog file is invalid."""
 
 
 class _CatalogCostTier(BaseModel):
+    # [CLASS DOC]
+    # HELPER: strict schema for one pricing tier: optional positive
+    # max_input_tokens (the tier's upper bound), and non-negative input, output,
+    # cacheRead, cacheWrite rates, plus optional cacheWrite1h. Frozen; unknown
+    # keys forbidden.
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_input_tokens: _PositiveInt | None = None
@@ -70,6 +87,12 @@ class _CatalogCostTier(BaseModel):
 
 
 class _CatalogModelMetadata(BaseModel):
+    # [CLASS DOC]
+    # HELPER: strict schema for per-model metadata: optional display name, API,
+    # base URL, reasoning flag, input modalities, flat cost mapping, cost tiers,
+    # positive context window and max tokens, headers, compat options, a map from
+    # thinking level to provider value, and a list of unsupported thinking levels.
+    # Frozen; unknown keys forbidden.
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: _NonEmptyString | None = None
@@ -88,6 +111,13 @@ class _CatalogModelMetadata(BaseModel):
 
 
 class _CatalogProvider(BaseModel):
+    # [CLASS DOC]
+    # HELPER: strict schema for one provider table: required name, display name,
+    # kind, base URL, API-key environment variable, non-empty models list,
+    # default model and docs URL; optional credential name, API, context windows,
+    # headers, compat, model metadata, thinking settings (levels, models, default,
+    # parameter), removed models and auth methods (default API key only).
+    # Strings are stripped and must be non-empty. Frozen; unknown keys forbidden.
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: _NonEmptyString
@@ -113,6 +143,9 @@ class _CatalogProvider(BaseModel):
 
 
 class _CatalogFile(BaseModel):
+    # [CLASS DOC]
+    # HELPER: strict root schema: schema_version must be 1 plus a list of
+    # providers.
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: Literal[1]
@@ -120,12 +153,19 @@ class _CatalogFile(BaseModel):
 
 
 def builtin_catalog_resource_text() -> str:
+    # [FUNCTION DOC]
+    # Reads and returns the packaged data/catalog.toml text from the tau_coding
+    # package resources. Raises on missing resource. Side effect: resource read.
     """Return the packaged builtin catalog TOML text."""
     return files("tau_coding").joinpath("data/catalog.toml").read_text(encoding="utf-8")
 
 
 @cache
 def builtin_catalog() -> tuple[ProviderCatalogEntry, ...]:
+    # [FUNCTION DOC]
+    # Cached: returns the built-in catalog entries with the bundled generated
+    # models.dev data merged in and tombstones applied (defaults restored from
+    # the source catalog). Raises CatalogError if the packaged catalog is invalid.
     """Return Tau's built-in catalog with generated models.dev model data."""
     raw = _builtin_raw_with_generated_models()
     filtered = _apply_model_tombstones(raw, base=_builtin_raw())
@@ -134,6 +174,9 @@ def builtin_catalog() -> tuple[ProviderCatalogEntry, ...]:
 
 @cache
 def builtin_source_catalog() -> tuple[ProviderCatalogEntry, ...]:
+    # [FUNCTION DOC]
+    # Cached: returns entries from the packaged catalog alone (no generated data),
+    # with its own tombstones applied; used as generator input/fallback.
     """Return the application-owned catalog used as generator input/fallback."""
     raw = _builtin_raw()
     filtered = _apply_model_tombstones(raw, base=raw)
@@ -141,11 +184,20 @@ def builtin_source_catalog() -> tuple[ProviderCatalogEntry, ...]:
 
 
 def user_catalog_path(paths: TauPaths | None = None) -> Path:
+    # [FUNCTION DOC]
+    # Returns the path of the user overlay catalog file inside the Tau home
+    # (default paths when none given). No I/O.
     """Return the user-level catalog overlay path."""
     return (paths or TauPaths()).home / USER_CATALOG_FILENAME
 
 
 def effective_catalog(paths: TauPaths | None = None) -> tuple[ProviderCatalogEntry, ...]:
+    # [FUNCTION DOC]
+    # Returns the catalog actually used at runtime: built-in plus generated plus
+    # cached models.dev data, then the user overlay merged over it when the file
+    # exists (root keys and schema version validated), with tombstones applied.
+    # Raises CatalogError on invalid user TOML or invalid merged data.
+    # Side effects: reads the user catalog and models.dev cache files.
     """Return bundled, refreshed, then user-overlaid provider model data."""
     builtin_raw = _builtin_raw_with_cached_models(paths)
     path = user_catalog_path(paths)
@@ -163,6 +215,12 @@ def save_user_catalog_entries(
     entries: Iterable[ProviderCatalogEntry],
     paths: TauPaths | None = None,
 ) -> Path:
+    # [FUNCTION DOC]
+    # Upserts full provider definitions into the user catalog: loads and validates
+    # the existing file (or starts a fresh one), replaces providers with the same
+    # name in place, appends new ones, then rewrites the file as TOML atomically.
+    # Output: the file path. Raises CatalogError on an invalid existing file and
+    # OS errors on write failure. Side effects: creates directories, writes file.
     """Upsert full provider definitions into the user-level catalog file."""
     path = user_catalog_path(paths)
     if path.exists():
@@ -194,10 +252,16 @@ def save_user_catalog_entries(
 
 @cache
 def _builtin_raw() -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: cached parse of the packaged catalog TOML into raw tables.
     return _parse_catalog_text(builtin_catalog_resource_text(), source="built-in catalog.toml")
 
 
 def _builtin_raw_with_cached_models(paths: TauPaths | None) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: merges the user's cached models.dev overlay (if any) over the
+    # built-in-plus-generated raw catalog; keeps the merge only if it validates,
+    # otherwise silently falls back to the unmerged data. Side effect: cache read.
     from tau_coding.models_dev_store import cached_models_dev_catalog_overlay
 
     raw = _builtin_raw_with_generated_models()
@@ -217,6 +281,10 @@ def _builtin_raw_with_cached_models(paths: TauPaths | None) -> dict[str, Any]:
 
 @cache
 def _builtin_raw_with_generated_models() -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: cached; merges the bundled generated models.dev overlay over the
+    # packaged raw catalog, falling back silently to the packaged data if the
+    # overlay is missing or the merge fails validation.
     # Imported lazily because models_dev uses the catalog dataclasses imported by
     # this module. Missing or invalid generated data is deliberately non-fatal.
     from tau_coding.models_dev import bundled_models_dev_catalog_overlay
@@ -237,6 +305,9 @@ def _builtin_raw_with_generated_models() -> dict[str, Any]:
 
 
 def _parse_catalog_text(text: str, *, source: str) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: parses TOML text; raises CatalogError naming the source on decode
+    # errors. Output: raw mapping.
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
@@ -244,6 +315,10 @@ def _parse_catalog_text(text: str, *, source: str) -> dict[str, Any]:
 
 
 def _validate_catalog_root(raw: dict[str, Any], *, source: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires only schema_version and providers keys, schema_version
+    # present and equal to 1, and providers an array of tables; raises CatalogError
+    # otherwise.
     allowed = {"schema_version", "providers"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -256,6 +331,10 @@ def _validate_catalog_root(raw: dict[str, Any], *, source: str) -> None:
 
 
 def _merge_raw_catalogs(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: merges overlay providers over base providers by name, preserving
+    # base order and appending new providers; same-named providers are merged with
+    # the provider merge rules. Schema version taken from overlay when present.
     """Merge overlay provider tables over base ones; overlay values win."""
     base_providers = _raw_providers(base)
     overlay_providers = _raw_providers(overlay)
@@ -279,6 +358,14 @@ def _merge_raw_catalogs(base: dict[str, Any], overlay: dict[str, Any]) -> dict[s
 
 
 def _merge_generated_catalog(base: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: applies generated model inventories to base providers only (new
+    # providers in the generated data are ignored). For each matching provider
+    # with a non-empty models list, merges tables, then replaces models with the
+    # generated list exactly, drops context windows, metadata and thinking models
+    # for models not in it, and resets the default model to the first generated
+    # model if the old default is gone. Providers without generated models keep
+    # base data.
     """Replace model inventories while retaining application-owned provider config."""
     generated_by_name = {
         _raw_provider_name(provider): provider for provider in _raw_providers(generated)
@@ -313,6 +400,13 @@ def _merge_generated_catalog(base: dict[str, Any], generated: dict[str, Any]) ->
 
 
 def _merge_raw_provider(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: shallow-merges one provider table, overlay winning, with special
+    # rules: models become overlay models followed by base models (deduplicated);
+    # removed_models are unioned; context windows, headers and compat mappings are
+    # key-merged; model metadata is deep-merged per model; if the overlay sets
+    # thinking_levels, the four thinking fields are taken as a group from the
+    # overlay (absent ones removed). Output: new mapping (inputs not mutated).
     merged = {**base, **overlay}
     base_models = base.get("models", [])
     overlay_models = overlay.get("models", [])
@@ -345,6 +439,14 @@ def _apply_model_tombstones(
     *,
     base: dict[str, Any],
 ) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: for providers with removed_models, filters those models out of
+    # models, thinking models, context windows and metadata. If the default model
+    # was removed, uses the base catalog's default when it is not removed, else
+    # the first remaining model, else an empty string (which later fails
+    # validation). Output: new raw catalog.
+    # KNOWN ISSUE: the base default is reused even if it is no longer among the
+    # remaining models, which then fails validation as "not in models".
     """Remove provider-scoped models withdrawn by bundled or user catalogs."""
     base_by_name = {_raw_provider_name(provider): provider for provider in _raw_providers(base)}
     providers: list[dict[str, Any]] = []
@@ -380,6 +482,10 @@ def _apply_model_tombstones(
 
 
 def _merge_model_metadata(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: per-model merge of metadata: when both sides are mappings, keys are
+    # merged with overlay winning and cost, headers, compat and thinking level map
+    # sub-mappings key-merged; otherwise the overlay value replaces the base.
     merged: dict[str, Any] = {**base}
     for model, overlay_metadata in overlay.items():
         base_metadata = merged.get(model)
@@ -397,6 +503,9 @@ def _merge_model_metadata(base: dict[str, Any], overlay: dict[str, Any]) -> dict
 
 
 def _raw_providers(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    # [FUNCTION DOC]
+    # HELPER: returns the providers list (default empty) or raises CatalogError if
+    # it is not a list of tables.
     providers = raw.get("providers", [])
     if not isinstance(providers, list) or not all(isinstance(item, dict) for item in providers):
         raise CatalogError("catalog providers must be an array of tables ([[providers]])")
@@ -404,6 +513,8 @@ def _raw_providers(raw: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _raw_provider_name(provider: dict[str, Any]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: returns a provider's stripped non-empty name or raises CatalogError.
     name = provider.get("name")
     if not isinstance(name, str) or not name.strip():
         raise CatalogError("catalog provider entries must have a non-empty string name")
@@ -411,6 +522,10 @@ def _raw_provider_name(provider: dict[str, Any]) -> str:
 
 
 def _entries_from_raw(raw: dict[str, Any], *, source: str) -> tuple[ProviderCatalogEntry, ...]:
+    # [FUNCTION DOC]
+    # HELPER: validates a raw catalog with the root schema (formatting pydantic
+    # errors with provider names in locations), converts each provider to an entry,
+    # and rejects duplicate provider names. Raises CatalogError naming the source.
     try:
         catalog = _CatalogFile.model_validate(raw)
     except ValidationError as error:
@@ -424,6 +539,13 @@ def _entries_from_raw(raw: dict[str, Any], *, source: str) -> tuple[ProviderCata
 
 
 def _entry_from_provider(provider: _CatalogProvider, *, source: str) -> ProviderCatalogEntry:
+    # [FUNCTION DOC]
+    # HELPER: cross-field validation and conversion of one provider: default
+    # model, thinking models, context-window and metadata keys must all be in
+    # models; thinking default must be among thinking levels; cost tiers must be
+    # valid. Context windows from metadata fill in models lacking an explicit
+    # entry. Compat values are checked to be JSON. Output: a catalog entry.
+    # Raises CatalogError with a dotted location prefix.
     prefix = f"{source}: providers.{provider.name}"
     if provider.default_model not in provider.models:
         raise CatalogError(f"{prefix}.default_model: {provider.default_model!r} is not in models")
@@ -488,6 +610,9 @@ def _validate_cost_tiers(
     *,
     field_name: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # HELPER: requires the final tier to have no max_input_tokens and all prior
+    # tiers strictly increasing positive limits; raises CatalogError otherwise.
     if not tiers:
         return
     if tiers[-1].max_input_tokens is not None:
@@ -504,6 +629,10 @@ def _validate_cost_tiers(
 
 
 def _model_metadata_from_provider(metadata: _CatalogModelMetadata) -> ModelCatalogMetadata:
+    # [FUNCTION DOC]
+    # HELPER: converts validated metadata to the catalog dataclass; unsupported
+    # thinking levels are encoded as levels mapped to none in the level map, cost
+    # tiers become rate mappings, and compat is checked for JSON values.
     thinking_level_map: dict[ThinkingLevel, str | None] = dict(metadata.thinking_level_map)
     for level in metadata.unsupported_thinking_levels:
         thinking_level_map[level] = None
@@ -530,6 +659,9 @@ def _model_metadata_from_provider(metadata: _CatalogModelMetadata) -> ModelCatal
 
 
 def _cost_tier_rates(tier: _CatalogCostTier) -> dict[str, float]:
+    # [FUNCTION DOC]
+    # HELPER: returns a mapping of input, output, cacheRead, cacheWrite rates,
+    # including cacheWrite1h only when set.
     rates = {
         "input": tier.input,
         "output": tier.output,
@@ -542,10 +674,17 @@ def _cost_tier_rates(tier: _CatalogCostTier) -> dict[str, float]:
 
 
 def _json_object(value: Mapping[str, Any], field_name: str) -> dict[str, JSONValue]:
+    # [FUNCTION DOC]
+    # HELPER: converts a mapping into a JSON object, validating every value.
+    # Raises CatalogError on unsupported values.
     return {key: _json_value(item, f"{field_name}.{key}") for key, item in value.items()}
 
 
 def _json_value(value: Any, field_name: str) -> JSONValue:
+    # [FUNCTION DOC]
+    # HELPER: recursively validates a JSON value (null, string, number, boolean,
+    # list, string-keyed mapping); raises CatalogError naming the dotted field for
+    # non-string keys or unsupported types.
     if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, list):
@@ -561,6 +700,9 @@ def _json_value(value: Any, field_name: str) -> JSONValue:
 
 
 def _format_validation_error(raw: dict[str, Any], error: ValidationError) -> str:
+    # [FUNCTION DOC]
+    # HELPER: joins pydantic error issues as "dotted.location: message" separated
+    # by semicolons.
     messages = []
     for issue in error.errors():
         location = ".".join(_dotted_location(raw, issue["loc"]))
@@ -569,6 +711,9 @@ def _format_validation_error(raw: dict[str, Any], error: ValidationError) -> str
 
 
 def _dotted_location(raw: dict[str, Any], location: tuple[int | str, ...]) -> list[str]:
+    # [FUNCTION DOC]
+    # HELPER: turns an error location into path parts, replacing the index after
+    # "providers" with that provider's name when available.
     parts: list[str] = []
     for part in location:
         if parts and parts[-1] == "providers" and isinstance(part, int):
@@ -585,6 +730,9 @@ def _dotted_location(raw: dict[str, Any], location: tuple[int | str, ...]) -> li
 
 
 def _raw_provider_from_entry(entry: ProviderCatalogEntry) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: serializes a catalog entry back to a raw provider table, including
+    # optional fields only when set and auth methods only when not the default.
     raw: dict[str, Any] = {
         "name": entry.name,
         "display_name": entry.display_name,
@@ -626,6 +774,10 @@ def _raw_provider_from_entry(entry: ProviderCatalogEntry) -> dict[str, Any]:
 
 
 def _raw_model_metadata_from_entry(metadata: ModelCatalogMetadata) -> dict[str, Any]:
+    # [FUNCTION DOC]
+    # HELPER: serializes model metadata to a raw table with only set fields; level
+    # map entries with none become the unsupported_thinking_levels list, cost
+    # tiers become inline tables with optional max_input_tokens and rates.
     raw: dict[str, Any] = {}
     if metadata.name is not None:
         raw["name"] = metadata.name
@@ -671,6 +823,12 @@ def _raw_model_metadata_from_entry(metadata: ModelCatalogMetadata) -> dict[str, 
 
 
 def _catalog_to_toml(raw: dict[str, Any]) -> str:
+    # [FUNCTION DOC]
+    # HELPER: renders a raw catalog as TOML text: schema_version line, then for
+    # each provider an array-of-tables header, known scalar/list/inline keys in a
+    # fixed order, a context windows sub-table and one sub-table per model
+    # metadata entry. Ends with a single newline. Unknown provider keys are
+    # dropped silently. Raises TypeError for unsupported values.
     lines = [f"schema_version = {raw.get('schema_version', CATALOG_SCHEMA_VERSION)}", ""]
     for provider in _raw_providers(raw):
         lines.append("[[providers]]")
@@ -716,12 +874,22 @@ def _catalog_to_toml(raw: dict[str, Any]) -> str:
 
 
 def _toml_key(value: str) -> str:
+    # [FUNCTION DOC]
+    # HELPER: returns the key bare when it is alphanumeric with dashes or
+    # underscores and does not start with a digit, else a JSON-quoted key.
+    # KNOWN ISSUE: an empty key raises IndexError instead of being quoted.
     if value.replace("_", "").replace("-", "").isalnum() and not value[0].isdigit():
         return value
     return json.dumps(value)
 
 
 def _toml_value(value: object) -> str:
+    # [FUNCTION DOC]
+    # HELPER: renders a value as TOML: JSON-quoted strings, lowercase booleans,
+    # numbers via their string form, arrays and inline tables recursively.
+    # Raises TypeError for other types.
+    # KNOWN ISSUE: infinity/NaN floats render as Python spellings that are not
+    # valid TOML.
     if isinstance(value, str):
         return json.dumps(value)
     if isinstance(value, bool):
@@ -742,6 +910,10 @@ def _toml_value(value: object) -> str:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
+    # [FUNCTION DOC]
+    # HELPER: writes text to a temporary file in the target directory then
+    # renames it over the target; deletes the temporary file and re-raises on any
+    # error. Side effect: file write/replace.
     temp_path: Path | None = None
     try:
         with NamedTemporaryFile(
