@@ -1,3 +1,10 @@
+# [MODULE DOC]
+# End-to-end tests for the coding-agent session (CodingSession): loading and persisting JSONL
+# transcripts, export, diagnostics logging, persistence retries and repair, cancellation and
+# settled events, terminal commands, steering queues, session tree navigation and branching,
+# model/provider switching, compaction, extensions and related behavior. Uses scripted fake
+# providers and storage doubles defined here for deterministic runs; async tests run via the anyio
+# pytest plugin with temp directories.
 import asyncio
 import json
 import sys
@@ -88,6 +95,9 @@ from tau_coding.session import (
 
 
 async def _collect_session_events(session_stream: object) -> list[object]:
+    # [FUNCTION DOC]
+    # HELPER: async; drain an async event stream from a session operation and return all events as
+    # a list. Propagates exceptions raised by the stream.
     return [event async for event in session_stream]  # type: ignore[attr-defined]
 
 
@@ -95,10 +105,17 @@ def _record_extension_events(
     session: CodingSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[object]:
+    # [FUNCTION DOC]
+    # HELPER: monkeypatch the session's extension runtime event emitter with a wrapper that
+    # records each event in a list before forwarding it to the original emitter. Returns the list
+    # (filled as events are emitted).
     events: list[object] = []
     emit_event = session.extension_runtime.emit_event
 
     async def record(event: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async wrapper that appends the event to the record list and then awaits the
+        # original emitter.
         events.append(event)
         await emit_event(event)
 
@@ -107,7 +124,14 @@ def _record_extension_events(
 
 
 def _assert_messages(actual: object, expected: object) -> None:
+    # [FUNCTION DOC]
+    # HELPER: assert two message sequences are equal after dumping model objects to plain data
+    # excluding timestamp and timing fields (non-model items compared as-is). Raises assertion
+    # error on mismatch.
     def dump(message: object) -> object:
+        # [FUNCTION DOC]
+        # HELPER: return the message's model dump without timestamp/timing when it has one,
+        # otherwise the message itself.
         model_dump = getattr(message, "model_dump", None)
         if callable(model_dump):
             return model_dump(exclude={"timestamp", "timing"})
@@ -119,6 +143,9 @@ def _assert_messages(actual: object, expected: object) -> None:
 def _config(
     tmp_path: Path, provider: ModelProvider, storage: JsonlSessionStorage
 ) -> CodingSessionConfig:
+    # [FUNCTION DOC]
+    # HELPER: build a minimal session config with the given provider and storage, model "fake",
+    # system prompt "You are Tau." and the temp directory as cwd.
     return CodingSessionConfig(
         provider=provider,
         model="fake",
@@ -132,6 +159,9 @@ def _provider_http_error(
     status_code: int,
     message: str = "Rate limit exceeded",
 ) -> AssistantErrorEvent:
+    # [FUNCTION DOC]
+    # HELPER: build a provider assistant error event whose error message carries a provider-error
+    # diagnostic with the given HTTP status code (message defaults to a rate limit text).
     return AssistantErrorEvent(
         reason="error",
         error=AssistantMessage(
@@ -148,23 +178,38 @@ def _provider_http_error(
 
 
 class SwitchableFakeProvider:
+    # [CLASS DOC]
+    # HELPER: minimal provider stand-in created from a config by a patched provider factory;
+    # records the config and counts close calls so tests can verify provider switching closes old
+    # providers.
     def __init__(self, config: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: store the config and initialize closed flag false and close count zero.
         self.config = config
         self.closed = False
         self.close_calls = 0
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async; mark closed and increment the close counter.
         self.closed = True
         self.close_calls += 1
 
 
 class HeaderObservingFakeProvider(FakeProvider):
+    # [CLASS DOC]
+    # HELPER: scripted fake provider that, when a stream starts, reports response headers
+    # containing a given inference-provider route to an observer callback, simulating Hugging Face
+    # routing headers.
     def __init__(
         self,
         scripts: list[list[AssistantMessageEvent]],
         observer: object | None,
         route: str,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: initialize the scripted fake with scripts and store the observer callback and
+        # route string.
         super().__init__(scripts)
         self._observer = observer
         self._route = route
@@ -179,6 +224,9 @@ class HeaderObservingFakeProvider(FakeProvider):
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # [FUNCTION DOC]
+        # HELPER: delegate to the scripted fake stream and wrap it so the observer receives the
+        # route header before any events are forwarded. Returns the wrapped async iterator.
         source = super().stream_response(
             model=model,
             system=system,
@@ -189,6 +237,9 @@ class HeaderObservingFakeProvider(FakeProvider):
         )
 
         async def iterator() -> AsyncIterator[AssistantMessageEvent]:
+            # [FUNCTION DOC]
+            # HELPER: async generator calling the observer (if callable) with the inference-
+            # provider header, then yielding every event from the underlying stream.
             if callable(self._observer):
                 self._observer({"x-inference-provider": self._route})
             async for event in source:
@@ -197,10 +248,15 @@ class HeaderObservingFakeProvider(FakeProvider):
         return iterator()
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async no-op close.
         return None
 
 
 class ModelLimitsFakeProvider(FakeProvider):
+    # [CLASS DOC]
+    # HELPER: scripted fake provider that also supports model-limits discovery, returning
+    # configured limits or raising a configured error, and recording requested models.
     def __init__(
         self,
         scripts: list[list[AssistantMessageEvent]],
@@ -208,12 +264,18 @@ class ModelLimitsFakeProvider(FakeProvider):
         limits: RuntimeModelLimits | None = None,
         error: Exception | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: initialize scripts, optional limits, optional error and an empty list of
+        # discovery calls.
         super().__init__(scripts)
         self.limits = limits
         self.error = error
         self.discovery_calls: list[str] = []
 
     async def discover_model_limits(self, model: str) -> RuntimeModelLimits | None:
+        # [FUNCTION DOC]
+        # HELPER: async; record the model, raise the configured error if any, else return the
+        # configured limits (possibly None).
         self.discovery_calls.append(model)
         if self.error is not None:
             raise self.error
@@ -221,6 +283,9 @@ class ModelLimitsFakeProvider(FakeProvider):
 
 
 class ModelCatalogFakeProvider(ModelLimitsFakeProvider):
+    # [CLASS DOC]
+    # HELPER: model-limits fake that also supports model catalog discovery and tracks catalog
+    # calls and closing.
     def __init__(
         self,
         scripts: list[list[AssistantMessageEvent]],
@@ -228,21 +293,33 @@ class ModelCatalogFakeProvider(ModelLimitsFakeProvider):
         catalog: RuntimeModelCatalog,
         limits: RuntimeModelLimits | None = None,
     ) -> None:
+        # [FUNCTION DOC]
+        # HELPER: initialize with scripts, a catalog and optional limits; catalog call count zero,
+        # not closed.
         super().__init__(scripts, limits=limits)
         self.catalog = catalog
         self.catalog_calls = 0
         self.closed = False
 
     async def discover_models(self) -> RuntimeModelCatalog:
+        # [FUNCTION DOC]
+        # HELPER: async; increment the catalog call count and return the configured catalog.
         self.catalog_calls += 1
         return self.catalog
 
     async def aclose(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async; mark closed.
         self.closed = True
 
 
 class RaisingProvider:
+    # [CLASS DOC]
+    # HELPER: provider that raises a runtime error ("provider exploded") from its stream on a
+    # chosen call number, and otherwise streams a short assistant message "Generated title".
     def __init__(self, fail_on_call: int = 1) -> None:
+        # [FUNCTION DOC]
+        # HELPER: store which call (1-based) should fail and initialize call count zero.
         self.fail_on_call = fail_on_call
         self.call_count = 0
 
@@ -256,11 +333,17 @@ class RaisingProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # [FUNCTION DOC]
+        # HELPER: ignore inputs, increment the call count, decide whether this call fails, and
+        # return the async iterator.
         del model, system, messages, tools, signal, session_id
         self.call_count += 1
         should_fail = self.call_count == self.fail_on_call
 
         async def iterator() -> AsyncIterator[AssistantMessageEvent]:
+            # [FUNCTION DOC]
+            # HELPER: async generator that raises the runtime error when this call should fail,
+            # else yields start and done events for "Generated title".
             if should_fail:
                 raise RuntimeError("provider exploded")
             yield assistant_start(model="fake")
@@ -270,7 +353,14 @@ class RaisingProvider:
 
 
 class WaitingProvider:
+    # [CLASS DOC]
+    # HELPER: provider whose first stream blocks after its start event until released (signalling
+    # a started event), letting tests act while a prompt is running. Later calls answer
+    # immediately with "Second". Records message snapshots per call.
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: create started and release asyncio events, an empty call log and call count
+        # zero.
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.calls: list[list[AgentMessage]] = []
@@ -286,12 +376,18 @@ class WaitingProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # [FUNCTION DOC]
+        # HELPER: record a copy of the messages, capture the call index, increment count, and
+        # return the iterator.
         del model, system, tools, signal, session_id
         call_index = self.call_count
         self.call_count += 1
         self.calls.append(list(messages))
 
         async def iterator() -> AsyncIterator[AssistantMessageEvent]:
+            # [FUNCTION DOC]
+            # HELPER: async generator; for the first call yield start, set started, wait for
+            # release, then yield done "First"; for later calls yield start and done "Second".
             if call_index == 0:
                 yield assistant_start(model="fake")
                 self.started.set()
@@ -305,7 +401,13 @@ class WaitingProvider:
 
 
 class CancellableWaitingProvider:
+    # [CLASS DOC]
+    # HELPER: provider that, after its start event, busy-waits (yielding control) until released
+    # or until the cancellation signal fires, letting tests exercise cancellation mid-stream.
+    # Records message snapshots.
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: create started and release events and an empty call log.
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.calls: list[list[AgentMessage]] = []
@@ -320,10 +422,16 @@ class CancellableWaitingProvider:
         signal: CancellationToken | None = None,
         session_id: str | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # [FUNCTION DOC]
+        # HELPER: record a copy of the messages and return the iterator bound to the given signal.
         del model, system, tools, session_id
         self.calls.append(list(messages))
 
         async def iterator() -> AsyncIterator[AssistantMessageEvent]:
+            # [FUNCTION DOC]
+            # HELPER: async generator yielding start, setting started, then looping until release;
+            # returns early without a done event if the signal is cancelled; after release yields
+            # done "Finished".
             yield assistant_start(model="fake")
             self.started.set()
             while not self.release.is_set():
@@ -337,6 +445,10 @@ class CancellableWaitingProvider:
 
 @pytest.mark.anyio
 async def test_load_empty_session_defers_transcript_file(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Loading a session with empty storage must not create the transcript file; verify empty
+    # messages, default model, default thinking level "medium", the full thinking level list, cwd,
+    # and the default tools read/write/edit/bash.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
 
     session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
@@ -363,6 +475,10 @@ async def test_load_empty_session_defers_transcript_file(tmp_path: Path) -> None
 
 @pytest.mark.anyio
 async def test_session_export_defaults_to_cwd(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Export without a destination writes an HTML file named after the session file into cwd,
+    # containing the message, the transcript path, a collapsible system prompt section and the
+    # system text.
     storage = JsonlSessionStorage(tmp_path / ".tau" / "sessions" / "session-1.jsonl")
     session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
     await storage.append(MessageEntry(id="root", message=UserMessage(content="Export me")))
@@ -379,6 +495,9 @@ async def test_session_export_defaults_to_cwd(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_session_export_writes_jsonl_to_destination_directory(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Export to a relative directory in jsonl format writes the session file there (resolved
+    # against cwd) containing messages but not the system prompt.
     storage = JsonlSessionStorage(tmp_path / ".tau" / "sessions" / "session-1.jsonl")
     session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
     await storage.append(MessageEntry(id="root", message=UserMessage(content="Export me")))
@@ -394,6 +513,11 @@ async def test_session_export_writes_jsonl_to_destination_directory(tmp_path: Pa
 
 @pytest.mark.anyio
 async def test_prompt_logs_unexpected_agent_call_exception(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A provider raising during the stream propagates the exception from prompt, and an
+    # "exception" entry is appended to the agent-calls log (phase agent_loop, provider, model,
+    # session id, cwd, exception type/message/traceback) without leaking the user prompt text; the
+    # session records the log path.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
     session = await CodingSession.load(
@@ -429,6 +553,9 @@ async def test_prompt_logs_unexpected_agent_call_exception(tmp_path: Path) -> No
 
 @pytest.mark.anyio
 async def test_prompt_logs_error_event_diagnostic_data(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A provider error event is logged as an "assistant_error" entry with message and stop reason
+    # only (no prompt text), and the provider received the session id.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
     provider = FakeProvider(
@@ -470,6 +597,9 @@ async def test_prompt_logs_error_event_diagnostic_data(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_prompt_logs_safe_provider_stream_error_details(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Provider error diagnostics are logged with a sanitized provider event: safe fields (type,
+    # sequence number, error type/code/message) kept, null fields dropped, prompt text absent.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
     error = AssistantMessage(
@@ -532,26 +662,48 @@ async def test_prompt_logs_safe_provider_stream_error_details(tmp_path: Path) ->
 
 
 class _CountingStorage:
+    # [CLASS DOC]
+    # HELPER: in-memory session storage double that counts how many times all entries are read.
     def __init__(self) -> None:
+        # [FUNCTION DOC]
+        # HELPER: initialize empty entries and read count zero.
         self.entries: list[SessionEntry] = []
         self.reads = 0
 
     async def append(self, entry: SessionEntry) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async; append the entry in memory.
         self.entries.append(entry)
 
     async def read_all(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # HELPER: async; increment the read count and return a copy of the entries.
         self.reads += 1
         return list(self.entries)
 
 
 class _FaultInjectingStorage:
+    # [CLASS DOC]
+    # HELPER: in-memory storage double that injects append failures for message or custom-message
+    # entries according to a phase name (fail before or after writing, once or twice) to test
+    # idempotent persistence retries.
     def __init__(self, phase: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: store the phase, empty entries, failed flag false, and number of failures to
+        # inject (two for the "message_twice" phase, else one).
         self.entries: list[SessionEntry] = []
         self.phase = phase
         self.failed = False
         self.failures_remaining = 2 if phase == "message_twice" else 1
 
     async def append(self, entry: SessionEntry) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async. Target entries are message entries for phases starting with "message" or
+        # custom-message entries for phases starting with "custom_message". For a target while
+        # failures remain (or always in "message_always"), mark failed, decrement the counter,
+        # also store the entry first when the phase ends with "after" (simulating a write that
+        # succeeded but reported failure), and raise an OS error naming the phase. Otherwise store
+        # the entry.
         target = (
             self.phase.startswith("message")
             and isinstance(entry, MessageEntry)
@@ -567,6 +719,9 @@ class _FaultInjectingStorage:
         self.entries.append(entry)
 
     async def read_all(self) -> list[SessionEntry]:
+        # [FUNCTION DOC]
+        # HELPER: async. In the "refresh" phase, the first read after a message entry exists
+        # raises an OS error once (marking failed). Otherwise returns a copy of the entries.
         if (
             self.phase == "refresh"
             and not self.failed
@@ -583,6 +738,10 @@ class _FaultInjectingStorage:
     ["message_before", "message_after", "refresh"],
 )
 async def test_message_persistence_retry_is_idempotent(tmp_path: Path, phase: str) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over failing before write, failing after write, and failing the post-write
+    # refresh: prompting raises the simulated OS error, yet exactly one user message entry ("go")
+    # is stored with no leaf entries, and reloading restores just that message.
     storage = _FaultInjectingStorage(phase)
     session = await CodingSession.load(
         CodingSessionConfig(
@@ -618,6 +777,10 @@ async def test_message_persistence_retry_is_idempotent(tmp_path: Path, phase: st
 async def test_queued_custom_messages_persist_as_first_class_entries(
     tmp_path: Path, queue_method: str
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over queuing a steering vs follow-up custom message before prompting: verify it
+    # is persisted as exactly one custom-message entry with its type and details, never as a
+    # generic message entry with a custom role.
     provider = FakeProvider(
         [
             [assistant_start(), assistant_done(AssistantMessage(content="first"))],
@@ -651,6 +814,10 @@ async def test_queued_custom_messages_persist_as_first_class_entries(
 
 @pytest.mark.anyio
 async def test_custom_message_persistence_retry_is_idempotent(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A custom-message prompt whose append fails after writing raises; verify one custom-message
+    # entry exists, flushing pending writes does not duplicate it, and the in-memory first message
+    # equals the custom message.
     storage = _FaultInjectingStorage("custom_message_after")
     session = await CodingSession.load(
         CodingSessionConfig(
@@ -686,6 +853,10 @@ async def test_custom_message_persistence_retry_is_idempotent(tmp_path: Path) ->
 
 @pytest.mark.anyio
 async def test_next_prompt_flushes_a_repair_that_failed_twice(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # When the first prompt's message write fails twice, the next prompt must flush the pending
+    # message first: persisted texts are "go", "continue", "Recovered." in order and the provider
+    # saw both user messages.
     storage = _FaultInjectingStorage("message_twice")
     provider = FakeProvider(
         [[assistant_start(), assistant_done(AssistantMessage(content="Recovered."))]]
@@ -714,6 +885,9 @@ async def test_next_prompt_flushes_a_repair_that_failed_twice(tmp_path: Path) ->
 
 @pytest.mark.anyio
 async def test_clean_persist_reads_storage_once_per_message(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Verify a successful prompt reads storage exactly once per persisted message plus one extra
+    # deferred-metadata read (no extra id-check reads on first attempts).
     storage = _CountingStorage()
     session = await CodingSession.load(
         CodingSessionConfig(
@@ -739,6 +913,9 @@ async def test_clean_persist_reads_storage_once_per_message(tmp_path: Path) -> N
 
 @pytest.mark.anyio
 async def test_reconcile_persistence_failure_is_logged(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # When message appends always fail, prompting raises and the last diagnostic log line records
+    # phase "session_persistence_reconcile" with the simulated exception message.
     storage = _FaultInjectingStorage("message_always")
     session = await CodingSession.load(
         CodingSessionConfig(
@@ -763,12 +940,18 @@ async def test_reconcile_persistence_failure_is_logged(tmp_path: Path) -> None:
 
 
 def _hang_tool(tool_started: asyncio.Event, release: asyncio.Event) -> AgentTool:
+    # [FUNCTION DOC]
+    # HELPER: build an agent tool named "hang" whose execution signals the started event, waits
+    # for the release event, then returns text "done". Used to cancel a prompt mid tool call.
     async def hang(
         tool_call_id: object,
         arguments: object,
         signal: object = None,
         on_update: object = None,
     ) -> AgentToolResult:
+        # [FUNCTION DOC]
+        # HELPER: async executor implementing the signal-then-wait behavior; ignores its
+        # arguments.
         tool_started.set()
         await release.wait()
         return AgentToolResult(content=[TextContent(text="done")])
@@ -787,6 +970,12 @@ async def test_cancelled_prompt_teardown_persists_interrupted_tool_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Regression: cancel the session and the consuming task while a tool call is running. Verify
+    # exactly one agent-settled extension event, emitted after the synthetic interrupted error
+    # tool result's message-end event; exactly one interrupted tool-result entry is persisted as a
+    # child of the assistant tool-call message; and the next prompt sends that repair right after
+    # the tool call with only one tool result total.
     # Regression: Esc mid-tool-call cancels the consumer, and the synthetic
     # interrupted tool result never reached the session file, leaving a
     # dangling tool_use that providers reject with a 400 on later replays.
@@ -824,6 +1013,8 @@ async def test_cancelled_prompt_teardown_persists_interrupted_tool_result(
     extension_events = _record_extension_events(session, monkeypatch)
 
     async def consume() -> None:
+        # [FUNCTION DOC]
+        # HELPER: async; drain the prompt event stream for "go".
         async for _event in session.prompt("go"):
             pass
 
@@ -880,6 +1071,9 @@ async def test_completed_prompt_dispatches_and_yields_same_agent_settled_event(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Verify a completed prompt emits exactly one agent-settled event to extensions and yields the
+    # identical object as the final stream event, and it is the last extension event too.
     provider = FakeProvider(
         [
             [
@@ -911,6 +1105,10 @@ async def test_cancellation_during_settled_dispatch_does_not_redispatch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # When the extension emitter raises cancellation while dispatching agent-settled, verify the
+    # cancellation propagates, settled is dispatched only once, and the session is no longer
+    # running.
     provider = FakeProvider(
         [
             [
@@ -926,6 +1124,9 @@ async def test_cancellation_during_settled_dispatch_does_not_redispatch(
     emit_event = session.extension_runtime.emit_event
 
     async def cancel_during_settled(event: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async replacement emitter recording every event; raises cancellation on agent-
+        # settled events, otherwise forwards to the original emitter.
         extension_events.append(event)
         if isinstance(event, AgentSettledEvent):
             raise asyncio.CancelledError
@@ -945,6 +1146,9 @@ async def test_cancelled_continue_dispatches_agent_settled_after_teardown(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Cancel a running continue operation mid-stream; verify one agent-settled event is dispatched
+    # last and that at that moment the session already reported not running.
     provider = CancellableWaitingProvider()
     session = await CodingSession.load(
         _config(tmp_path, provider, JsonlSessionStorage(tmp_path / "session.jsonl"))
@@ -954,6 +1158,9 @@ async def test_cancelled_continue_dispatches_agent_settled_after_teardown(
     emit_event = session.extension_runtime.emit_event
 
     async def record_extension_event(event: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async emitter wrapper recording events and the session running flag at settled
+        # time, then forwarding.
         extension_events.append(event)
         if isinstance(event, AgentSettledEvent):
             running_when_settled.append(session.is_running)
@@ -962,6 +1169,8 @@ async def test_cancelled_continue_dispatches_agent_settled_after_teardown(
     monkeypatch.setattr(session.extension_runtime, "emit_event", record_extension_event)
 
     async def consume() -> None:
+        # [FUNCTION DOC]
+        # HELPER: async; drain the continue event stream.
         async for _event in session.continue_():
             pass
 
@@ -982,12 +1191,17 @@ async def test_handled_input_does_not_dispatch_agent_settled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # When an input hook reports the input handled, prompting yields no events, no agent-settled
+    # is dispatched, and the session is not running.
     session = await CodingSession.load(
         _config(tmp_path, FakeProvider([]), JsonlSessionStorage(tmp_path / "session.jsonl"))
     )
     extension_events = _record_extension_events(session, monkeypatch)
 
     async def handle_input(*args: object, **kwargs: object) -> InputHookOutcome:
+        # [FUNCTION DOC]
+        # HELPER: async fake input hook runner returning a handled outcome.
         del args, kwargs
         return InputHookOutcome(handled=True, text="handled")
 
@@ -1004,6 +1218,10 @@ async def test_handled_input_does_not_dispatch_agent_settled(
 async def test_load_persists_repair_for_session_with_interrupted_tail_tool_call(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Loading a transcript ending in an assistant tool call with no result synthesizes and
+    # persists an interrupted error tool result without calling the provider; in-memory and stored
+    # messages both end with it.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     user_entry = MessageEntry(message=UserMessage(content="Read README.md"))
     await storage.append(user_entry)
@@ -1063,6 +1281,11 @@ async def test_load_persists_repair_for_session_with_interrupted_tail_tool_call(
 
 @pytest.mark.anyio
 async def test_load_persists_branch_without_orphaned_tool_result(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Loading a transcript containing an orphaned tool result (no matching call) drops it from
+    # context while preserving labels (with timestamps), custom entries and model change; a single
+    # repair diagnostic custom entry records one dropped orphan; reloading yields the same
+    # messages and labels without adding another diagnostic.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     user_entry = MessageEntry(message=UserMessage(content="what remains?"))
     await storage.append(user_entry)
@@ -1160,6 +1383,10 @@ async def test_load_persists_branch_without_orphaned_tool_result(tmp_path: Path)
 async def test_load_persists_repair_for_historical_interrupted_tool_call(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Loading a transcript where an unanswered tool call is followed by a later user message
+    # inserts the interrupted tool result right after the call (in memory and persisted before the
+    # continued message), without provider calls; a reload yields identical messages.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     user_entry = MessageEntry(message=UserMessage(content="Read README.md"))
     await storage.append(user_entry)
@@ -1228,6 +1455,11 @@ async def test_load_persists_repair_for_historical_interrupted_tool_call(
 
 @pytest.mark.anyio
 async def test_prompt_persists_user_and_assistant_entries_without_leaves(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A first prompt creates the transcript with session-info (cwd), model-change (fake/openai)
+    # and thinking-level ("medium") header entries chained by parent ids, followed by the user and
+    # assistant message entries; no leaf entries are written and the last entry is the final
+    # message.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
         [
@@ -1276,6 +1508,9 @@ async def test_prompt_persists_user_and_assistant_entries_without_leaves(tmp_pat
 
 @pytest.mark.anyio
 async def test_terminal_command_can_persist_output_to_context(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Running a terminal command with add-to-context returns its output and persists one user
+    # message describing the user-executed command and its output.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
 
@@ -1294,6 +1529,8 @@ async def test_terminal_command_can_persist_output_to_context(tmp_path: Path) ->
 
 @pytest.mark.anyio
 async def test_terminal_command_can_run_without_context(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Running a terminal command without context returns output but persists no message entries.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
 
@@ -1315,6 +1552,9 @@ requires_posix_shell = pytest.mark.skipif(
 @requires_posix_shell
 @pytest.mark.anyio
 async def test_terminal_command_uses_configured_shell_command_prefix(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # POSIX only: a configured shell prefix (enabling and defining an alias) is applied to user
+    # terminal commands so the alias runs.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     session = await CodingSession.load(
         CodingSessionConfig(
@@ -1336,6 +1576,9 @@ async def test_terminal_command_uses_configured_shell_command_prefix(tmp_path: P
 @requires_posix_shell
 @pytest.mark.anyio
 async def test_agent_bash_tool_uses_configured_shell_command_prefix(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # POSIX only: the agent bash tool also applies the shell prefix and reports in its details
+    # that the prefix was applied.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     session = await CodingSession.load(
         CodingSessionConfig(
@@ -1357,6 +1600,9 @@ async def test_agent_bash_tool_uses_configured_shell_command_prefix(tmp_path: Pa
 
 
 def test_parse_terminal_command_prefixes() -> None:
+    # [FUNCTION DOC]
+    # Verify "!" prefixed input parses to a command added to context, "!!" to a command not added,
+    # and plain text is not a terminal command.
     assert parse_terminal_command("! pwd") is not None
     add_request = parse_terminal_command("! pwd")
     assert add_request is not None
@@ -1371,12 +1617,20 @@ def test_parse_terminal_command_prefixes() -> None:
 
 @pytest.mark.anyio
 async def test_prompt_queues_steering_while_session_is_running(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # While a prompt is blocked mid-stream: a second normal prompt raises "already running"; a
+    # steer prompt returns only a queue-update event and is not yet persisted. After release, the
+    # steering message is delivered after the first answer and gets its own answer; persisted
+    # messages match memory, no leaves are written, and the running prompt stream yields no queue-
+    # update events.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = WaitingProvider()
     session = await CodingSession.load(_config(tmp_path, provider, storage))
     run_events: list[object] = []
 
     async def run_prompt() -> None:
+        # [FUNCTION DOC]
+        # HELPER: async; drain the "Hello" prompt, recording its events.
         async for event in session.prompt("Hello"):
             run_events.append(event)
 
@@ -1422,11 +1676,18 @@ async def test_prompt_queues_steering_while_session_is_running(tmp_path: Path) -
 async def test_tree_can_branch_from_first_user_message_before_assistant_response(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Branching while running raises "Tau is still working"; after cancelling, branching before
+    # the first user message empties the context, returns a result prefilling the input with that
+    # message text, and the persisted transcript contains the user message and an error-stopped
+    # assistant message as the last entry.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = CancellableWaitingProvider()
     session = await CodingSession.load(_config(tmp_path, provider, storage))
 
     async def run_prompt() -> None:
+        # [FUNCTION DOC]
+        # HELPER: async; drain the "Start here" prompt.
         async for _event in session.prompt("Start here"):
             pass
 
@@ -1459,6 +1720,9 @@ async def test_tree_can_branch_from_first_user_message_before_assistant_response
 async def test_tree_choices_label_structured_tool_calls_without_exposing_thinking(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # A tree choice for an assistant message containing thinking and tool calls is labeled with
+    # the tool names only and flagged as a tool call.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     entry = MessageEntry(
         id="assistant",
@@ -1485,6 +1749,10 @@ async def test_tree_choices_label_structured_tool_calls_without_exposing_thinkin
 async def test_set_label_validates_target_and_tree_choices_resolve_changes(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Labeling an unknown entry raises a value error; labels are stripped, empty clears (label
+    # None), and tree choices show the latest label, its timestamp and the active flag; state
+    # labels reflect the latest value.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     target = MessageEntry(id="target", message=UserMessage(content="Remember this"))
     await storage.append(target)
@@ -1512,6 +1780,9 @@ async def test_set_label_validates_target_and_tree_choices_resolve_changes(
 async def test_tree_choices_handles_deep_session_without_recursion_error(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Regression: tree choices for a chain deeper than the recursion limit complete without
+    # recursion errors and list all entries in order.
     # A long conversation is a deep root-to-leaf chain of entries. Building the
     # tree picker must not exceed Python's recursion limit. Regression for #277:
     # "/tree" on a long session raised "maximum recursion depth exceeded".
@@ -1537,6 +1808,9 @@ async def test_tree_choices_handles_deep_session_without_recursion_error(
 
 
 def test_ordered_tree_entries_uses_longest_history_as_main_branch() -> None:
+    # [FUNCTION DOC]
+    # Verify tree ordering emits depth-first with the deepest child chain as the main (indent 0)
+    # branch and shorter siblings indented by one.
     entries = [
         MessageEntry(id="A", parent_id=None, message=UserMessage(content="A")),
         MessageEntry(id="B", parent_id="A", message=UserMessage(content="B")),
@@ -1554,6 +1828,8 @@ def test_ordered_tree_entries_uses_longest_history_as_main_branch() -> None:
 
 
 def test_ordered_tree_entries_terminates_on_parent_cycle() -> None:
+    # [FUNCTION DOC]
+    # Verify a parent cycle terminates and each entry is emitted exactly once.
     # A malformed parent cycle must terminate (not hang or overflow) and still
     # emit each entry exactly once. Guards the iterative walk's cycle safety.
     entries = [
@@ -1569,6 +1845,9 @@ def test_ordered_tree_entries_terminates_on_parent_cycle() -> None:
 
 @pytest.mark.anyio
 async def test_branch_to_entry_repairs_orphaned_tool_result(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Branching to an entry whose path contains an orphaned tool result drops it, reports the
+    # repair in the result message, and persists one repair diagnostic entry.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="start"))
     orphan = MessageEntry(
@@ -1621,6 +1900,9 @@ async def test_branch_to_entry_repairs_orphaned_tool_result(tmp_path: Path) -> N
 
 @pytest.mark.anyio
 async def test_tree_branching_preserves_active_model(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Branching to an earlier entry keeps the session's active model ("new") even though the
+    # branch state's replayed model is "old", and the context reflects the branch path.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     await storage.append(MessageEntry(id="first", message=UserMessage(content="Earlier")))
     await storage.append(ModelChangeEntry(id="historical-model", parent_id="first", model="old"))
@@ -1660,12 +1942,17 @@ async def test_tree_branching_preserves_active_model(tmp_path: Path) -> None:
 async def test_context_usage_is_cached_until_session_context_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Monkeypatch the context usage estimator to count calls; reading context usage twice returns
+    # the same cached object with one estimate.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
     calls = 0
     original_estimate = coding_session_module.estimate_context_usage
 
     def wrapped_estimate(*args: object, **kwargs: object):
+        # [FUNCTION DOC]
+        # HELPER: counting wrapper around the original estimator.
         nonlocal calls
         calls += 1
         return original_estimate(*args, **kwargs)  # type: ignore[arg-type]
@@ -1684,6 +1971,10 @@ async def test_context_usage_recalculates_after_prompt_and_compaction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With a tiny keep-recent budget, usage grows after a prompt (two messages) and is recomputed
+    # (new object, different tokens, still two messages) after a manual compaction; the token
+    # estimate tracks the usage total.
     monkeypatch.setattr(coding_session_module, "DEFAULT_COMPACTION_KEEP_RECENT_TOKENS", 1)
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
@@ -1721,6 +2012,9 @@ async def test_context_usage_recalculates_after_prompt_and_compaction(
 
 @pytest.mark.anyio
 async def test_session_persists_and_replays_thinking_level_changes(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Setting thinking level "high" returns a status message, appends a second thinking-level
+    # entry (no leaves) as the last entry, and reloading restores "high".
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
 
@@ -1743,6 +2037,8 @@ async def test_session_persists_and_replays_thinking_level_changes(tmp_path: Pat
 
 @pytest.mark.anyio
 async def test_session_cycles_thinking_level(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Cycling the thinking level from the default "medium" moves to "high" with a status message.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
 
@@ -1756,6 +2052,9 @@ async def test_session_cycles_thinking_level(tmp_path: Path) -> None:
 async def test_session_updates_read_image_behavior_when_model_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # With a text-only model the read tool omits image data and warns not to describe it; after
+    # switching to an image-capable model, reading attaches image content.
     isolate_home(monkeypatch, tmp_path)
     provider_config = OpenAICompatibleProviderConfig(
         name="openai",
@@ -1797,6 +2096,10 @@ async def test_session_updates_read_image_behavior_when_model_changes(
 async def test_session_uses_active_model_thinking_capabilities(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Thinking levels come from provider config for thinking models (default "low", undeclared
+    # level rejected); switching to a non-thinking model empties levels and reports a reason
+    # (cycling raises); switching back restores levels and the previously chosen "high".
     isolate_home(monkeypatch, tmp_path)
     provider_config = OpenAICompatibleProviderConfig(
         name="openai",
@@ -1845,6 +2148,10 @@ async def test_session_uses_active_model_thinking_capabilities(
 async def test_session_reports_dynamic_model_thinking_controls_separately_from_output(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # For an extension-registered dynamic provider, a reasoning model without declared thinking
+    # levels has none available with an explanatory reason; re-registering with levels exposes
+    # them. Closes the session.
     session = await CodingSession.load(
         CodingSessionConfig(
             provider=FakeProvider([]),
@@ -1890,6 +2197,10 @@ async def test_session_reports_dynamic_model_thinking_controls_separately_from_o
 
 @pytest.mark.anyio
 async def test_session_persists_thinking_preference_for_new_sessions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Setting a thinking level in a Codex session saves it as the per-model thinking default in
+    # provider settings on disk, and a new session loaded with those settings starts at that
+    # level.
     tau_paths = TauPaths(home=tmp_path / ".tau")
     provider_config = OpenAICodexProviderConfig(
         thinking_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
@@ -1941,6 +2252,9 @@ async def test_session_persists_thinking_preference_for_new_sessions(tmp_path: P
 async def test_resumed_session_history_overrides_saved_thinking_preference(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # A resumed transcript's thinking-level entry ("high") wins over the saved per-model
+    # preference ("low").
     provider_config = OpenAICompatibleProviderConfig(
         name="openai",
         models=("reasoner",),
@@ -1981,6 +2295,9 @@ async def test_resumed_session_history_overrides_saved_thinking_preference(
 async def test_session_uses_codex_subscription_thinking_capabilities(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # A Codex subscription provider config exposes its declared thinking levels for a thinking
+    # model, with no unavailable reason, and accepts setting "high".
     provider_config = OpenAICodexProviderConfig(
         thinking_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
         thinking_models=("gpt-5.5",),
@@ -2016,6 +2333,10 @@ async def test_session_refreshes_runtime_provider_for_thinking_level(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With a runtime provider config, the provider factory (monkeypatched) is invoked on load with
+    # the model and initial thinking level, and again with the new level after changing it. Closes
+    # the session.
     created: list[tuple[str | None, str | None]] = []
 
     def create_provider(
@@ -2025,6 +2346,9 @@ async def test_session_refreshes_runtime_provider_for_thinking_level(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake provider factory recording (model, thinking level) and returning a
+        # switchable fake provider.
         del provider_config, credential_store
         created.append((model, thinking_level))
         return SwitchableFakeProvider(object())
@@ -2063,6 +2387,8 @@ async def test_session_refreshes_runtime_provider_for_thinking_level(
 
 @pytest.mark.anyio
 async def test_load_restores_existing_transcript(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Loading existing message entries restores them as context messages.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     user_entry = MessageEntry(id="user", message=UserMessage(content="Earlier"))
     assistant_entry = MessageEntry(
@@ -2086,6 +2412,9 @@ async def test_load_restores_existing_transcript(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_load_detaches_missing_root_parent_from_imported_branch(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # An entry whose parent id is missing (imported branch) is treated as a root: messages restore
+    # and the active leaf is the last message.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(
         id="root",
@@ -2117,6 +2446,9 @@ async def test_load_detaches_missing_root_parent_from_imported_branch(tmp_path: 
 async def test_tree_branching_detaches_missing_root_parent_from_imported_branch(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Tree choices include such a detached root, and branching before it empties context with the
+    # root text as prefill.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(
         id="root",
@@ -2146,6 +2478,9 @@ async def test_tree_branching_detaches_missing_root_parent_from_imported_branch(
 
 @pytest.mark.anyio
 async def test_load_restores_explicit_empty_leaf_branch(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Branching before the root empties context in memory only; since navigation writes nothing, a
+    # reload restores the root message as active.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="Root"))
     await storage.append(root)
@@ -2167,6 +2502,9 @@ async def test_load_restores_explicit_empty_leaf_branch(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_load_restores_active_leaf_branch(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A stale historical leaf record is ignored; the last non-leaf entry in file order selects the
+    # active branch.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="Root"))
     left = MessageEntry(
@@ -2199,6 +2537,9 @@ async def test_load_restores_active_leaf_branch(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_session_tree_choices_indent_only_diverged_branches(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Tree choice labels put the deepest branch at indent zero, list shorter diverged branches
+    # first with a two-space indent, and prefix each with its role.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="Root"))
     main = MessageEntry(id="main", parent_id="root", message=AssistantMessage(content="Main"))
@@ -2247,6 +2588,9 @@ async def test_session_tree_choices_indent_only_diverged_branches(tmp_path: Path
 async def test_session_branches_to_previous_entry_without_destroying_history(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Branching at an assistant entry changes in-memory context only; all message entries and the
+    # historical leaf record remain untouched.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="Root"))
     left = MessageEntry(id="left", parent_id="root", message=AssistantMessage(content="Left"))
@@ -2275,6 +2619,10 @@ async def test_persist_after_branch_keeps_state_on_active_branch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # After branching and prompting, state and reloads follow the new branch only (abandoned
+    # entries excluded, one leaf record total), and a subsequent compaction uses Pi-style first-
+    # kept boundaries on the active branch without the abandoned text in the summary request.
     monkeypatch.setattr(coding_session_module, "DEFAULT_COMPACTION_KEEP_RECENT_TOKENS", 1)
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
@@ -2340,6 +2688,9 @@ async def test_persist_after_branch_keeps_state_on_active_branch(
 async def test_session_branches_to_before_selected_user_message_with_prefill(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Branching to a user message moves to just before it, prefilling input with its text, without
+    # modifying stored history.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="Root"))
     assistant = MessageEntry(
@@ -2379,6 +2730,9 @@ async def test_session_branches_to_before_selected_user_message_with_prefill(
 
 @pytest.mark.anyio
 async def test_session_branch_preserves_active_model(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Branching to an entry before a model change sets the branch state model to the earlier model
+    # but keeps the session's active model.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     first_model = ModelChangeEntry(id="model-a", model="first-model")
     left = MessageEntry(
@@ -2415,6 +2769,9 @@ async def test_session_branch_preserves_active_model(tmp_path: Path) -> None:
 async def test_session_branch_with_summary_keeps_pre_branch_model_and_messages(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Branching with a summary keeps the active model and leaves context as the branch message
+    # plus a branch-summary user message.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     first_model = ModelChangeEntry(id="model-a", model="first-model")
     left = MessageEntry(
@@ -2454,6 +2811,11 @@ async def test_session_branch_with_summary_keeps_pre_branch_model_and_messages(
 
 @pytest.mark.anyio
 async def test_session_branch_with_summary_rebuilds_context(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Branching with a summary calls the provider with no tools and a summarization prompt
+    # containing the abandoned conversation, persists a branch-summary entry (parent and branch
+    # root, prefixed summary text, usage, provider, model, response provider) and rebuilds context
+    # as the root plus the summary user message.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
         [
@@ -2516,6 +2878,9 @@ async def test_session_branch_with_summary_rebuilds_context(tmp_path: Path) -> N
 
 @pytest.mark.anyio
 async def test_session_branch_with_summary_accepts_custom_instructions(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Custom summary instructions are appended to the summarization prompt as an "Additional
+    # focus" line.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
         [
@@ -2551,6 +2916,9 @@ async def test_session_branch_with_summary_accepts_custom_instructions(tmp_path:
 
 @pytest.mark.anyio
 async def test_session_branch_with_summary_tracks_file_operations(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Branch summaries list read-only and modified file paths from tool calls in dedicated tagged
+    # sections.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
         [
@@ -2586,6 +2954,9 @@ async def test_session_branch_with_summary_tracks_file_operations(tmp_path: Path
 async def test_session_branch_with_summary_falls_back_when_model_summary_is_unavailable(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # When the provider gives no summary, a deterministic fallback summary of the abandoned
+    # messages is persisted (no usage) and injected into context.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="Root"))
     left = MessageEntry(id="left", parent_id="root", message=AssistantMessage(content="Left"))
@@ -2616,6 +2987,8 @@ async def test_session_branch_with_summary_falls_back_when_model_summary_is_unav
 
 @pytest.mark.anyio
 async def test_continue_persists_only_new_messages(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Continuing from a stored user message persists only the new assistant reply.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     await storage.append(MessageEntry(id="user", message=UserMessage(content="Continue me")))
     provider = FakeProvider(
@@ -2643,6 +3016,8 @@ async def test_continue_persists_only_new_messages(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_tool_results_are_persisted(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A tool call to an unknown tool still produces a persisted tool-result message.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     tool_call = ToolCall(id="call-1", name="missing", arguments={})
     provider = FakeProvider(
@@ -2670,6 +3045,9 @@ async def test_tool_results_are_persisted(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_session_preserves_explicit_empty_system_prompt(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # An explicitly empty system prompt is sent to the provider as empty rather than replaced with
+    # a built prompt.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
         [
@@ -2695,6 +3073,10 @@ async def test_session_preserves_explicit_empty_system_prompt(tmp_path: Path) ->
 
 @pytest.mark.anyio
 async def test_session_builds_system_prompt_when_system_is_omitted(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Without an explicit system prompt, the built prompt includes the tool list, project
+    # instructions from AGENTS.md (trusted), and an available-skills index naming the discovered
+    # skill; the session exposes AGENTS.md as a context file.
     resource_root = tmp_path / "resources"
     skills_dir = resource_root / "skills"
     skills_dir.mkdir(parents=True)
@@ -2735,6 +3117,9 @@ async def test_session_builds_system_prompt_when_system_is_omitted(tmp_path: Pat
 
 @pytest.mark.anyio
 async def test_session_touches_session_manager_after_persisting_messages(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A managed session touches its index record after persisting messages so the update time does
+    # not go backwards.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.create_session(cwd=tmp_path, model="fake")
@@ -2771,6 +3156,10 @@ async def test_session_touches_session_manager_after_persisting_messages(tmp_pat
 
 @pytest.mark.anyio
 async def test_session_auto_names_first_unnamed_managed_session(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # The first prompt of an unnamed managed session triggers a tool-less naming call containing
+    # the prompt; the quoted, overlong reply is cleaned and truncated into the title; the main
+    # call sees only the user message.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.create_session(cwd=tmp_path, model="fake")
@@ -2813,6 +3202,9 @@ async def test_session_auto_names_first_unnamed_managed_session(tmp_path: Path) 
 
 @pytest.mark.anyio
 async def test_session_yields_expanded_custom_prompt_before_auto_naming(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A prompt-template slash command yields its expanded user message-end event before any
+    # provider call (naming does not block it), and auto-naming later sets the title.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.create_session(cwd=tmp_path, model="fake")
@@ -2863,6 +3255,9 @@ async def test_session_yields_expanded_custom_prompt_before_auto_naming(tmp_path
 
 @pytest.mark.anyio
 async def test_session_auto_name_falls_back_when_provider_fails(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # When the naming call errors, the title falls back to a truncated form of the prompt and the
+    # conversation is unaffected.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.create_session(cwd=tmp_path, model="fake")
@@ -2907,6 +3302,8 @@ async def test_session_auto_name_falls_back_when_provider_fails(tmp_path: Path) 
 async def test_session_auto_name_falls_back_when_provider_returns_unusable_title(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # When the naming reply has no usable words, the title falls back to the prompt text.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.create_session(cwd=tmp_path, model="fake")
@@ -2943,6 +3340,8 @@ async def test_session_auto_name_falls_back_when_provider_returns_unusable_title
 
 @pytest.mark.anyio
 async def test_session_auto_name_does_not_overwrite_manual_name(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Sessions with a manual title are not auto-named (only one provider call is made).
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.create_session(cwd=tmp_path, model="fake", title="Manual name")
@@ -2978,6 +3377,9 @@ async def test_session_auto_name_does_not_overwrite_manual_name(tmp_path: Path) 
 async def test_manual_name_wins_while_auto_name_is_in_flight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Setting a manual name while the naming call is blocked keeps the manual name and emits
+    # exactly one session-info-changed event with it.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.create_session(cwd=tmp_path, model="fake")
@@ -2997,6 +3399,9 @@ async def test_manual_name_wins_while_auto_name_is_in_flight(
     original_emit = session.extension_runtime.emit_event
 
     async def record_metadata_event(event: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async emitter wrapper capturing names from session-info-changed events, then
+        # forwarding.
         if getattr(event, "type", None) == "session_info_changed":
             metadata_names.append(getattr(event, "name", None))
         await original_emit(event)
@@ -3021,6 +3426,9 @@ async def test_manual_name_wins_while_auto_name_is_in_flight(
 async def test_session_auto_name_does_not_index_new_session_before_first_persist(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With index-on-first-persist, closing the prompt stream after its first event leaves the
+    # session unindexed and storage empty.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     record = manager.prepare_session(cwd=tmp_path, model="fake")
@@ -3059,6 +3467,9 @@ async def test_session_auto_name_does_not_index_new_session_before_first_persist
 
 @pytest.mark.anyio
 async def test_session_loads_and_expands_skills(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A skill slash command expands into a skill block (name, location, relative-reference note)
+    # followed by the user text; it is not handled as a command.
     resource_root = tmp_path / "resources"
     skills_dir = resource_root / "skills" / "testing"
     skills_dir.mkdir(parents=True)
@@ -3093,6 +3504,9 @@ async def test_session_loads_and_expands_skills(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_session_skills_disabled_suppresses_skill_index(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # With skills disabled no skills are loaded, the index is absent from the system prompt,
+    # project context remains, and expanding a skill command raises a resource error.
     resource_root = tmp_path / "resources"
     skills_dir = resource_root / "skills"
     skills_dir.mkdir(parents=True)
@@ -3136,6 +3550,8 @@ async def test_session_skills_disabled_suppresses_skill_index(tmp_path: Path) ->
 
 @pytest.mark.anyio
 async def test_session_reload_preserves_disabled_skills(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Reloading a skills-disabled session keeps skills empty and the index absent.
     resource_root = tmp_path / "resources"
     skills_dir = resource_root / "skills"
     skills_dir.mkdir(parents=True)
@@ -3167,6 +3583,9 @@ async def test_session_reload_preserves_disabled_skills(tmp_path: Path) -> None:
 async def test_system_command_shows_prompt_without_persisting_or_adding_context(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # The system command returns a formatted view of the prompt source without changing messages,
+    # storage or calling the provider.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider([])
     session = await CodingSession.load(
@@ -3197,6 +3616,9 @@ async def test_system_command_shows_prompt_without_persisting_or_adding_context(
 
 @pytest.mark.anyio
 async def test_session_expands_prompt_templates_as_slash_commands(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Prompt templates are listed and their slash command is expanded with arguments into the
+    # prompt sent to the provider.
     resource_root = tmp_path / "resources"
     prompts_dir = resource_root / "prompts"
     prompts_dir.mkdir(parents=True)
@@ -3233,6 +3655,9 @@ async def test_session_expands_prompt_templates_as_slash_commands(tmp_path: Path
 
 @pytest.mark.anyio
 async def test_reserved_prompts_template_cannot_shadow_picker_command(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A template named "prompts" is rejected with a diagnostic and the built-in command requests
+    # the prompts picker.
     resource_root = tmp_path / "resources"
     prompts_dir = resource_root / "prompts"
     prompts_dir.mkdir(parents=True)
@@ -3263,6 +3688,9 @@ async def test_reserved_prompts_template_cannot_shadow_picker_command(tmp_path: 
 
 @pytest.mark.anyio
 async def test_reserved_tools_template_cannot_shadow_picker_command(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A template named "tools" is rejected with a diagnostic and the built-in command requests the
+    # tools picker.
     resource_root = tmp_path / "resources"
     prompts_dir = resource_root / "prompts"
     prompts_dir.mkdir(parents=True)
@@ -3293,6 +3721,9 @@ async def test_reserved_tools_template_cannot_shadow_picker_command(tmp_path: Pa
 
 @pytest.mark.anyio
 async def test_session_skill_index_lets_agent_read_relevant_skill_file(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # The skill index lists the skill file location, and an agent read tool call on it succeeds
+    # returning the skill content and path details.
     resource_root = tmp_path / "resources"
     skills_dir = resource_root / "skills" / "testing"
     skills_dir.mkdir(parents=True)
@@ -3349,6 +3780,9 @@ async def test_session_skill_index_lets_agent_read_relevant_skill_file(tmp_path:
 async def test_session_loads_with_resource_diagnostics_instead_of_failing(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Invalid legacy bare-markdown skills produce a diagnostic instead of failing load; valid
+    # skills load, and the session command reports the diagnostic count.
     resource_root = tmp_path / "resources"
     skills_dir = resource_root / "skills"
     (skills_dir / "good").mkdir(parents=True)
@@ -3376,6 +3810,11 @@ async def test_session_loads_with_resource_diagnostics_instead_of_failing(
 
 @pytest.mark.anyio
 async def test_session_loads_tau_native_system_prompt_files(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Project SYSTEM.md overrides the user one; user then project APPEND_SYSTEM.md are appended;
+    # project instructions, date and cwd are included; prompt files, inspection sources (whose
+    # contents concatenate to the prompt) and system-prompt diagnostics severities are as
+    # expected.
     tau_home = tmp_path / "tau-home"
     project_tau = tmp_path / ".tau"
     tau_home.mkdir()
@@ -3430,6 +3869,9 @@ async def test_session_loads_tau_native_system_prompt_files(tmp_path: Path) -> N
 async def test_explicit_base_overrides_file_while_explicit_append_composes(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # An explicit base prompt overrides an (unreadable) SYSTEM.md, while file appends and the
+    # explicit append compose in order; diagnostics mention the explicit value and selection.
     tau_home = tmp_path / "tau-home"
     project_tau = tmp_path / ".tau"
     tau_home.mkdir()
@@ -3467,6 +3909,10 @@ async def test_explicit_base_overrides_file_while_explicit_append_composes(
 
 @pytest.mark.anyio
 async def test_session_reload_tracks_system_prompt_file_precedence(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Reloading tracks SYSTEM.md / APPEND_SYSTEM.md precedence as files are created, changed and
+    # removed: built-in default, then user base, user append, project base override, changed
+    # project base, fallback to user base, fallback to default with append, and finally no append.
     tau_home = tmp_path / "tau-home"
     project_tau = tmp_path / ".tau"
     tau_home.mkdir()
@@ -3523,6 +3969,9 @@ async def test_session_reload_tracks_system_prompt_file_precedence(tmp_path: Pat
 
 @pytest.mark.anyio
 async def test_failed_system_prompt_file_reload_keeps_previous_prompt(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # If a replacement SYSTEM.md becomes unreadable, reload raises a resource error and keeps the
+    # previous system prompt.
     tau_home = tmp_path / "tau-home"
     tau_home.mkdir()
     prompt_path = tau_home / "SYSTEM.md"
@@ -3547,6 +3996,9 @@ async def test_failed_system_prompt_file_reload_keeps_previous_prompt(tmp_path: 
 
 @pytest.mark.anyio
 async def test_new_session_adopts_system_prompt_resource_tracking(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Starting a new session rebuilds the prompt from current files and adopts their tracking, so
+    # a later file change is detected on reload.
     tau_home = tmp_path / "tau-home"
     tau_home.mkdir()
     prompt_path = tau_home / "SYSTEM.md"
@@ -3578,6 +4030,10 @@ async def test_new_session_adopts_system_prompt_resource_tracking(tmp_path: Path
 
 @pytest.mark.anyio
 async def test_session_reload_refreshes_resources_and_system_prompt(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # The reload command requests a reload; reloading picks up new skills and AGENTS.md, rebuilds
+    # the prompt, reports before/after counts, writes nothing to storage, and the next provider
+    # call uses the new prompt.
     resource_root = tmp_path / "resources"
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
@@ -3628,6 +4084,9 @@ async def test_session_reload_refreshes_resources_and_system_prompt(tmp_path: Pa
 
 @pytest.mark.anyio
 async def test_session_reload_detects_disable_model_invocation_change(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Marking a skill as not model-invocable removes it from the prompt index on reload while
+    # keeping it loaded for explicit invocation.
     resource_root = tmp_path / "resources"
     skills_dir = resource_root / "skills" / "testing"
     skills_dir.mkdir(parents=True)
@@ -3666,7 +4125,11 @@ async def test_session_reload_skips_provider_settings_refresh(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Reload must not reload provider settings (a monkeypatched loader fails the test if called).
     def fail_load_provider_settings(paths: TauPaths | None = None) -> ProviderSettings:
+        # [FUNCTION DOC]
+        # HELPER: replacement settings loader that raises an assertion error.
         del paths
         raise AssertionError("/reload should not refresh provider settings")
 
@@ -3697,6 +4160,9 @@ async def test_session_reload_leaves_system_prompt_when_inputs_are_unchanged(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Reload with unchanged inputs does not rebuild the system prompt (builder monkeypatched to
+    # fail) and reports no rebuild.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     session = await CodingSession.load(
         CodingSessionConfig(
@@ -3708,6 +4174,8 @@ async def test_session_reload_leaves_system_prompt_when_inputs_are_unchanged(
     )
 
     def fail_build_system_prompt(options: object) -> str:
+        # [FUNCTION DOC]
+        # HELPER: replacement prompt builder that raises an assertion error.
         del options
         raise AssertionError("system prompt should not be rebuilt")
 
@@ -3729,10 +4197,14 @@ async def test_session_provider_settings_reload_uses_session_paths(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Explicit provider settings reload loads from the session's own Tau paths.
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
     seen_paths: list[TauPaths | None] = []
 
     def load_provider_settings(paths: TauPaths | None = None) -> ProviderSettings:
+        # [FUNCTION DOC]
+        # HELPER: replacement loader recording the paths argument and returning simple settings.
         seen_paths.append(paths)
         return ProviderSettings(providers=(OpenAICompatibleProviderConfig(name="openai"),))
 
@@ -3761,6 +4233,12 @@ async def test_session_compact_persists_summary_and_rebuilds_context(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Manual compaction with focus instructions calls the summarizer system prompt with the focus
+    # line, persists one Pi-style compaction entry (no legacy replaced ids in the JSON, first kept
+    # entry is the last message, usage/provider/model/route recorded) as the last entry with no
+    # leaves, returns a count message, and the next call's context is summary, kept answer, new
+    # prompt.
     monkeypatch.setattr(coding_session_module, "DEFAULT_COMPACTION_KEEP_RECENT_TOKENS", 1)
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
@@ -3842,6 +4320,10 @@ async def test_session_compact_persists_summary_and_rebuilds_context(
 async def test_session_auto_compacts_after_response_when_threshold_is_exceeded(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With a tiny auto-compact threshold, exactly one compaction happens after the threshold is
+    # exceeded, records tokens before, summarizes the large prompt, and later context is summary
+    # plus retained recent turns.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     large_prompt = "Explain sessions.\n" + ("old context " * 12_000)
     provider = FakeProvider(
@@ -3904,6 +4386,9 @@ async def test_session_auto_compacts_after_response_when_threshold_is_exceeded(
 async def test_session_auto_compacts_from_provider_reported_usage(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Auto compaction is triggered by provider-reported total token usage exceeding the threshold
+    # even when the character estimate is below it.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     provider = FakeProvider(
         [
@@ -3960,6 +4445,9 @@ async def test_session_auto_compacts_from_provider_reported_usage(
 async def test_session_auto_compacts_with_pi_style_default_threshold(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With a configured context window the default threshold is derived Pi-style (20000 gives
+    # 3616) and triggers one compaction.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     large_prompt = "Explain sessions.\n" + ("old context " * 12_000)
     provider = FakeProvider(
@@ -4017,6 +4505,10 @@ async def test_session_auto_compacts_with_pi_style_default_threshold(
 async def test_session_uses_live_provider_limits_for_compaction_threshold(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Live model-limit discovery overrides static context windows: the window becomes the
+    # discovered value, the threshold is derived from it with the effective percent, and the
+    # source is reported as the live catalog.
     provider = ModelLimitsFakeProvider(
         [],
         limits=RuntimeModelLimits(
@@ -4059,6 +4551,9 @@ async def test_session_uses_live_provider_limits_for_compaction_threshold(
 async def test_session_uses_cached_codex_model_inventory_before_live_refresh(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With Codex OAuth credentials and a cached model catalog, the session uses the cached
+    # inventory and context windows without calling live discovery. Closes the session.
     tau_paths = TauPaths(home=tmp_path / ".tau")
     FileCredentialStore(tau_paths.home / "credentials.json").set_oauth(
         "openai-codex",
@@ -4118,6 +4613,10 @@ async def test_session_publishes_authenticated_codex_model_inventory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Live Codex catalog discovery replaces the static model list and metadata (name, inputs,
+    # thinking levels, context window); a later refresh via a newly created provider swaps in the
+    # new inventory, closes that provider and caches the catalog.
     tau_paths = TauPaths(home=tmp_path / ".tau")
     FileCredentialStore(tau_paths.home / "credentials.json").set_oauth(
         "openai-codex",
@@ -4203,6 +4702,11 @@ async def test_session_publishes_authenticated_codex_model_inventory(
 async def test_codex_live_only_model_is_discovered_before_startup_validation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, resume: bool, preconstructed: bool
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over resume and preconstructed provider: a requested or resumed model only
+    # present in the live Codex catalog is discovered before validation, the session adopts it,
+    # durable settings stay unchanged, discovery providers are closed, and a preconstructed owned
+    # provider is closed only when owned. Closes the session.
     monkeypatch.delenv("TAU_OFFLINE", raising=False)
     static = OpenAICodexProviderConfig(models=("static-model",), default_model="static-model")
     settings = ProviderSettings(default_provider="openai-codex", providers=(static,))
@@ -4210,6 +4714,9 @@ async def test_codex_live_only_model_is_discovered_before_startup_validation(
     initial_provider = ModelCatalogFakeProvider([], catalog=RuntimeModelCatalog(()))
 
     def create(*args: object, **kwargs: object) -> ModelCatalogFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake provider factory returning a catalog provider listing the live model,
+        # recording each created provider.
         provider = ModelCatalogFakeProvider(
             [], catalog=RuntimeModelCatalog((RuntimeModel(id="live-model"),))
         )
@@ -4256,6 +4763,9 @@ async def test_codex_live_only_model_is_discovered_before_startup_validation(
 async def test_codex_unknown_startup_model_is_not_silently_substituted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, offline: bool
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over offline mode: an unknown requested Codex model raises a provider config
+    # error naming it; discovery runs (and its provider is closed) only when online.
     if offline:
         monkeypatch.setenv("TAU_OFFLINE", "1")
     else:
@@ -4288,6 +4798,10 @@ async def test_codex_unknown_startup_model_is_not_silently_substituted(
 async def test_codex_missing_active_model_survives_settings_refresh(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # When the active static model is absent from the live Codex catalog, repeated provider
+    # settings reloads keep the active model and runtime config while the provider config still
+    # lists the live models. Closes the session.
     static = OpenAICodexProviderConfig(models=("static-model",), default_model="static-model")
     settings = ProviderSettings(default_provider="openai-codex", providers=(static,))
     provider = ModelCatalogFakeProvider(
@@ -4328,6 +4842,11 @@ async def test_provider_reload_keeps_committed_runtime_when_catalog_drops_active
     refreshed_models: tuple[str, ...],
     preview_other_provider: bool,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over refreshed model lists and an optional cross-provider preview: reloading
+    # settings that drop the active model keeps the existing runtime provider and committed
+    # harness model, updates the provider's model list, removes the dropped choice, still allows
+    # opening the model picker, and writes nothing to storage.
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     active = OpenAICompatibleProviderConfig(
         name="huggingface",
@@ -4391,6 +4910,9 @@ async def test_provider_reload_keeps_committed_runtime_when_catalog_drops_active
 async def test_provider_reload_uses_committed_model_with_cross_provider_preview(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # With a pending preview of another provider's model, a settings reload rebuilds the runtime
+    # provider for the committed model only, keeping the preview (model, provider name) pending.
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     active = OpenAICompatibleProviderConfig(
         name="huggingface",
@@ -4424,6 +4946,9 @@ async def test_provider_reload_uses_committed_model_with_cross_provider_preview(
     created: list[str] = []
 
     def create_provider(*args: object, **kwargs: object) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory recording the requested model and returning an empty scripted
+        # provider.
         del args
         created.append(str(kwargs["model"]))
         return FakeProvider([])
@@ -4444,6 +4969,9 @@ async def test_session_skips_codex_catalog_discovery_offline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # In offline mode no Codex catalog or limits discovery happens and static configuration is
+    # used unchanged.
     monkeypatch.setenv("TAU_OFFLINE", "1")
     provider = ModelCatalogFakeProvider(
         [],
@@ -4483,6 +5011,10 @@ async def test_session_discovers_codex_inventory_while_another_provider_is_activ
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # With Codex credentials, refreshing the Codex catalog while another provider is active adds
+    # the discovered Codex model to available choices via a temporary provider, which is closed
+    # afterwards.
     tau_paths = TauPaths(home=tmp_path / ".tau")
     FileCredentialStore(tau_paths.home / "credentials.json").set_oauth(
         "openai-codex",
@@ -4535,6 +5067,9 @@ async def test_session_discovers_codex_inventory_while_another_provider_is_activ
 async def test_session_falls_back_when_live_model_limit_discovery_fails(
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # A failing live limits discovery falls back to the configured window and derived threshold,
+    # reports the configured catalog source, and records the error as type and message.
     provider = ModelLimitsFakeProvider([], error=RuntimeError("catalog unavailable"))
     settings = ProviderSettings(
         default_provider="openai-codex",
@@ -4570,6 +5105,11 @@ async def test_session_compacts_and_retries_once_after_context_overflow(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # A context-overflow error triggers one automatic compaction and a single retry: the summary
+    # and recent turns plus the failing prompt form the retry context, only one error message is
+    # persisted, and extensions see auto-retry-end then a single agent-settled event, which the
+    # stream also yields once.
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     large_prompt = "Collect context.\n" + ("old context " * 12_000)
     provider = FakeProvider(
@@ -4637,6 +5177,12 @@ async def test_session_compacts_and_retries_once_after_context_overflow(
 async def test_huggingface_session_pins_successful_automatic_route(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Hugging Face automatic routing: the response header observer pins the route from the first
+    # successful response; if persisting the pin fails, the error propagates and nothing changes;
+    # on success the provider is rebuilt for that route and the record is updated. Setting an
+    # explicit route switches to fixed mode; clearing it returns to automatic with an explanatory
+    # message, persisted each time.
     created: list[tuple[str | None, object | None]] = []
 
     def create_provider(
@@ -4648,6 +5194,9 @@ async def test_huggingface_session_pins_successful_automatic_route(
         inference_provider: str | None = None,
         response_headers_observer: object | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory recording the route and header observer, returning a switchable
+        # fake provider.
         del credential_store, thinking_level
         created.append((inference_provider, response_headers_observer))
         return SwitchableFakeProvider(provider_config)
@@ -4685,6 +5234,9 @@ async def test_huggingface_session_pins_successful_automatic_route(
     active_provider = session._harness.config.provider
 
     def fail_touch_session(*args: object, **kwargs: object) -> None:
+        # [FUNCTION DOC]
+        # HELPER: replacement touch function raising a permission error to simulate a read-only
+        # index.
         del args, kwargs
         raise PermissionError("session index is read-only")
 
@@ -4727,6 +5279,9 @@ def test_huggingface_route_failover_requires_retryable_pre_output_error(
     content: list[TextContent],
     expected: bool,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized: route failover is only allowed for 429/503 provider errors that produced no
+    # output content.
     message = AssistantMessage(
         content=content,
         stop_reason="error",
@@ -4745,6 +5300,11 @@ def test_huggingface_route_failover_requires_retryable_pre_output_error(
 async def test_huggingface_automatic_pin_fails_over_and_repins(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # An automatically pinned route that rate-limits fails over to unpinned routing, which
+    # succeeds and re-pins the new route from headers (persisted); events show a retrying agent
+    # end, an auto-retry start mentioning the failed route, a successful retry end, the recovered
+    # message; the retry resends only the user prompt; a route-failover diagnostic is logged.
     model = "moonshotai/Kimi-K3"
     created: list[tuple[str | None, FakeProvider]] = []
 
@@ -4757,6 +5317,9 @@ async def test_huggingface_automatic_pin_fails_over_and_repins(
         inference_provider: str | None = None,
         response_headers_observer: object | None = None,
     ) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: route-dependent fake factory: the pinned route rate-limits, unpinned routing
+        # answers while reporting a new route header, others are empty.
         del provider_config, credential_store, model, thinking_level
         if inference_provider == "deepinfra":
             provider: FakeProvider = FakeProvider([[_provider_http_error(429)]])
@@ -4849,6 +5412,9 @@ async def test_huggingface_automatic_pin_fails_over_and_repins(
 async def test_huggingface_automatic_failover_stops_after_one_failed_fallback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # If the fallback attempt also fails, failover stops after one retry, leaving no pin in
+    # automatic mode and a failed retry end with the final error.
     model = "moonshotai/Kimi-K3"
     created: list[str | None] = []
 
@@ -4861,6 +5427,8 @@ async def test_huggingface_automatic_failover_stops_after_one_failed_fallback(
         inference_provider: str | None = None,
         response_headers_observer: object | None = None,
     ) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory recording routes and always returning a provider that rate-limits.
         del provider_config, credential_store, model, thinking_level, response_headers_observer
         created.append(inference_provider)
         return FakeProvider(
@@ -4922,6 +5490,8 @@ async def test_huggingface_automatic_failover_stops_after_one_failed_fallback(
 async def test_huggingface_continue_uses_automatic_route_failover(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Continue operations also use automatic route failover and recover successfully.
     model = "moonshotai/Kimi-K3"
     created: list[str | None] = []
 
@@ -4934,6 +5504,8 @@ async def test_huggingface_continue_uses_automatic_route_failover(
         inference_provider: str | None = None,
         response_headers_observer: object | None = None,
     ) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory where the pinned route rate-limits and unpinned routing succeeds.
         del provider_config, credential_store, model, thinking_level, response_headers_observer
         created.append(inference_provider)
         if inference_provider == "deepinfra":
@@ -4991,6 +5563,8 @@ async def test_huggingface_continue_uses_automatic_route_failover(
 async def test_huggingface_fixed_pin_does_not_fail_over(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # A fixed route never fails over: no retry events and the agent end does not retry.
     model = "moonshotai/Kimi-K3"
     created: list[str | None] = []
 
@@ -5003,6 +5577,8 @@ async def test_huggingface_fixed_pin_does_not_fail_over(
         inference_provider: str | None = None,
         response_headers_observer: object | None = None,
     ) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory recording routes and always rate-limiting.
         del provider_config, credential_store, model, thinking_level, response_headers_observer
         created.append(inference_provider)
         return FakeProvider(
@@ -5064,6 +5640,9 @@ async def test_huggingface_fixed_pin_does_not_fail_over(
 async def test_huggingface_session_re_resolves_pin_on_model_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Switching models re-resolves the Hugging Face route from per-model configured routes,
+    # rebuilding the provider with the new route in fixed mode and persisting it.
     created: list[tuple[str | None, str | None]] = []
 
     def create_provider(
@@ -5075,6 +5654,8 @@ async def test_huggingface_session_re_resolves_pin_on_model_switch(
         inference_provider: str | None = None,
         response_headers_observer: object | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory recording (model, route) and returning a switchable fake provider.
         del credential_store, thinking_level, response_headers_observer
         created.append((model, inference_provider))
         return SwitchableFakeProvider(provider_config)
@@ -5132,6 +5713,9 @@ async def test_huggingface_session_re_resolves_pin_on_model_switch(
 async def test_startup_model_override_rebuilds_model_dependent_runtime_provider(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # A startup model override differing from the resumed model rebuilds the runtime provider for
+    # the override model (keeping the route), and the harness uses the newest owned provider.
     created: list[tuple[str | None, str | None]] = []
 
     def create_provider(
@@ -5143,6 +5727,8 @@ async def test_startup_model_override_rebuilds_model_dependent_runtime_provider(
         inference_provider: str | None = None,
         response_headers_observer: object | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory recording (model, route) and returning a switchable fake provider.
         del credential_store, thinking_level, response_headers_observer
         created.append((model, inference_provider))
         return SwitchableFakeProvider(provider_config)
@@ -5191,6 +5777,10 @@ async def test_startup_model_override_rebuilds_model_dependent_runtime_provider(
 async def test_session_switches_configured_provider(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Switching to another configured provider selects its default model and lists its models as
+    # choices, creating one provider per switch; closing the session twice closes each created
+    # provider exactly once.
     created_providers: list[SwitchableFakeProvider] = []
 
     def create_provider(
@@ -5200,6 +5790,8 @@ async def test_session_switches_configured_provider(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory creating and recording switchable fake providers.
         del credential_store, model, thinking_level
         provider = SwitchableFakeProvider(provider_config)
         created_providers.append(provider)
@@ -5263,6 +5855,10 @@ async def test_session_adoption_transfers_all_runtime_provider_ownership(
     tmp_path: Path,
     operation: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over new session, resume and direct replacement adoption: ownership of runtime
+    # providers moves to the adopting session so both created providers are owned and each closed
+    # exactly once across double close.
     from dataclasses import replace as dataclass_replace
 
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
@@ -5292,6 +5888,8 @@ async def test_session_adoption_transfers_all_runtime_provider_ownership(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory creating and recording switchable fake providers.
         del credential_store, model, thinking_level
         provider = SwitchableFakeProvider(config)
         created.append(provider)
@@ -5350,6 +5948,12 @@ async def test_aborted_replacement_closes_only_candidate_provider_once(
     seam: str,
     failure: str,
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over operation, failing lifecycle seam (outgoing shutdown or incoming start)
+    # and failure kind (cancel or error): an aborted replacement closes only the candidate
+    # provider exactly once (awaiting its close before finishing), never the active one; the
+    # session keeps its active provider and ownership; the original failure propagates; final
+    # double close closes each provider once.
     from dataclasses import replace as dataclass_replace
 
     from tau_coding.extensions.runtime import ExtensionRuntime
@@ -5374,11 +5978,20 @@ async def test_aborted_replacement_closes_only_candidate_provider_once(
     created: list[SwitchableFakeProvider] = []
 
     class ControlledProvider(SwitchableFakeProvider):
+        # [CLASS DOC]
+        # HELPER: switchable fake provider whose close can block (signalling that close started)
+        # until released, for the candidate provider.
         def __init__(self, config: object, *, block_on_close: bool) -> None:
+            # [FUNCTION DOC]
+            # HELPER: initialize the base fake with the config and remember whether close should
+            # block.
             super().__init__(config)
             self.block_on_close = block_on_close
 
         async def aclose(self) -> None:
+            # [FUNCTION DOC]
+            # HELPER: async; mark closed and count, then if blocking signal close-started and wait
+            # for release.
             self.closed = True
             self.close_calls += 1
             if self.block_on_close:
@@ -5392,6 +6005,9 @@ async def test_aborted_replacement_closes_only_candidate_provider_once(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> ControlledProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory where the first provider never blocks on close and later ones
+        # (candidates) do.
         del credential_store, model, thinking_level
         provider = ControlledProvider(config, block_on_close=bool(created))
         created.append(provider)
@@ -5434,6 +6050,10 @@ async def test_aborted_replacement_closes_only_candidate_provider_once(
     real_start = ExtensionRuntime.emit_session_start
 
     async def controlled_shutdown(event_reason: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async replacement for the old runtime's shutdown emitter; at the chosen seam
+        # signals entry then raises an error or hangs forever (to be cancelled); otherwise
+        # delegates.
         if seam == "outgoing_shutdown" and event_reason == reason:
             seam_entered.set()
             if failure == "error":
@@ -5442,6 +6062,9 @@ async def test_aborted_replacement_closes_only_candidate_provider_once(
         await real_shutdown(event_reason)  # type: ignore[arg-type]
 
     async def controlled_start(runtime: ExtensionRuntime, event_reason: str) -> None:
+        # [FUNCTION DOC]
+        # HELPER: async replacement for the runtime class start emitter; for a new runtime at the
+        # chosen seam signals entry then raises or hangs; otherwise delegates.
         if seam == "incoming_start" and runtime is not old_runtime and event_reason == reason:
             seam_entered.set()
             if failure == "error":
@@ -5489,6 +6112,10 @@ async def test_aborted_replacement_closes_only_candidate_provider_once(
 async def test_failed_cross_provider_switch_preserves_active_runtime(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # If creating the candidate provider fails during a cross-provider model switch, a provider
+    # config error is raised and provider name, model, thinking level, route, harness provider and
+    # owned providers are unchanged.
     settings = ProviderSettings(
         default_provider="openai",
         providers=(
@@ -5528,6 +6155,8 @@ async def test_failed_cross_provider_switch_preserves_active_runtime(
     )
 
     def fail_provider_creation(*args: object, **kwargs: object) -> object:
+        # [FUNCTION DOC]
+        # HELPER: fake factory that raises a runtime error.
         del args, kwargs
         raise RuntimeError("candidate unavailable")
 
@@ -5551,6 +6180,8 @@ async def test_session_switch_uses_session_credential_store(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # Provider switches pass a credential store rooted at the session's Tau home.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
     FileCredentialStore(tau_paths.home / "credentials.json").set("openai", "stored-key")
@@ -5563,6 +6194,8 @@ async def test_session_switch_uses_session_credential_store(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory asserting a credential store is given and recording its path.
         del provider_config, model, thinking_level
         assert credential_store is not None
         credential_store_paths.append(credential_store.path)
@@ -5605,6 +6238,8 @@ async def test_available_model_choices_hide_unusable_providers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Providers lacking credentials are hidden from available providers and model choices.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
@@ -5647,6 +6282,9 @@ async def test_available_model_choices_include_stored_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # A provider whose key is in the credential store is available and its catalog models are
+    # offered.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
     FileCredentialStore(tau_paths.home / "credentials.json").set("openai", "stored-key")
@@ -5678,6 +6316,10 @@ async def test_available_model_choices_include_stored_credentials(
 async def test_cross_provider_preview_uses_previewed_models_and_thinking_capabilities(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Previewing another provider's model exposes that provider's models and thinking capabilities
+    # (with reasons when unavailable), scopes model commands to the previewed provider, and leaves
+    # the harness model and storage untouched.
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     settings = ProviderSettings(
         providers=(
@@ -5740,6 +6382,11 @@ async def test_cross_provider_preview_uses_previewed_models_and_thinking_capabil
 async def test_preview_selection_commits_only_at_next_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # [FUNCTION DOC]
+    # Previewing a scoped model and thinking level changes the visible selection without
+    # persisting or creating providers; the next prompt commits it (creating providers, writing
+    # model and thinking entries). If committing a later preview fails, nothing is written and the
+    # selection stays pending until a retry succeeds.
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     settings = ProviderSettings(
         default_provider="local",
@@ -5775,6 +6422,8 @@ async def test_preview_selection_commits_only_at_next_prompt(
     constructed: list[str] = []
 
     def create_provider(*args: object, **kwargs: object) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory recording the requested model.
         del args
         constructed.append(str(kwargs["model"]))
         return FakeProvider([])
@@ -5808,6 +6457,8 @@ async def test_preview_selection_commits_only_at_next_prompt(
     before_failure = await storage.read_all()
 
     def fail_provider(*args: object, **kwargs: object) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory raising "provider unavailable".
         del args, kwargs
         raise RuntimeError("provider unavailable")
 
@@ -5838,6 +6489,9 @@ async def test_session_toggles_and_cycles_scoped_models(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Toggling a model into the scoped set persists it to providers.json, and cycling selects the
+    # next scoped model.
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
     settings = ProviderSettings(
@@ -5886,6 +6540,9 @@ async def test_session_toggles_and_cycles_scoped_models(
 @requires_posix_shell
 @pytest.mark.anyio
 async def test_session_resume_preserves_shell_command_prefix(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # POSIX only: after resuming another indexed session, terminal commands still apply the
+    # configured shell prefix (alias works).
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     first_cwd = tmp_path / "first"
     second_cwd = tmp_path / "second"
@@ -5917,6 +6574,10 @@ async def test_session_resume_preserves_shell_command_prefix(tmp_path: Path) -> 
 
 @pytest.mark.anyio
 async def test_session_resumes_indexed_session(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Resuming another indexed session switches session id and cwd, restores its messages for the
+    # next provider call, and persists each new message exactly once (the replacement's
+    # persistence listener is detached on adoption).
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     first_cwd = tmp_path / "first"
     first_cwd.mkdir()
@@ -5982,6 +6643,9 @@ async def test_session_toggle_scoped_model_preserves_newer_provider_file_changes
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # [FUNCTION DOC]
+    # Toggling a scoped model merges into the newer on-disk provider settings rather than
+    # overwriting them with the stale loaded copy.
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     monkeypatch.setenv("REMOTE_API_KEY", "remote-key")
     tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
@@ -6040,6 +6704,9 @@ async def test_session_toggle_scoped_model_preserves_newer_provider_file_changes
 
 @pytest.mark.anyio
 async def test_session_set_model_rejects_model_not_declared_for_provider(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Setting a model not declared for the provider raises a provider config error and leaves the
+    # model unchanged.
     provider_config = OpenAICompatibleProviderConfig(
         name="openai",
         models=("gpt-5",),
@@ -6071,6 +6738,9 @@ async def test_session_load_falls_back_when_persisted_model_does_not_match_provi
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # [FUNCTION DOC]
+    # A persisted model not offered by the active provider is kept in replayed state but the
+    # session runs with the configured model, creating the provider for it.
     created: list[tuple[str, str | None]] = []
 
     def create_provider(
@@ -6080,6 +6750,9 @@ async def test_session_load_falls_back_when_persisted_model_does_not_match_provi
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake provider factory recording (provider name, model) and returning a
+        # switchable fake provider.
         del credential_store, thinking_level
         created.append((provider_config.name, model))  # type: ignore[attr-defined]
         return SwitchableFakeProvider(provider_config)
@@ -6118,6 +6791,9 @@ async def test_session_load_falls_back_when_persisted_model_does_not_match_provi
 async def test_session_set_model_persists_default_provider_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Setting a model persists it as the provider's default and the default provider in
+    # providers.json.
     isolate_home(monkeypatch, tmp_path)
     tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
     provider_config = OpenAICompatibleProviderConfig(
@@ -6149,6 +6825,9 @@ async def test_session_set_model_persists_default_provider_model(
 async def test_session_set_model_choice_persists_default_provider_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Selecting a cross-provider model choice persists the new default provider and model and
+    # creates exactly one provider for it.
     isolate_home(monkeypatch, tmp_path)
     tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
     settings = ProviderSettings(
@@ -6177,6 +6856,9 @@ async def test_session_set_model_choice_persists_default_provider_model(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake provider factory recording (provider name, model) and returning a
+        # switchable fake provider.
         del credential_store, thinking_level
         created.append((provider_config.name, model))  # type: ignore[attr-defined]
         return SwitchableFakeProvider(provider_config)
@@ -6209,6 +6891,9 @@ async def test_session_set_model_choice_persists_default_provider_model(
 async def test_session_set_model_choice_switches_provider_model_directly(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Cycling scoped models across providers switches provider and model directly, creating one
+    # provider.
     isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
@@ -6242,6 +6927,9 @@ async def test_session_set_model_choice_switches_provider_model_directly(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake provider factory recording (provider name, model) and returning a
+        # switchable fake provider.
         del credential_store, thinking_level
         created.append((provider_config.name, model))  # type: ignore[attr-defined]
         return SwitchableFakeProvider(provider_config)
@@ -6274,6 +6962,9 @@ async def test_session_set_model_choice_switches_provider_model_directly(
 async def test_session_set_model_preserves_newer_provider_file_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Setting a model merges the default model into newer on-disk provider settings, preserving
+    # other providers' headers and scoped models.
     isolate_home(monkeypatch, tmp_path)
     tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
     loaded_provider = OpenAICompatibleProviderConfig(
@@ -6325,6 +7016,9 @@ async def test_session_set_model_preserves_newer_provider_file_changes(
 async def test_session_new_session_uses_default_provider_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, owns_initial_provider: bool
 ) -> None:
+    # [FUNCTION DOC]
+    # Parametrized over initial provider ownership: starting a new session switches to the default
+    # provider and model, creating a new provider, and the new session is not indexed yet.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     current_record = manager.create_session(
         cwd=tmp_path,
@@ -6358,6 +7052,9 @@ async def test_session_new_session_uses_default_provider_model(
         thinking_level: str | None = None,
         inference_provider: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake provider factory recording (provider name, model) and returning a
+        # switchable fake provider.
         del credential_store, thinking_level, inference_provider
         created.append((provider_config.name, model))  # type: ignore[attr-defined]
         return SwitchableFakeProvider(provider_config)
@@ -6396,6 +7093,9 @@ async def test_session_new_session_uses_default_provider_model(
 async def test_session_new_session_is_indexed_after_first_message(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # A new session stays unindexed until its first prompt persists messages, after which it is
+    # indexed with provider, model, auto-generated title and an existing transcript.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     current_record = manager.create_session(cwd=tmp_path, model="fake", provider_name="fake")
     settings = ProviderSettings(
@@ -6416,6 +7116,9 @@ async def test_session_new_session_is_indexed_after_first_message(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory returning a scripted provider that answers the naming call and the
+        # prompt.
         del provider_config, credential_store, model, thinking_level
         return FakeProvider(
             [
@@ -6466,6 +7169,9 @@ async def test_session_new_session_is_indexed_after_first_message(
 async def test_session_name_indexes_pending_session_without_prompt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # The name command plus setting the name indexes a pending new session immediately, writing
+    # its transcript, with the given title, provider and model.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     current_record = manager.create_session(cwd=tmp_path, model="fake", provider_name="fake")
     settings = ProviderSettings(
@@ -6486,6 +7192,8 @@ async def test_session_name_indexes_pending_session_without_prompt(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> FakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory returning an empty scripted provider.
         del provider_config, credential_store, model, thinking_level
         return FakeProvider([])
 
@@ -6529,6 +7237,9 @@ async def test_session_name_indexes_pending_session_without_prompt(
 async def test_session_resume_uses_target_session_provider_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Resuming adopts the target session's recorded provider and model, creating one provider for
+    # them.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     first_cwd = tmp_path / "first"
     first_cwd.mkdir()
@@ -6572,6 +7283,9 @@ async def test_session_resume_uses_target_session_provider_model(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake provider factory recording (provider name, model) and returning a
+        # switchable fake provider.
         del credential_store, thinking_level
         created.append((provider_config.name, model))  # type: ignore[attr-defined]
         return SwitchableFakeProvider(provider_config)
@@ -6607,6 +7321,9 @@ async def test_session_resume_uses_target_session_provider_model(
 async def test_session_resume_missing_provider_preserves_active_provider_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Resuming a legacy session with no recorded provider keeps the active provider and model
+    # (provider rebuilt for it).
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     first_cwd = tmp_path / "first"
     first_cwd.mkdir()
@@ -6650,6 +7367,9 @@ async def test_session_resume_missing_provider_preserves_active_provider_model(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake provider factory recording (provider name, model) and returning a
+        # switchable fake provider.
         del credential_store, thinking_level
         created.append((provider_config.name, model))  # type: ignore[attr-defined]
         return SwitchableFakeProvider(provider_config)
@@ -6685,6 +7405,9 @@ async def test_session_resume_missing_provider_preserves_active_provider_model(
 async def test_session_resume_rejects_incompatible_provider_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # Resuming a session whose recorded model is not configured for its provider raises a provider
+    # config error and leaves the active provider and model unchanged.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     first_cwd = tmp_path / "first"
     first_cwd.mkdir()
@@ -6727,6 +7450,8 @@ async def test_session_resume_rejects_incompatible_provider_model(
         model: str | None = None,
         thinking_level: str | None = None,
     ) -> SwitchableFakeProvider:
+        # [FUNCTION DOC]
+        # HELPER: fake factory returning a switchable fake provider for the given config.
         del credential_store, model, thinking_level
         return SwitchableFakeProvider(provider_config)
 
@@ -6758,6 +7483,9 @@ async def test_session_resume_rejects_incompatible_provider_model(
 
 @pytest.mark.anyio
 async def test_session_context_usage_recalculates_after_resume(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # After resuming a session with messages, context usage is recomputed (two messages, more
+    # tokens) and the token estimate matches.
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     first_cwd = tmp_path / "first"
     first_cwd.mkdir()
@@ -6805,6 +7533,9 @@ async def test_session_context_usage_recalculates_after_resume(tmp_path: Path) -
 
 
 def test_custom_prompt_template_retains_precedence_over_other_commands(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # A session constructed directly (placeholder state and harness) with a prompt template named
+    # "new" does not handle "/new" as a command and expands it to the template content.
     session = CodingSession(
         _config(tmp_path, FakeProvider([]), JsonlSessionStorage(tmp_path / "session.jsonl")),
         state=object(),  # type: ignore[arg-type]
@@ -6822,6 +7553,9 @@ def test_custom_prompt_template_retains_precedence_over_other_commands(tmp_path:
 
 
 def test_minimal_commands_are_handled(tmp_path: Path) -> None:
+    # [FUNCTION DOC]
+    # Basic command routing on a directly constructed session: plain text and unknown or "/clear"
+    # commands are unhandled; "/new" requests a new session; "/quit" and "/exit" request exit.
     session = CodingSession(
         _config(tmp_path, FakeProvider([]), JsonlSessionStorage(tmp_path / "session.jsonl")),
         state=object(),  # type: ignore[arg-type]
@@ -6840,6 +7574,10 @@ def test_minimal_commands_are_handled(tmp_path: Path) -> None:
 def _thinking_override_provider_config(  # noqa: D103
     thinking_defaults: dict[str, str] | None = None,
 ) -> OpenAICompatibleProviderConfig:
+    # [FUNCTION DOC]
+    # HELPER: build an OpenAI-compatible provider config with one thinking model "reasoner",
+    # levels off/low/high, default "low", reasoning-effort parameter and optional remembered per-
+    # model defaults.
     return OpenAICompatibleProviderConfig(
         name="openai",
         models=("reasoner",),
@@ -6856,6 +7594,9 @@ def _thinking_override_provider_config(  # noqa: D103
 async def test_new_session_initial_thinking_respects_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # A startup thinking override beats the remembered per-model default and is written as the
+    # first thinking-level entry when the session initializes.
     isolate_home(monkeypatch, tmp_path)
     provider_config = _thinking_override_provider_config(thinking_defaults={"reasoner": "low"})
     session = await CodingSession.load(
@@ -6883,11 +7624,17 @@ async def test_new_session_initial_thinking_respects_override(
 async def test_resumed_session_thinking_override_is_ephemeral(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # A thinking override applies to a resumed session only for that load (later loads use the
+    # stored level), and an unsupported override raises a provider config error.
     isolate_home(monkeypatch, tmp_path)
     provider_config = _thinking_override_provider_config()
     storage_path = tmp_path / "session.jsonl"
 
     def config(thinking_level_override: object = None) -> CodingSessionConfig:
+        # [FUNCTION DOC]
+        # HELPER: build the session config for the shared transcript with an optional thinking
+        # override.
         return CodingSessionConfig(
             provider=FakeProvider([]),
             model="reasoner",
@@ -6919,6 +7666,9 @@ async def test_resumed_session_thinking_override_is_ephemeral(
 async def test_thinking_override_unsupported_level_raises_on_load(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # An unsupported thinking override on a new session raises a provider config error naming the
+    # level.
     isolate_home(monkeypatch, tmp_path)
     provider_config = _thinking_override_provider_config()
 
@@ -6942,6 +7692,11 @@ def _dynamic_thinking_override_config(
     *,
     thinking_level_override: object,
 ) -> CodingSessionConfig:
+    # [FUNCTION DOC]
+    # HELPER: write an extension file registering a dynamic "local" provider with a "reasoner"
+    # model supporting off/high thinking, and return a session config requesting that
+    # provider/model with the extension path and the given thinking override (no preconstructed
+    # provider). Writes a file.
     extension = tmp_path / "dynamic_provider.py"
     extension.write_text(
         """
@@ -6979,6 +7734,9 @@ def setup(tau):
 async def test_dynamic_provider_accepts_supported_thinking_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # A supported override for an extension-registered dynamic provider is applied and its levels
+    # exposed. Closes the session.
     isolate_home(monkeypatch, tmp_path)
 
     session = await CodingSession.load(
@@ -6994,6 +7752,9 @@ async def test_dynamic_provider_accepts_supported_thinking_override(
 async def test_dynamic_provider_rejects_unsupported_thinking_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # [FUNCTION DOC]
+    # An unsupported override for a dynamic provider raises a provider config error listing
+    # available modes.
     isolate_home(monkeypatch, tmp_path)
 
     with pytest.raises(
